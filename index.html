@@ -19,12 +19,14 @@
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">$</span><span class="brand-name">Mis Finanzas</span></div>
       <nav class="nav">
-        <button class="nav-btn" data-view="resumen"><span class="nav-ico">◎</span><span>Resumen</span></button>
-        <button class="nav-btn" data-view="inversiones"><span class="nav-ico">↗</span><span>Inversiones</span></button>
-        <button class="nav-btn" data-view="cuentas"><span class="nav-ico">▤</span><span>Cuentas</span></button>
-        <button class="nav-btn" data-view="movimientos"><span class="nav-ico">⇅</span><span>Movimientos</span></button>
-        <button class="nav-btn" data-view="analisis"><span class="nav-ico">◔</span><span>Análisis</span></button>
-        <button class="nav-btn" data-view="ajustes"><span class="nav-ico">⚙</span><span>Ajustes</span></button>
+        <button class="nav-btn" data-view="resumen"><span class="nav-ico" data-icon="home"></span><span>Resumen</span></button>
+        <button class="nav-btn" data-view="movimientos"><span class="nav-ico" data-icon="list"></span><span>Movimientos</span></button>
+        <button class="nav-btn" data-view="metas"><span class="nav-ico" data-icon="target"></span><span>Metas</span></button>
+        <button class="nav-btn" data-view="analisis"><span class="nav-ico" data-icon="pie"></span><span>Análisis</span></button>
+        <button class="nav-btn nav-secondary" data-view="inversiones"><span class="nav-ico" data-icon="trending"></span><span>Inversiones</span></button>
+        <button class="nav-btn nav-secondary" data-view="cuentas"><span class="nav-ico" data-icon="wallet"></span><span>Cuentas</span></button>
+        <button class="nav-btn nav-secondary" data-view="ajustes"><span class="nav-ico" data-icon="settings"></span><span>Ajustes</span></button>
+        <button class="nav-btn nav-more" id="moreBtn"><span class="nav-ico" data-icon="more"></span><span>Más</span></button>
       </nav>
       <div class="sidebar-foot" id="lastRefresh"></div>
     </aside>
@@ -35,18 +37,22 @@
         <div class="top-actions">
           <div class="seg" role="group" aria-label="Moneda de visualización">
             <button data-cur="USD">USD</button>
-            <button data-cur="LOCAL" id="curLocalBtn">ARS</button>
+            <button data-cur="LOCAL" id="curLocalBtn">Bs</button>
           </div>
-          <button class="btn ghost icon-btn" id="syncBtn" title="Sincronizar con OneDrive">☁</button>
-          <button class="btn ghost icon-btn" id="privacyBtn" title="Ocultar / mostrar montos">👁</button>
-          <button class="btn primary" id="refreshBtn" title="Actualizar precios y tipos de cambio">↻ <span class="hide-sm">Actualizar</span></button>
+          <button class="btn ghost icon-btn" id="syncBtn" title="Sincronizar" aria-label="Sincronizar"><span data-icon="sync"></span></button>
+          <button class="btn ghost icon-btn" id="privacyBtn" title="Ocultar / mostrar saldos" aria-label="Ocultar saldos"><span data-icon="eye"></span></button>
+          <button class="btn primary" id="refreshBtn" title="Actualizar precios y tipos de cambio"><span data-icon="refresh"></span><span class="hide-sm">Actualizar</span></button>
         </div>
       </header>
       <div id="content" class="content"></div>
     </main>
   </div>
 
+  <button class="fab" id="fabBtn" aria-label="Registrar gasto o ingreso"><span data-icon="mic"></span><span class="fab-label">Registrar</span></button>
+
   <dialog id="dlg"><form id="dlgForm" novalidate></form></dialog>
+  <dialog id="chatDlg" class="chat-dlg"></dialog>
+  <div id="moreMenu" class="more-menu" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="tip" class="tip" hidden></div>
 
