@@ -54,6 +54,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* App de tamaño fijo: sin zoom por doble toque (iOS) */
+html, body, button, a, input, select, textarea, label, .nav-btn, .fab { touch-action: manipulation; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Los elementos con el atributo hidden se ocultan siempre, aunque tengan display propio */
+[hidden] { display: none !important; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -316,6 +321,10 @@ body.privado .money { filter: blur(7px); }
 }
 .fab:active { transform: scale(.97); }
 .hero-cta { margin-top: 14px; }
+.hero-split { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--grid); }
+.hero-split > div { display: flex; flex-direction: column; gap: 2px; }
+.hero-split > div:last-child { text-align: right; }
+.hero-split b { font-size: 18px; }
 .t-unit { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 2px; }
 .status.neutral { color: var(--text-2); background: var(--surface-2); font-weight: 500; }
 .acc-ico.sm { width: 30px; height: 30px; border-radius: 8px; }
@@ -384,7 +393,7 @@ tr.best td { background: color-mix(in srgb, #0ca30c 7%, transparent); }
   background: var(--bg); padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
 }
 .lock[hidden] { display: none; }
-body.locked .app, body.locked .fab, body.veiled .app, body.veiled .fab { visibility: hidden; }
+body.locked .app, body.locked .fab, body.veiled .app, body.veiled .fab, body.veiled dialog { visibility: hidden; }
 .lock-box { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; max-width: 300px; text-align: center; }
 .lock-box h2 { font-size: 20px; }
 .lock-box p { margin: 0; }

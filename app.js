@@ -176,7 +176,7 @@ function migrate(s) {
   const d = defaultState();
   s.settings = { ...d.settings, ...(s.settings || {}) };
   s.settings.rates = { USD: 1, ...(s.settings.rates || {}) };
-  for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'goals', 'loans', 'checkins', 'rateLog']) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'goals', 'loans', 'checkins', 'rateLog', 'deleted']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
@@ -242,6 +242,13 @@ function rate(cur) {
 }
 const toUSD = (amount, cur) => { const r = rate(cur); return r ? (Number(amount) || 0) / r : 0; };
 const fromUSD = (usd, cur) => usd * (rate(cur) || 1);
+// Convierte entre monedas; null si falta un tipo de cambio (mejor avisar que guardar un monto mal)
+function convert(amount, from, to) {
+  if (from === to || (USD_PEGGED.has(from) && USD_PEGGED.has(to))) return round2(Number(amount) || 0);
+  const a = rate(from), b = rate(to);
+  return a && b ? round2((Number(amount) || 0) / a * b) : null;
+}
+const NO_RATE = 'Falta el tipo de cambio: tocá Actualizar (con internet) y probá de nuevo.';
 const dispCur = () => (S.settings.displayCurrency === 'LOCAL' ? S.settings.localCurrency : 'USD');
 
 const CUR_SYMBOL = { BOB: 'Bs' };
@@ -313,11 +320,21 @@ function totals() {
     if (l.closed || rem <= 0) continue;
     if (l.dir === 'preste') lent += toUSD(rem, l.currency); else owed += toUSD(rem, l.currency);
   }
-  return { liquid, debt, inv, cost, invWithCost, lent, owed, netWorth: liquid + inv - debt + lent - owed, alloc };
+  // netWorth = lo que tenés hoy (lo prestado todavía no volvió); netWorthWithLent = si te devuelven todo
+  const netWorth = liquid + inv - debt - owed;
+  return { liquid, debt, inv, cost, invWithCost, lent, owed, netWorth, netWorthWithLent: netWorth + lent, alloc };
 }
 
 // Compras/ventas de inversiones y préstamos mueven plata pero no son gasto ni ingreso
 const nonFlow = (t) => !!(t.investment || t.loan);
+
+// Lápidas: ids borrados, para que al unir los datos de dos dispositivos no "revivan"
+function tombstone(id) {
+  if (!id) return;
+  S.deleted = S.deleted || [];
+  if (!S.deleted.includes(id)) S.deleted.push(id);
+  if (S.deleted.length > 5000) S.deleted.splice(0, S.deleted.length - 5000);
+}
 
 function txUSD(t) {
   const acc = S.accounts.find((a) => a.id === t.accountId);
@@ -695,11 +712,15 @@ function viewResumen() {
   ${phoneStale ? `<div class="banner">${S.settings.lastSync ? `Hace ${Math.floor(syncDays)} días que no guardás en OneDrive.` : 'Todavía no guardaste tus datos en OneDrive.'} <a href="#" data-action="syncPush">Guardar ahora</a></div>` : ''}
   ${dueSoonBanner()}
   <section class="card hero">
-    <div class="label">Patrimonio neto</div>
+    <div class="label">Patrimonio neto hoy${t.lent ? ' <span class="muted small">(sin lo prestado)</span>' : ''}</div>
     <div class="hero-value money">${fmtMoney(t.netWorth)}</div>
     <div class="sub"><span class="money">≈ ${fmtMoney(t.netWorth, { cur: other })}</span>
       ${delta != null ? ` · <span class="${cls(delta)} money">${arrow(delta)}${fmtMoney(delta, { sign: true })}</span> desde el ${fmtDate(prev.date)}` : ''}</div>
-    ${t.lent || t.owed ? `<div class="sub small">Incluye préstamos: te deben <span class="money">${fmtMoney(t.lent)}</span> · debés <span class="money">${fmtMoney(t.owed)}</span></div>` : ''}
+    ${t.owed ? `<div class="sub small">Ya descontamos lo que debés: <span class="money">${fmtMoney(t.owed)}</span></div>` : ''}
+    ${t.lent ? `<div class="hero-split">
+      <div><span class="muted small">Si te devuelven lo prestado</span><b class="money">${fmtMoney(t.netWorthWithLent)}</b></div>
+      <div><span class="muted small">Te deben</span><b class="money up">+${fmtMoney(t.lent)}</b></div>
+    </div>` : ''}
     <button class="btn primary hero-cta" data-action="openChat">${icon('mic', 16)} Registrar gasto o ingreso</button>
   </section>
   ${habitHTML()}
@@ -839,15 +860,17 @@ const recurringTx = (r, month) => S.transactions.find((t) => t.recurringId === r
 
 // Monto de la regla convertido a la moneda de la cuenta donde entra / sale
 function recurringAmountFor(r, acc) {
-  return round2(acc && acc.currency !== r.currency ? fromUSD(toUSD(r.amount, r.currency), acc.currency) : r.amount);
+  return acc ? convert(r.amount, r.currency, acc.currency) : r.amount;
 }
 
 function registerRecurring(r, { date, time, amount, accountId } = {}) {
   const acc = S.accounts.find((a) => a.id === (accountId || r.accountId)) || S.accounts.find((a) => a.type !== 'credito');
   if (!acc) return null;
+  const amt = amount ?? recurringAmountFor(r, acc);
+  if (amt == null) return null; // sin tipo de cambio no se registra (se reintenta al abrir con internet)
   const tx = {
     id: uid(), created: new Date().toISOString(), type: r.type, date: date || todayISO(), time: time || nowTime(),
-    accountId: acc.id, amount: amount ?? recurringAmountFor(r, acc), category: r.category, note: r.name, recurringId: r.id,
+    accountId: acc.id, amount: amt, category: r.category, note: r.name, recurringId: r.id,
   };
   S.transactions.push(tx);
   applyTx(tx, 1);
@@ -863,7 +886,7 @@ function processRecurring() {
     for (let m = r.startMonth || cur; m <= cur; m = addMonths(m, 1)) {
       const day = Math.min(Number(r.day), daysInMonth(m));
       const date = `${m}-${String(day).padStart(2, '0')}`;
-      if (date > today || recurringTx(r, m)) continue;
+      if (date > today || recurringTx(r, m) || (r.skip || []).includes(m)) continue;
       if (registerRecurring(r, { date, time: '09:00' })) done.push(r.name);
     }
   }
@@ -919,13 +942,16 @@ function recurringForm(r) {
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este fijo (los movimientos ya registrados quedan)', type: 'checkbox', full: true }]),
     ],
     onSubmit: (v) => {
-      if (v.remove) { S.recurring = S.recurring.filter((x) => x !== r); save(); render(); return; }
+      if (v.remove) { S.recurring = S.recurring.filter((x) => x !== r); tombstone(r.id); save(); render(); return; }
       const day = v.day ? Number(v.day) : null;
       if (day != null && !(day >= 1 && day <= 31)) return 'El día tiene que ser un número del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
         category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day };
-      if (isNew) S.recurring.push({ id: uid(), startMonth: currentMonth(), ...next }); else Object.assign(r, next);
+      // Al crear un fijo o cambiarle el día, sólo se registra solo desde el próximo vencimiento
+      // (si el día de este mes ya pasó, ya lo tenés en tu saldo; marcalo a mano si hace falta)
+      if (isNew || day !== r.day) next.startMonth = day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
+      if (isNew) S.recurring.push({ id: uid(), ...next }); else Object.assign(r, next);
       processRecurring();
       save(); render();
     },
@@ -944,6 +970,12 @@ function payRecurringForm(r) {
       { name: 'time', label: 'Hora', type: 'time', value: nowTime() },
     ],
     submitLabel: r.type === 'ingreso' ? 'Registrar ingreso' : 'Registrar pago',
+    // Si cambiás de cuenta (ej. de dólares a bolivianos), el monto se convierte
+    onInput: (form, v, changed) => {
+      if (changed !== 'accountId') return;
+      const a = S.accounts.find((x) => x.id === v.accountId);
+      if (a) form.elements.amount.value = numInput(recurringAmountFor(r, a));
+    },
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       registerRecurring(r, { date: v.date, time: v.time, amount: v.amount, accountId: v.accountId });
@@ -1800,7 +1832,7 @@ function goalForm(g) {
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar esta meta', type: 'checkbox', full: true }]),
     ],
     onSubmit: (v) => {
-      if (v.remove) { S.goals = S.goals.filter((x) => x !== g); save(); render(); return; }
+      if (v.remove) { S.goals = S.goals.filter((x) => x !== g); tombstone(g.id); save(); render(); return; }
       if (!(v.target > 0)) return 'El monto tiene que ser mayor a 0.';
       if (v.date && v.date <= todayISO()) return 'La fecha tiene que ser en el futuro.';
       const next = { name: v.name, target: v.target, currency: v.currency, date: v.date, source: v.source };
@@ -1851,7 +1883,10 @@ const NUM_WORDS = {
   quinientos: 500, seiscientos: 600, setecientos: 700, ochocientos: 800, novecientos: 900, mil: 1000,
 };
 function wordsToDigits(text) {
-  return text.replace(/\b(?:(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\w+|veinte|veinti\w+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|\w+cientos|mil)(?:\s+y\s+|\s+|\b))+/g, (m) => {
+  // "3 mil" / "2,5 mil" → 3000 / 2500 (antes de convertir palabras, para no leer "3 1000")
+  text = text.replace(/\b(\d+(?:[.,]\d+)?)\s*mil\b/g, (m, n) => String(Math.round(parseNum(n) * 1000)));
+  // La "y" sólo se come dentro de un número ("treinta y cinco"), no entre dos gastos ("veinte y taxi")
+  return text.replace(/\b(?:(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\w+|veinte|veinti\w+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|\w+cientos|mil)(?:\s+y\s+(?=(?:uno|un|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)\b)|\s+|\b))+/g, (m) => {
     const words = m.trim().split(/\s+/).filter((w) => w !== 'y');
     if (!words.every((w) => NUM_WORDS[w] != null)) return m;
     if (words.length === 1 && ['un', 'una', 'uno'].includes(words[0])) return m; // "un almuerzo" no es un monto
@@ -1933,7 +1968,8 @@ function localParse(text) {
   // Partes: por renglón, coma, punto y coma, "y", "también", "además"
   const parts = clean.split(/\n|;|,(?!\d)|\.\s|\s+(?:tambien|ademas|despues|luego)\s+|\s+y\s+(?=(?:\D*)\d)/).map((p) => p.trim()).filter(Boolean);
   const out = [];
-  let ctxDate = findDate(clean.split(/[,;\n]/)[0]) || null; // "ayer: taxi 10, almuerzo 20" → ayer vale para todo
+  // "ayer: taxi 10, almuerzo 20" → "ayer" vale para lo que sigue; sólo si lo dijiste en la primera parte
+  let ctxDate = parts.length ? findDate(parts[0]) : null;
   let carry = '';
   for (let raw of parts) {
     raw = (carry + ' ' + raw).trim();
@@ -1941,12 +1977,15 @@ function localParse(text) {
     if (date) ctxDate = date;
     const time = findTime(raw);
     // Sacar fechas y horas antes de buscar el monto
-    const s = raw.replace(/\b\d{1,2}:\d{2}\b|\ba\s+las?\s+\d{1,2}\b|\b\d{1,2}\s*(am|pm)\b|\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\bel\s+(dia\s+)?\d{1,2}\b(?!\s*(bs|bolivianos|\$|dolares|usd))|\b\d{1,2}\s+de\s+[a-z]+\b|\btarjeta\s*\d\b/g, ' ');
-    const amt = s.match(/(\$|us\$|usd\s*)?\s*(\d+(?:[.,]\d+)?)\s*(k|mil|lucas)?\s*(bs|bob|bolivianos?|pesos|\$|usd|usdt|usdc|dolares|dolar|verdes)?/i);
+    const s = raw.replace(/\b\d{1,2}:\d{2}\b|\ba\s+las?\s+\d{1,2}\b|\b\d{1,2}\s*(am|pm)\b|\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\bel\s+(dia\s+)?\d{1,2}\b(?!\s*(bs|bolivianos|\$|dolares|usd))|\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b|\btarjeta\s*\d\b/g, ' ');
+    // De todos los números, el monto es el que tiene moneda; si ninguno la tiene, el más grande ("2 salteñas 16" → 16)
+    const nums = [...s.matchAll(/(\$|us\$|usd\s*)?\s*(\d+(?:[.,]\d+)?)\s*(?:(k|lucas)\b)?\s*(bs\b|bob\b|bolivianos?\b|pesos\b|\$|usd\b|usdt\b|usdc\b|dolares\b|dolar\b|verdes\b)?/gi)]
+      .filter((m) => parseNum(m[2]) > 0);
+    const amt = nums.find((m) => m[1] || m[4]) || nums.sort((a, b) => parseNum(b[2]) - parseNum(a[2]))[0];
     if (!amt) { carry = raw; continue; }
     carry = '';
     let amount = parseNum(amt[2]);
-    if (/k|mil|lucas/.test(amt[3] || '')) amount *= 1000;
+    if (amt[3]) amount *= 1000;
     if (!(amount > 0)) continue;
     const curWord = `${amt[1] || ''} ${amt[4] || ''}`;
     let currency = /\$|usd|dolar|verde/.test(curWord) ? 'USD' : /bs|bob|bolivian|pesos/.test(curWord) ? S.settings.localCurrency : null;
@@ -1954,7 +1993,8 @@ function localParse(text) {
     const isIncome = INCOME_RX.test(raw);
     const words = isIncome ? INC_WORDS : CAT_WORDS;
     let category = isIncome ? 'Otros ingresos' : 'Otros gastos';
-    for (const [cat, list] of words) if (list.split(' ').some((w) => w.length > 2 && new RegExp(`\\b${w}\\b`).test(raw))) { category = cat; break; }
+    const catText = raw.replace(/\b(con )?(la )?tarjeta( de credito| de debito)?\b/g, ' '); // "con tarjeta de crédito" no es recarga de celular
+    for (const [cat, list] of words) if (list.split(' ').some((w) => w.length > 2 && new RegExp(`\\b${w}\\b`).test(catText))) { category = cat; break; }
     let acc = findAccount(raw);
     if (acc === 'efectivo') acc = S.accounts.find((a) => a.type === 'efectivo' && (!currency || a.currency === currency)) || defaultAccount(currency);
     else if (acc === 'tarjeta') acc = S.accounts.find((a) => a.type === 'credito' || a.type === 'debito') || defaultAccount(currency);
@@ -2109,10 +2149,16 @@ function savePending() {
       touched.add(acc);
       continue;
     }
-    const amount = acc.currency === p.currency ? p.amount : round2(fromUSD(toUSD(p.amount, p.currency), acc.currency));
+    const amount = convert(p.amount, p.currency, acc.currency);
+    if (amount == null) { toast(NO_RATE, 4500); continue; }
     const tx = { id: uid(), created: new Date().toISOString(), type: p.type, date: p.date || todayISO(), time: p.time || '', accountId: acc.id, amount, category: p.category, note: p.note || p.category, via: 'chat' };
     // "Pagué el gym" o "me llegó la mesada" marca ese fijo como hecho en vez de sumarlo como extra
-    const rule = S.recurring.find((r) => r.type === p.type && r.category === p.category && !recurringTx(r, tx.date.slice(0, 7)));
+    // Sólo fijos sin día, y si el monto se parece (±25%) o dijiste su nombre ("cancha 50" no es el gym de 300)
+    const rule = S.recurring.find((r) => {
+      if (r.day || r.type !== p.type || r.category !== p.category || recurringTx(r, tx.date.slice(0, 7))) return false;
+      const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(p.amount, p.currency);
+      return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || norm(p.note || '').includes(norm(r.name).split(' ')[0]);
+    });
     if (rule) { tx.recurringId = rule.id; tx.note = rule.name; }
     S.transactions.push(tx);
     applyTx(tx, 1);
@@ -2267,6 +2313,59 @@ async function findGist(token) {
   return null;
 }
 
+// Cierra formularios abiertos antes de reemplazar los datos (si no, guardarían sobre objetos viejos)
+const closeDialogs = () => $$('dialog[open]').forEach((d) => d.close());
+
+/* Une los datos de otro dispositivo (R) con los de acá (S), sin perder nada de ninguno:
+   - lo que el otro borró se borra acá (revirtiendo su efecto en el saldo)
+   - movimientos nuevos del otro se agregan y se aplican a los saldos
+   - cuentas, inversiones, fijos, metas y préstamos nuevos se agregan
+   Si los dos editaron el MISMO elemento, queda la versión de este dispositivo. */
+function mergeRemote(R) {
+  const dead = new Set([...(S.deleted || []), ...(R.deleted || [])]);
+  const remoteDead = new Set(R.deleted || []);
+  for (const t of S.transactions) if (remoteDead.has(t.id)) applyTx(t, -1);
+  S.transactions = S.transactions.filter((t) => !dead.has(t.id));
+  const have = new Set(S.transactions.map((t) => t.id));
+  for (const t of R.transactions || []) {
+    if (have.has(t.id) || dead.has(t.id)) continue;
+    // El mismo fijo registrado solo en los dos dispositivos: queda uno
+    if (t.recurringId && S.transactions.some((x) => x.recurringId === t.recurringId && x.date?.slice(0, 7) === t.date?.slice(0, 7))) { dead.add(t.id); continue; }
+    S.transactions.push(t);
+    applyTx(t, 1); // sólo afecta cuentas que ya existían acá; las cuentas nuevas traen su saldo
+    // Compras/ventas hechas en el otro dispositivo también mueven la cantidad
+    const h = t.tradeId && S.holdings.find((x) => x.id === t.holdingId);
+    const tr = h && (R.holdings || []).find((x) => x.id === h.id)?.trades?.find((x) => x.id === t.tradeId);
+    if (tr && !(h.trades || []).some((x) => x.id === tr.id)) {
+      const q = Number(h.quantity) || 0;
+      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price) / (q + tr.qty); h.quantity = q + tr.qty; }
+      else h.quantity = Math.max(0, q - tr.qty);
+      (h.trades = h.trades || []).push(tr);
+    }
+  }
+  for (const k of ['accounts', 'holdings', 'recurring', 'goals', 'loans']) {
+    S[k] = (S[k] || []).filter((x) => !dead.has(x.id));
+    const ids = new Set(S[k].map((x) => x.id));
+    for (const x of R[k] || []) if (!ids.has(x.id) && !dead.has(x.id)) S[k].push(x);
+  }
+  // Devoluciones de préstamos registradas en el otro dispositivo
+  for (const l of S.loans) {
+    const rl = (R.loans || []).find((x) => x.id === l.id);
+    if (!rl) continue;
+    const key = (p) => `${p.date}|${p.amount}`;
+    const mine = new Set((l.payments || []).map(key));
+    for (const p of rl.payments || []) if (!mine.has(key(p))) (l.payments = l.payments || []).push(p);
+    l.closed = loanRemaining(l) <= 0.005;
+  }
+  for (const r of S.recurring) {
+    const rr = (R.recurring || []).find((x) => x.id === r.id);
+    if (rr?.skip) r.skip = [...new Set([...(r.skip || []), ...rr.skip])];
+  }
+  S.checkins = [...new Set([...(S.checkins || []), ...(R.checkins || [])])];
+  S.budgets = { ...(R.budgets || {}), ...(S.budgets || {}) };
+  S.deleted = [...dead].slice(-5000);
+}
+
 const CloudSync = {
   status: 'off', // off | ok | syncing | error
   error: '',
@@ -2284,50 +2383,62 @@ const CloudSync = {
     if (box) box.innerHTML = cloudSyncHTML();
   },
 
+  // Después de cada cambio: sincroniza (que primero mira si el otro dispositivo subió algo)
   schedule() {
     if (!this.enabled()) return;
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => { this.timer = null; this.push(); }, 1500);
+    this.timer = setTimeout(() => { this.timer = null; this.sync(); }, 1500);
   },
 
-  push() {
-    clearTimeout(this.timer);
-    this.timer = null;
+  push() { clearTimeout(this.timer); this.timer = null; return this.sync(); },
+
+  async upload() {
+    const c = cloudCfg();
+    const content = await encryptState(c.pass);
+    await gh(`/gists/${c.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [CLOUD_FILE]: { content } } }) });
+    setCloudCfg({ ...cloudCfg(), base: S.editedAt || '' });
+  },
+
+  /* Compara las dos versiones contra la última que ambos vieron ("base"):
+     sólo cambió el otro → se trae; sólo cambió este → se sube; cambiaron los dos → se unen y se sube. */
+  sync({ quiet = true } = {}) {
     this.chain = this.chain.then(async () => {
       const c = cloudCfg();
       if (!c?.gistId) return;
+      this.lastPull = Date.now();
       try {
         this.setStatus('syncing');
-        const content = await encryptState(c.pass);
-        await gh(`/gists/${c.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [CLOUD_FILE]: { content } } }) });
+        const remote = await readGist(c.gistId);
+        const base = c.base || '';
+        const localChanged = (S.editedAt || '') > base;
+        const remoteChanged = remote && (remote.editedAt || '') > base;
+        if (!remote) await this.upload();
+        else if (remoteChanged && (!localChanged || !hasData())) {
+          const data = await decryptPayload(remote, c.pass);
+          closeDialogs();
+          S = migrate(data);
+          S.editedAt = remote.editedAt || S.editedAt;
+          setCloudCfg({ ...cloudCfg(), base: remote.editedAt || '' });
+          save(false);
+          render();
+          toast('Datos actualizados desde tu otro dispositivo ✓');
+        } else if (remoteChanged && localChanged) {
+          const data = await decryptPayload(remote, c.pass);
+          closeDialogs();
+          mergeRemote(migrate(data));
+          S.editedAt = new Date().toISOString();
+          snapshot();
+          save(false);
+          await this.upload();
+          render();
+          toast('Uní los cambios de tus dos dispositivos ✓');
+        } else if (localChanged) await this.upload();
         this.lastSync = new Date().toISOString();
         this.setStatus('ok');
-      } catch (e) { this.setStatus('error', e.message); }
+        if (!quiet) toast('Sincronizado ✓');
+      } catch (e) { this.setStatus('error', e.message); if (!quiet) toast(e.message, 5000); }
     });
     return this.chain;
-  },
-
-  // Al abrir la app o volver a ella: trae lo más nuevo o sube lo de acá
-  async sync({ quiet = true } = {}) {
-    const c = cloudCfg();
-    if (!c?.gistId) return;
-    this.lastPull = Date.now();
-    try {
-      this.setStatus('syncing');
-      const remote = await readGist(c.gistId);
-      if (!remote) { await this.push(); return; }
-      if (!hasData() || (remote.editedAt || '') > (S.editedAt || '')) {
-        S = migrate(await decryptPayload(remote, c.pass));
-        save(false);
-        render();
-        if (!quiet || remote.editedAt) toast('Datos actualizados desde tu otro dispositivo ✓');
-      } else if ((remote.editedAt || '') < (S.editedAt || '')) {
-        await this.push();
-        return;
-      }
-      this.lastSync = new Date().toISOString();
-      this.setStatus('ok');
-    } catch (e) { this.setStatus('error', e.message); }
   },
 
   async connect(token, pass) {
@@ -2337,22 +2448,35 @@ const CloudSync = {
       if (id) {
         const remote = await readGist(id, token);
         const data = remote ? await decryptPayload(remote, pass) : null;
-        setCloudCfg({ token, pass, gistId: id });
+        let choice = 'local';
         if (data && isValidData(data)) {
-          let useRemote = !hasData() || (remote.editedAt || '') >= (S.editedAt || '');
+          choice = 'remote';
           if (hasData() && (remote.editedAt || '') !== (S.editedAt || '')) {
-            const ch = await chooseDlg('Ya tenés datos en GitHub',
-              `Encontré tus datos sincronizados (última edición: ${fmtDateTime(remote.editedAt)}). Este dispositivo tiene cambios del ${fmtDateTime(S.editedAt)}.`,
-              [['remote', 'Usar los datos de GitHub (recomendado si es tu segundo dispositivo)'], ['local', 'Reemplazarlos con los de este dispositivo']]);
-            if (!ch) { setCloudCfg(null); this.setStatus('off'); return; }
-            useRemote = ch === 'remote';
+            // La configuración se guarda recién después de elegir, así nada se sincroniza antes
+            choice = await chooseDlg('Ya tenés datos en GitHub',
+              `Encontré tus datos sincronizados (última edición: ${fmtDateTime(remote.editedAt)}). Este dispositivo tiene datos del ${fmtDateTime(S.editedAt)}.`,
+              [['merge', 'Unir los dos (recomendado: no se pierde nada)'], ['remote', 'Usar sólo los de GitHub'], ['local', 'Usar sólo los de este dispositivo']]);
+            if (!choice) { this.setStatus('off'); return; }
           }
-          if (useRemote) { S = migrate(data); save(false); render(); } else await this.push();
-        } else await this.push();
+        }
+        setCloudCfg({ token, pass, gistId: id, base: '' });
+        if (choice === 'remote') {
+          closeDialogs();
+          S = migrate(data);
+          S.editedAt = remote.editedAt || S.editedAt;
+          setCloudCfg({ ...cloudCfg(), base: remote.editedAt || '' });
+          save(false);
+        } else {
+          if (choice === 'merge') { mergeRemote(migrate(data)); snapshot(); }
+          S.editedAt = new Date().toISOString();
+          save(false);
+          await this.upload();
+        }
       } else {
+        S.editedAt = S.editedAt || new Date().toISOString();
         const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'Mis Finanzas — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: await encryptState(pass) } } }) }, token);
         id = g.id;
-        setCloudCfg({ token, pass, gistId: id });
+        setCloudCfg({ token, pass, gistId: id, base: S.editedAt });
       }
       this.lastSync = new Date().toISOString();
       this.setStatus('ok');
@@ -2428,6 +2552,8 @@ const Lock = {
 
   show() {
     if (!this.enabled()) return;
+    closeDialogs(); // un formulario abierto quedaría por encima del bloqueo
+    if (recognizer) try { recognizer.stop(); } catch (e) { /* nada */ }
     this.locked = true;
     this.entry = '';
     document.body.classList.add('locked');
@@ -2757,9 +2883,10 @@ function loanTx(l, kind, amount, accountId, date) {
   const acc = S.accounts.find((a) => a.id === accountId);
   if (!acc) return null;
   const out = (l.dir === 'preste') === (kind === 'start'); // prestar o devolver lo que debo = sale plata
-  const amt = acc.currency === l.currency ? amount : round2(fromUSD(toUSD(amount, l.currency), acc.currency));
+  const amt = convert(amount, l.currency, acc.currency);
+  if (amt == null) { toast(NO_RATE, 4500); return null; }
   const tx = { id: uid(), created: new Date().toISOString(), type: out ? 'gasto' : 'ingreso', date: date || todayISO(), time: nowTime(), accountId: acc.id,
-    amount: amt, category: out ? 'Otros gastos' : 'Otros ingresos', loan: true, loanId: l.id,
+    amount: amt, category: out ? 'Otros gastos' : 'Otros ingresos', loan: true, loanId: l.id, loanKind: kind,
     note: kind === 'start' ? (l.dir === 'preste' ? `Préstamo a ${l.person}` : `Préstamo de ${l.person}`) : (l.dir === 'preste' ? `${l.person} me devolvió` : `Le devolví a ${l.person}`) };
   S.transactions.push(tx);
   applyTx(tx, 1);
@@ -2793,14 +2920,29 @@ function loanForm(l) {
     onSubmit: (v) => {
       if (v.remove) {
         for (const t of S.transactions.filter((x) => x.loanId === l.id)) applyTx(t, -1);
+        for (const t of S.transactions) if (t.loanId === l.id) tombstone(t.id);
         S.transactions = S.transactions.filter((x) => x.loanId !== l.id);
+        tombstone(l.id);
         S.loans = S.loans.filter((x) => x !== l);
         snapshot(); save(); render(); return;
       }
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const person = v.person.replace(/^\w/, (c) => c.toUpperCase());
       if (isNew) createLoan({ ...v, person });
-      else Object.assign(l, { dir: v.dir, person, amount: v.amount, currency: v.currency, date: v.date, dueDate: v.dueDate, note: v.note, closed: loanRemaining({ ...l, amount: v.amount }) <= 0 });
+      else {
+        // Si cambia el monto, la moneda o el tipo, se rehace lo que salió/entró de la cuenta al prestar
+        const moved = v.amount !== Number(l.amount) || v.currency !== l.currency || v.dir !== l.dir;
+        const start = S.transactions.find((t) => t.loanId === l.id && (t.loanKind === 'start' || (!t.loanKind && /^Préstamo/.test(t.note))));
+        if (moved && start) {
+          const acc = S.accounts.find((a) => a.id === start.accountId);
+          if (acc && convert(v.amount, v.currency, acc.currency) == null) return NO_RATE;
+          applyTx(start, -1);
+          S.transactions = S.transactions.filter((t) => t !== start);
+          tombstone(start.id);
+        }
+        Object.assign(l, { dir: v.dir, person, amount: v.amount, currency: v.currency, date: v.date, dueDate: v.dueDate, note: v.note, closed: loanRemaining({ ...l, amount: v.amount }) <= 0 });
+        if (moved && start) loanTx(l, 'start', v.amount, start.accountId, l.date);
+      }
       snapshot(); save(); render();
     },
   });
@@ -2947,22 +3089,25 @@ function tradeForm(h) {
       if (!(v.price > 0)) return 'El precio tiene que ser mayor a 0.';
       const q = Number(h.quantity) || 0;
       if (v.side === 'venta' && v.qty > q + 1e-12) return `Sólo tenés ${fmtNum(q)} ${h.symbol}.`;
+      const acc = v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
+      const amount = acc ? convert(v.qty * v.price, 'USD', acc.currency) : null;
+      if (acc && amount == null) return NO_RATE;
+      const prevAvg = Number(h.avgCost) || 0;
       if (v.side === 'compra') {
-        const newQ = q + v.qty;
+        const newQ = Math.round((q + v.qty) * 1e10) / 1e10;
         h.avgCost = ((q * (Number(h.avgCost) || 0)) + v.qty * v.price) / newQ;
         h.quantity = newQ;
       } else {
-        h.quantity = Math.max(0, q - v.qty);
+        h.quantity = Math.round(Math.max(0, q - v.qty) * 1e10) / 1e10;
       }
       h.trades = h.trades || [];
-      h.trades.push({ date: v.date, side: v.side, qty: v.qty, price: v.price });
-      if (v.accountId) {
-        const acc = S.accounts.find((a) => a.id === v.accountId);
-        const amount = round2(fromUSD(v.qty * v.price, acc.currency));
+      const tradeId = uid();
+      h.trades.push({ id: tradeId, date: v.date, side: v.side, qty: v.qty, price: v.price, prevAvg: prevAvg });
+      if (acc) {
         const tx = {
           id: uid(), created: new Date().toISOString(), date: v.date, type: v.side === 'compra' ? 'gasto' : 'ingreso',
           accountId: acc.id, amount, category: v.side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
-          note: `${v.side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(v.qty)} ${h.symbol}`, investment: true,
+          note: `${v.side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(v.qty)} ${h.symbol}`, investment: true, holdingId: h.id, tradeId,
         };
         S.transactions.push(tx);
         applyTx(tx, 1);
@@ -2971,6 +3116,18 @@ function tradeForm(h) {
       toast(`${v.side === 'compra' ? 'Compra' : 'Venta'} de ${h.symbol} registrada.`);
     },
   });
+}
+
+// Deshace una compra/venta (al borrar su movimiento): devuelve la cantidad y el precio promedio de antes
+function undoTrade(h, tradeId) {
+  const i = (h.trades || []).findIndex((x) => x.id === tradeId);
+  if (i < 0) return;
+  const tr = h.trades[i];
+  const q = Number(h.quantity) || 0;
+  const r10 = (x) => Math.round(x * 1e10) / 1e10; // evita 0,0099999… por la aritmética de decimales
+  if (tr.side === 'compra') { h.quantity = r10(Math.max(0, q - tr.qty)); h.avgCost = tr.prevAvg ?? h.avgCost; }
+  else h.quantity = r10(q + tr.qty);
+  h.trades.splice(i, 1);
 }
 
 function importHoldings(text) {
@@ -3031,7 +3188,7 @@ function accountForm(a) {
         options: [['none', 'Esta cuenta no genera intereses'], ['manual', 'Tasa fija que cargo yo'], ['blend', 'Automático: tasa de Blend, como Meru (USDC)']],
         showIf: (v) => v.type !== 'credito' },
       { name: 'apy', label: 'APY anual (%)', type: 'number', value: a.apySource === 'blend' ? '' : a.apy, placeholder: 'ej. 5', showIf: (v) => v.type !== 'credito' && v.apySource === 'manual' },
-      { name: 'apyShown', label: 'APY que te muestra Meru hoy (%)', type: 'number', value: a.apySource === 'blend' ? effectiveApy(a) : '', placeholder: 'ej. 5,05',
+      { name: 'apyShown', label: 'APY que te muestra Meru hoy (%)', type: 'number', value: a.apySource === 'blend' ? round2(effectiveApy(a)) : '', placeholder: 'ej. 5,05',
         hint: S.settings.blendApy != null ? `Blend paga hoy ${fmtNum(S.settings.blendApy, 2)}%. Con tu dato calculo cuánto se queda Meru y sigo la tasa sola.` : 'Tocá Actualizar para traer la tasa de Blend.',
         showIf: (v) => v.type !== 'credito' && v.apySource === 'blend' },
       { name: 'apyAccrue', label: 'Sumar los intereses al saldo cada día', type: 'checkbox', value: a.apyAccrue, full: true, showIf: (v) => v.type !== 'credito' && v.apySource !== 'none' },
@@ -3116,6 +3273,9 @@ function txForm(type, t) {
         const tx = { id: uid(), created: new Date().toISOString(), ...next };
         S.transactions.push(tx); applyTx(tx, 1);
       } else {
+        // Si un fijo se mueve a otro mes, el mes original no se vuelve a registrar solo
+        const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
+        if (r && next.date.slice(0, 7) !== t.date.slice(0, 7)) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
         applyTx(t, -1); Object.assign(t, next); applyTx(t, 1);
       }
       S.settings.txMonth = next.date.slice(0, 7);
@@ -3139,7 +3299,8 @@ function payCardForm(card) {
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const from = S.accounts.find((a) => a.id === v.from);
-      const paid = round2(fromUSD(toUSD(v.amount, card.currency), from.currency));
+      const paid = convert(v.amount, card.currency, from.currency);
+      if (paid == null) return NO_RATE;
       const tx = { id: uid(), created: new Date().toISOString(), type: 'transferencia', date: v.date || todayISO(), accountId: from.id, toAccountId: card.id,
         amount: paid, toAmount: from.currency !== card.currency ? v.amount : '', category: '', note: `Pago ${card.name}` };
       S.transactions.push(tx); applyTx(tx, 1);
@@ -3513,7 +3674,7 @@ const ACTIONS = {
   delHolding: async (id) => {
     const h = byId(S.holdings, id);
     if (await confirmDlg('Eliminar activo', `¿Eliminar <b>${esc(h.symbol)}</b> de tu portafolio?`)) {
-      S.holdings = S.holdings.filter((x) => x !== h); snapshot(); save(); render();
+      S.holdings = S.holdings.filter((x) => x !== h); tombstone(h.id); snapshot(); save(); render();
     }
   },
   addAccount: () => accountForm(),
@@ -3524,15 +3685,24 @@ const ACTIONS = {
     const a = byId(S.accounts, id);
     const n = S.transactions.filter((t) => t.accountId === id || t.toAccountId === id).length;
     if (await confirmDlg('Eliminar cuenta', `¿Eliminar <b>${esc(a.name)}</b>?${n ? ` Tiene ${n} movimiento(s), que quedarán como “cuenta eliminada”.` : ''}`)) {
-      S.accounts = S.accounts.filter((x) => x !== a); snapshot(); save(); render();
+      // Sus movimientos guardan la moneda, así siguen sumando bien en los análisis
+      for (const t of S.transactions) if (t.accountId === id && !t.currency) t.currency = a.currency;
+      S.accounts = S.accounts.filter((x) => x !== a); tombstone(a.id); snapshot(); save(); render();
     }
   },
   addTx: (type) => txForm(type),
   editTx: (id) => txForm(null, byId(S.transactions, id)),
   delTx: async (id) => {
     const t = byId(S.transactions, id);
-    if (await confirmDlg('Eliminar movimiento', 'Se va a revertir su efecto en el saldo de la cuenta.')) {
-      applyTx(t, -1); S.transactions = S.transactions.filter((x) => x !== t); snapshot(); save(); render();
+    if (t.loanId) return toast('Este movimiento es de un préstamo: corregilo desde Cuentas → Préstamos.', 4500);
+    const h = t.holdingId && S.holdings.find((x) => x.id === t.holdingId);
+    if (t.investment && !h) return toast('Es una compra/venta de inversión: corregí la cantidad desde Inversiones → Editar.', 4500);
+    if (await confirmDlg('Eliminar movimiento', `Se va a revertir su efecto en el saldo de la cuenta${h ? ` y en tu cantidad de ${esc(h.symbol)}` : ''}.`)) {
+      if (h) undoTrade(h, t.tradeId);
+      // Un fijo borrado no se vuelve a registrar solo ese mes
+      const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
+      if (r) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
+      applyTx(t, -1); S.transactions = S.transactions.filter((x) => x !== t); tombstone(t.id); snapshot(); save(); render();
     }
   },
   saveKey: () => { S.settings.finnhubKey = $('#setFinnhub').value.trim(); save(); toast('Clave guardada.'); refreshAll(); },
@@ -3604,6 +3774,8 @@ function bindEvents() {
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('#moreMenu')) $('#moreMenu').hidden = true; });
   $('#fabBtn').addEventListener('click', () => openChat());
+  // iOS ignora user-scalable=no en Safari: se bloquea el pellizco a mano
+  ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
   $$('.seg button').forEach((b) => b.addEventListener('click', () => { S.settings.displayCurrency = b.dataset.cur; save(false); render(); }));
   $('#privacyBtn').addEventListener('click', () => { S.settings.privacy = !S.settings.privacy; save(false); render(); });
   $('#refreshBtn').addEventListener('click', () => refreshAll());
@@ -3667,7 +3839,8 @@ function bindEvents() {
     if (Lock.enabled() && !Lock.locked && Date.now() - Lock.hiddenAt > LOCK_AFTER_MS) Lock.show();
     else if (!Lock.locked) document.body.classList.remove('veiled');
     // Al volver: traer lo que hayas cargado en el otro dispositivo
-    if (CloudSync.enabled() && Date.now() - CloudSync.lastPull > 30000) CloudSync.sync().then(() => { processRecurring(); });
+    // (no mientras tengas un formulario abierto: se sincroniza al cerrarlo, con el próximo cambio)
+    if (CloudSync.enabled() && !document.querySelector('dialog[open]') && Date.now() - CloudSync.lastPull > 30000) CloudSync.sync().then(() => { processRecurring(); });
   });
 }
 
@@ -3713,7 +3886,7 @@ function welcome() {
   if (accrueInterest()) save(false);
   processRecurring();
   render();
-  if (!existed && !FileSync.handle && !CloudSync.enabled()) { save(false); Lock.then(welcome); return; }
+  if (!existed && !FileSync.handle && !CloudSync.enabled()) { save(false); Lock.then(welcome); refreshAll({ silent: true }); return; }
   maybeMonthClose();
   const last = S.settings.lastRefresh ? Date.parse(S.settings.lastRefresh) : 0;
   if (Date.now() - last > 10 * 60 * 1000) refreshAll({ silent: true });
