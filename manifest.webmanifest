@@ -1,6 +1,6 @@
 {
-  "name": "Mis Finanzas",
-  "short_name": "Finanzas",
+  "name": "MyFinance",
+  "short_name": "MyFinance",
   "description": "Finanzas personales e inversiones",
   "lang": "es",
   "start_url": "./",

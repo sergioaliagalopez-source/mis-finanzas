@@ -1,7 +1,7 @@
 'use strict';
 
 /* ============================================================
-   Mis Finanzas — finanzas personales e inversiones
+   MyFinance — finanzas personales e inversiones
    Todo se guarda en este navegador (localStorage).
    Usá Ajustes > Respaldo para exportar una copia.
    ============================================================ */
@@ -1160,7 +1160,7 @@ function viewAjustes() {
         <li>Abrí la app <b>Atajos</b> → pestaña <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
         <li>Elegí <b>21:00</b>, <b>Diariamente</b> y <b>Ejecutar inmediatamente</b>.</li>
         <li>Agregá la acción <b>Mostrar notificación</b> con el texto "¿Registraste tus gastos de hoy?".</li></ol>
-      <p class="small" style="color:var(--text-2);margin-bottom:0">Para abrir la app con la voz: <i>"Oye Siri, abrir Finanzas"</i>, y tocá el micrófono.</p>
+      <p class="small" style="color:var(--text-2);margin-bottom:0">Para abrir la app con la voz: <i>"Oye Siri, abrir MyFinance"</i>, y tocá el micrófono.</p>
     </section>
     <section class="card">
       <h2 style="margin-bottom:14px">Monedas</h2>
@@ -2474,7 +2474,7 @@ const CloudSync = {
         }
       } else {
         S.editedAt = S.editedAt || new Date().toISOString();
-        const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'Mis Finanzas — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: await encryptState(pass) } } }) }, token);
+        const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'MyFinance — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: await encryptState(pass) } } }) }, token);
         id = g.id;
         setCloudCfg({ token, pass, gistId: id, base: S.editedAt });
       }
@@ -2561,7 +2561,7 @@ const Lock = {
     const c = lockCfg();
     el.innerHTML = `<div class="lock-box">
       <img class="lock-logo" src="icons/logo-96.png" alt="">
-      <h2>Mis Finanzas</h2><p class="muted">Ingresá tu PIN</p>
+      <h2>MyFinance</h2><p class="muted">Ingresá tu PIN</p>
       <div class="pin-dots">${Array.from({ length: c.pinLen }, () => '<i></i>').join('')}</div>
       <div class="keypad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-k="${n}">${n}</button>`).join('')}
         <button data-k="bio" ${c.credId && bioAvailable() ? '' : 'style="visibility:hidden"'} aria-label="Face ID">${icon('faceid', 26)}</button>
@@ -2667,8 +2667,8 @@ async function enableBio() {
   try {
     const cred = await navigator.credentials.create({ publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
-      rp: { name: 'Mis Finanzas', id: location.hostname },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'mis-finanzas', displayName: 'Mis Finanzas' },
+      rp: { name: 'MyFinance', id: location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'mis-finanzas', displayName: 'MyFinance' },
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
       authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
       timeout: 60000,
@@ -3001,7 +3001,7 @@ function render() {
   const v = VIEWS[S.settings.view] ? S.settings.view : 'resumen';
   $$('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   $('#viewTitle').textContent = VIEWS[v];
-  document.title = `${VIEWS[v]} · Mis Finanzas`;
+  document.title = `${VIEWS[v]} · MyFinance`;
   const content = $('#content');
   content.innerHTML = fileBannerHTML() + { resumen: viewResumen, inversiones: viewInversiones, cuentas: viewCuentas, movimientos: viewMovimientos, metas: viewMetas, analisis: viewAnalisis, ajustes: viewAjustes }[v]();
   drawCharts();
@@ -3342,7 +3342,7 @@ function syncPush() {
   const file = new File([json], SYNC_FILE, { type: 'application/json' });
   const done = () => { render(); toast('Listo. Si OneDrive preguntó, elegí "Reemplazar".', 4000); };
   if (navigator.canShare?.({ files: [file] })) {
-    navigator.share({ files: [file], title: 'Mis Finanzas' }).then(done).catch((e) => {
+    navigator.share({ files: [file], title: 'MyFinance' }).then(done).catch((e) => {
       if (e.name !== 'AbortError') { downloadJSON(SYNC_FILE, json); done(); }
     });
   } else { downloadJSON(SYNC_FILE, json); done(); }
@@ -3359,8 +3359,8 @@ function pullFromFile(file) {
   const r = new FileReader();
   r.onload = () => {
     let data;
-    try { data = JSON.parse(r.result); } catch (e) { return toast('Ese archivo no es de Mis Finanzas.'); }
-    if (!isValidData(data)) return toast('Ese archivo no es de Mis Finanzas.');
+    try { data = JSON.parse(r.result); } catch (e) { return toast('Ese archivo no es de MyFinance.'); }
+    if (!isValidData(data)) return toast('Ese archivo no es de MyFinance.');
     const fileTime = data.editedAt || '', localTime = S.editedAt || '';
     if (!hasData() || fileTime > localTime) {
       S = migrate(data);
@@ -3430,7 +3430,7 @@ function restore(file) {
       S = migrate(data);
       save(); render();
       toast('Respaldo restaurado.');
-    } catch (e) { toast('El archivo no es un respaldo válido de Mis Finanzas.'); }
+    } catch (e) { toast('El archivo no es un respaldo válido de MyFinance.'); }
   };
   r.readAsText(file);
 }
@@ -3462,7 +3462,7 @@ const idb = {
   del: (k) => idb.run('readwrite', (s) => s.delete(k)),
 };
 
-const FILE_TYPES = [{ description: 'Datos de Mis Finanzas', accept: { 'application/json': ['.json'] } }];
+const FILE_TYPES = [{ description: 'Datos de MyFinance', accept: { 'application/json': ['.json'] } }];
 const isValidData = (d) => !!d && Array.isArray(d.accounts) && Array.isArray(d.holdings);
 const hasData = () => S.accounts.some((a) => Number(a.balance)) || S.holdings.some((h) => Number(h.quantity)) || S.transactions.length > 0;
 
@@ -3550,7 +3550,7 @@ const FileSync = {
     try { data = await readHandle(h); } catch (e) { /* archivo nuevo */ }
     if (isValidData(data) && hasData()) {
       const c = await chooseDlg('Ese archivo ya tiene datos',
-        `<b>${esc(h.name)}</b> ya tiene datos de Mis Finanzas (última edición: ${fmtDateTime(data.editedAt)}). ¿Qué querés hacer?`,
+        `<b>${esc(h.name)}</b> ya tiene datos de MyFinance (última edición: ${fmtDateTime(data.editedAt)}). ¿Qué querés hacer?`,
         [['file', 'Usar los datos del archivo'], ['local', 'Reemplazar el archivo con los datos de este navegador']]);
       if (!c) return;
       await this.attach(h);
@@ -3571,7 +3571,7 @@ const FileSync = {
     try {
       const [h] = await window.showOpenFilePicker({ types: FILE_TYPES, startIn: 'documents' });
       const data = await readHandle(h);
-      if (!isValidData(data)) return toast('Ese archivo no es de Mis Finanzas.');
+      if (!isValidData(data)) return toast('Ese archivo no es de MyFinance.');
       if (hasData() && !(await confirmDlg('Abrir archivo', `Se van a reemplazar los datos de este navegador por los de <b>${esc(h.name)}</b>.`, 'Abrir'))) return;
       if ((await h.requestPermission({ mode: 'readwrite' })) !== 'granted') return toast('Sin permiso para guardar en ese archivo.');
       S = migrate(data);
@@ -3846,12 +3846,12 @@ function bindEvents() {
 
 function welcome() {
   openForm({
-    title: '¡Bienvenido a Mis Finanzas!',
+    title: '¡Bienvenido a MyFinance!',
     fields: [
       { type: 'html', html: `<p style="margin:0;color:var(--text-2)">Ya cargué tu portafolio (<b>VOO, PAXG, BTC, ETH, NVDA, GOOGL</b>), efectivo, Meru y 3 tarjetas de ejemplo. Sólo falta que pongas cantidades y saldos.</p>` },
       { name: 'localCurrency', label: '¿Cuál es tu moneda local?', type: 'select', value: 'BOB', full: true,
         options: CURRENCIES.filter(([c]) => !USD_PEGGED.has(c)).map(([c, n]) => [c, `${c} — ${n}`]) },
-      { type: 'html', html: `<div class="small muted">¿Ya usás Mis Finanzas en otro dispositivo?
+      { type: 'html', html: `<div class="small muted">¿Ya usás MyFinance en otro dispositivo?
         <button type="button" class="btn sm" id="welcomeOpen" style="margin-left:6px">${FileSync.supported ? 'Abrir mi archivo' : 'Traer mis datos de OneDrive'}</button></div>` },
     ],
     submitLabel: 'Empezar',
