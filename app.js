@@ -47,6 +47,13 @@ const ICONS = {
   repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
   check: '<path d="M4 12.5 9.5 18 20 6.5"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+  faceid: '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 9.5v1M15 9.5v1M12 9.5v3.5h-1"/><path d="M9 15.5a4 4 0 0 0 6 0"/>',
+  back: '<path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1z"/><path d="m15 9-4 6M11 9l4 6"/>',
+  flame: '<path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5 0 2 1 3 2 3-1-3 0-6.5 1-8.5z"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  handshake: '<path d="m11 17 2 2a1.4 1.4 0 0 0 2-2"/><path d="m14 14 2.5 2.5a1.4 1.4 0 0 0 2-2l-3.9-3.9a2.8 2.8 0 0 0-4 0l-.9.9a1.4 1.4 0 0 1-2-2l2.8-2.8a5 5 0 0 1 6 -.8l.5.3a3 3 0 0 0 2 .4H21"/><path d="m21 15-1 1"/><path d="M3 7h2l6 6"/><path d="m3 15 6 6"/>',
+  alert: '<path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
 };
 const icon = (name, size = 20) => `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 const paintIcons = (root = document) => $$('[data-icon]', root).forEach((el) => { el.innerHTML = icon(el.dataset.icon); });
@@ -146,6 +153,9 @@ function defaultState() {
     ],
     recurring: [], // ingresos y gastos fijos: { id, type, name, amount, currency, accountId, category, day|null, startMonth }
     goals: [],     // metas: { id, name, target, currency, date, source }
+    loans: [],     // préstamos: { id, dir: preste|debo, person, amount, currency, date, dueDate, payments }
+    checkins: [],  // días marcados como "hoy no gasté"
+    rateLog: [],   // tipo de cambio de cada día, para ver la devaluación
     holdings: [
       h('VOO', 'Vanguard S&P 500 ETF', 'etf', ''),
       h('PAXG', 'PAX Gold (oro tokenizado)', 'oro', 'Binance', 'pax-gold'),
@@ -166,7 +176,7 @@ function migrate(s) {
   const d = defaultState();
   s.settings = { ...d.settings, ...(s.settings || {}) };
   s.settings.rates = { USD: 1, ...(s.settings.rates || {}) };
-  for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'goals']) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'goals', 'loans', 'checkins', 'rateLog']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
@@ -220,6 +230,7 @@ function save(edit = true) {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
   catch (e) { toast('⚠ No se pudo guardar en el navegador. Exportá un respaldo en Ajustes.'); }
   FileSync.schedule();
+  if (edit) CloudSync.schedule();
 }
 
 /* ---------------- Monedas ---------------- */
@@ -295,8 +306,18 @@ function totals() {
     if (Number(h.avgCost) > 0) { cost += holdingCost(h); invWithCost += v; }
     alloc[h.assetType] = (alloc[h.assetType] || 0) + v;
   }
-  return { liquid, debt, inv, cost, invWithCost, netWorth: liquid + inv - debt, alloc };
+  // Préstamos: lo que te deben suma, lo que debés resta
+  let lent = 0, owed = 0;
+  for (const l of S.loans || []) {
+    const rem = loanRemaining(l);
+    if (l.closed || rem <= 0) continue;
+    if (l.dir === 'preste') lent += toUSD(rem, l.currency); else owed += toUSD(rem, l.currency);
+  }
+  return { liquid, debt, inv, cost, invWithCost, lent, owed, netWorth: liquid + inv - debt + lent - owed, alloc };
 }
+
+// Compras/ventas de inversiones y préstamos mueven plata pero no son gasto ni ingreso
+const nonFlow = (t) => !!(t.investment || t.loan);
 
 function txUSD(t) {
   const acc = S.accounts.find((a) => a.id === t.accountId);
@@ -307,7 +328,7 @@ function monthStats(month, txs = S.transactions) {
   let income = 0, expense = 0;
   const byCat = {}, incomeCats = {};
   for (const t of txs) {
-    if (!t.date?.startsWith(month) || t.investment || t.type === 'transferencia') continue;
+    if (!t.date?.startsWith(month) || nonFlow(t) || t.type === 'transferencia') continue;
     const usd = txUSD(t);
     if (t.type === 'ingreso') { income += usd; incomeCats[t.category || 'Otros ingresos'] = (incomeCats[t.category || 'Otros ingresos'] || 0) + usd; }
     if (t.type === 'gasto') { expense += usd; byCat[t.category || 'Otros gastos'] = (byCat[t.category || 'Otros gastos'] || 0) + usd; }
@@ -438,6 +459,7 @@ async function refreshAll({ silent = false } = {}) {
     } catch (e) { notes.push('tasa de Meru/Blend no disponible'); }
   }
   accrueInterest();
+  logRate();
 
   S.settings.lastRefresh = now;
   snapshot();
@@ -660,28 +682,28 @@ function viewResumen() {
   const delta = prev ? t.netWorth - prev.netWorth : null;
   const gp = t.invWithCost - t.cost;
   const missing = missingRates();
-  const stale = FileSync.status === 'none' && hasData();
+  const stale = !CloudSync.enabled() && (FileSync.status === 'none' || FileSync.status === 'unsupported') && hasData();
   const syncDays = S.settings.lastSync ? (Date.now() - Date.parse(S.settings.lastSync)) / 864e5 : Infinity;
-  const phoneStale = FileSync.status === 'unsupported' && hasData() && syncDays > 3;
+  const phoneStale = false; // reemplazado por el aviso de sincronización automática
 
   const holdings = [...S.holdings].sort((a, b) => holdingValue(b) - holdingValue(a));
   const accounts = [...S.accounts].sort((a, b) => Math.abs(toUSD(b.balance, b.currency)) - Math.abs(toUSD(a.balance, a.currency)));
 
   return `
   ${missing.length ? `<div class="banner">Falta el tipo de cambio de ${missing.join(', ')}. Tocá <b>Actualizar</b> o cargalo en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>.</div>` : ''}
-  ${stale ? `<div class="banner">Tus datos viven sólo en este navegador. <a href="#" data-action="fileLink">Activá el guardado automático en OneDrive</a> para no perderlos.</div>` : ''}
+  ${stale ? `<div class="banner">Tus datos viven sólo en este dispositivo. <a href="#" data-action="go" data-id="ajustes" data-anchor="respaldo">Activá la sincronización automática</a> para no perderlos y tenerlos en el iPhone y la PC.</div>` : ''}
   ${phoneStale ? `<div class="banner">${S.settings.lastSync ? `Hace ${Math.floor(syncDays)} días que no guardás en OneDrive.` : 'Todavía no guardaste tus datos en OneDrive.'} <a href="#" data-action="syncPush">Guardar ahora</a></div>` : ''}
+  ${dueSoonBanner()}
   <section class="card hero">
     <div class="label">Patrimonio neto</div>
     <div class="hero-value money">${fmtMoney(t.netWorth)}</div>
     <div class="sub"><span class="money">≈ ${fmtMoney(t.netWorth, { cur: other })}</span>
       ${delta != null ? ` · <span class="${cls(delta)} money">${arrow(delta)}${fmtMoney(delta, { sign: true })}</span> desde el ${fmtDate(prev.date)}` : ''}</div>
+    ${t.lent || t.owed ? `<div class="sub small">Incluye préstamos: te deben <span class="money">${fmtMoney(t.lent)}</span> · debés <span class="money">${fmtMoney(t.owed)}</span></div>` : ''}
     <button class="btn primary hero-cta" data-action="openChat">${icon('mic', 16)} Registrar gasto o ingreso</button>
   </section>
-  ${pendingRecurring().length ? `<section class="card pending-card"><div class="card-head" style="margin-bottom:8px"><h2>Pendientes de ${monthLabel(currentMonth(), 'long')}</h2></div>
-    <div class="list">${pendingRecurring().map((r) => `<div class="list-row"><div class="grow"><div class="name">${esc(r.name)}</div><div class="meta">${r.type === 'ingreso' ? 'Ingreso fijo' : 'Gasto fijo'} · sin día fijo</div></div>
-      <span class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}</span>
-      <button class="btn sm primary" data-action="payRecurring" data-id="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button></div>`).join('')}</div></section>` : ''}
+  ${habitHTML()}
+  ${upcomingHTML()}
   ${S.goals.length ? (() => { const P = planNumbers(); return `<section class="card"><div class="card-head" style="margin-bottom:8px"><h2>Tus metas</h2><a href="#" data-action="go" data-id="metas" class="small">Ver plan →</a></div>
     ${S.goals.map((g) => { const M = goalMath(g, P); return `<div class="goal-mini"><div class="budget-top"><b>${esc(g.name)}</b><span class="spacer"></span><span class="money small">${fmtMoney(M.current)} de ${fmtIn(g.target, g.currency)}</span><b class="small">${fmtNum(M.pct, 0)}%</b></div>
       <div class="meter"><div style="width:${M.pct}%"></div></div>
@@ -692,6 +714,7 @@ function viewResumen() {
     ${tile('Deuda de tarjetas', fmtMoney(t.debt), `${S.accounts.filter((a) => a.type === 'credito').length} tarjeta(s) de crédito`)}
     ${tile(`Gastos de ${monthName}`, fmtMoney(ms.expense), `Ingresos: <span class="money">${fmtMoney(ms.income)}</span>`)}
   </div>
+  ${fxCardHTML()}
   <div class="grid-2">
     <section class="card"><div class="card-head"><h2>Distribución de tu patrimonio</h2></div>${allocChart(t)}</section>
     <section class="card"><div class="card-head"><h2>Evolución del patrimonio</h2><span class="muted small">${dispCur()}</span></div><div id="nwChart" class="line-chart"></div></section>
@@ -803,7 +826,8 @@ function viewCuentas() {
   <div class="toolbar"><span class="muted small">Por seguridad guardá sólo los últimos 4 dígitos de cada tarjeta.</span><span class="spacer"></span>
     <button class="btn primary" data-action="addAccount">+ Agregar cuenta o tarjeta</button></div>
   ${groups.map(([k, info, list]) => `<div class="acc-group"><h3>${info.label}</h3><div class="acc-grid">${list.map(card).join('')}</div></div>`).join('')
-    || '<div class="empty">No tenés cuentas cargadas.</div>'}`;
+    || '<div class="empty">No tenés cuentas cargadas.</div>'}
+  ${loansHTML()}`;
 }
 
 /* ---------------- Ingresos y gastos fijos ----------------
@@ -1025,6 +1049,7 @@ function viewMovimientos() {
     <button class="btn" data-action="addTx" data-id="ingreso">+ Ingreso</button>
     <button class="btn" data-action="addTx" data-id="transferencia">${icon('swap', 16)} Transferencia</button>
     <button class="btn" data-action="addTx" data-id="gasto">+ Gasto</button>
+    ${month < currentMonth() ? `<button class="btn" data-action="monthClose" data-id="${month}">${icon('calendar', 16)} Cierre del mes</button>` : ''}
     <button class="btn primary" data-action="openChat">${icon('mic', 16)} Registrar hablando</button>
   </div>
   <div class="tiles">
@@ -1076,7 +1101,10 @@ function viewAjustes() {
   return `
   <div class="settings-grid">
     <section class="card" id="respaldo">
-      <h2 style="margin-bottom:8px">${FileSync.supported ? 'Guardado automático en OneDrive' : 'Sincronizar con OneDrive'}</h2>
+      <h2 style="margin-bottom:8px">${icon('sync', 18)} Sincronización automática (iPhone + PC)</h2>
+      <div id="cloudSync">${cloudSyncHTML()}</div>
+      <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
+      <h2 style="margin-bottom:8px">${FileSync.supported ? 'Guardado automático en OneDrive' : 'Sincronizar con OneDrive (manual)'}</h2>
       <div id="fileSync">${fileSyncHTML()}</div>
       <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
       <h2 style="margin-bottom:8px">Respaldo manual</h2>
@@ -1089,6 +1117,18 @@ function viewAjustes() {
       <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
       <h2 style="margin-bottom:8px">Zona peligrosa</h2>
       <button class="btn danger" data-action="resetAll">Borrar todos los datos</button>
+    </section>
+    <section class="card" id="bloqueo">
+      <h2 style="margin-bottom:8px">${icon('lock', 18)} Bloqueo con Face ID o PIN</h2>
+      ${lockSettingsHTML()}
+      <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
+      <h2 style="margin-bottom:8px">${icon('flame', 18)} Recordatorio diario (gratis, con el iPhone)</h2>
+      <p class="small" style="color:var(--text-2);margin-top:0">La app no puede mandarte notificaciones sin un servidor pago, pero tu iPhone sí, gratis:</p>
+      <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0">
+        <li>Abrí la app <b>Atajos</b> → pestaña <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
+        <li>Elegí <b>21:00</b>, <b>Diariamente</b> y <b>Ejecutar inmediatamente</b>.</li>
+        <li>Agregá la acción <b>Mostrar notificación</b> con el texto "¿Registraste tus gastos de hoy?".</li></ol>
+      <p class="small" style="color:var(--text-2);margin-bottom:0">Para abrir la app con la voz: <i>"Oye Siri, abrir Finanzas"</i>, y tocá el micrófono.</p>
     </section>
     <section class="card">
       <h2 style="margin-bottom:14px">Monedas</h2>
@@ -1121,20 +1161,6 @@ function viewAjustes() {
         <input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Pegá tu API key" autocomplete="off">
         <span class="hint">Se guarda sólo en este navegador.</span></div>
       <button class="btn primary" data-action="saveKey">Guardar clave</button>
-    </section>
-
-    <section class="card" id="claude">
-      <h2 style="margin-bottom:8px">Registrar con Claude (opcional)</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">Sin esto, la app igual entiende frases como <i>"almuerzo 25 bs y taxi 15"</i> por su cuenta, sin internet.
-      Con tu clave de la API de Claude entiende cualquier forma de decirlo (varios gastos juntos, "anoche", "lo de siempre"…).</p>
-      <ol class="small" style="color:var(--text-2);padding-left:18px">
-        <li>Entrá a <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>, cargá saldo y creá una clave.</li>
-        <li>Pegala acá. Se guarda <b>sólo en este dispositivo</b> (no viaja a OneDrive ni a GitHub).</li></ol>
-      <div class="form-row"><label for="setAiKey">Clave de la API de Claude</label>
-        <input type="password" id="setAiKey" value="${esc(getAiKey())}" placeholder="sk-ant-…" autocomplete="off">
-        <span class="hint">Usa el modelo Claude Opus 5.5 (con respaldo automático si no puede responder). Cuesta alrededor de US$ 0,01 por mensaje.</span></div>
-      <div class="toolbar"><button class="btn primary" data-action="saveAiKey">${getAiKey() ? 'Actualizar clave' : 'Guardar clave'}</button>
-        ${getAiKey() ? `<span class="status good">${icon('check', 14)} Conectado</span>` : ''}</div>
     </section>
 
     <section class="card" id="importar">
@@ -1195,7 +1221,7 @@ function analyze(n, txs) {
   const expense = per.reduce((s, p) => s + p.expense, 0) / k;
   const small = { count: 0, total: 0 };
   for (const t of txs) {
-    if (t.type !== 'gasto' || t.investment || !months.some((m) => t.date?.startsWith(m))) continue;
+    if (t.type !== 'gasto' || nonFlow(t) || !months.some((m) => t.date?.startsWith(m))) continue;
     const usd = txUSD(t);
     if (usd > 0 && usd <= 10) { small.count++; small.total += usd; }
   }
@@ -1443,7 +1469,7 @@ function rule503020(a) {
 
 function viewAnalisis() {
   const n = Number(S.settings.anPeriod) || 3;
-  const hasReal = S.transactions.some((t) => !t.investment && t.type !== 'transferencia');
+  const hasReal = S.transactions.some((t) => !nonFlow(t) && t.type !== 'transferencia');
   if (!analysisDemo && !hasReal) {
     lastAnalysis = null;
     return `<section class="card" style="text-align:center;padding:36px 20px">
@@ -1463,6 +1489,8 @@ function viewAnalisis() {
   <div class="toolbar">
     <select id="anPeriod">${[[1, 'Este mes'], [3, 'Últimos 3 meses'], [6, 'Últimos 6 meses'], [12, 'Últimos 12 meses']].map(([v, l]) => `<option value="${v}" ${v === n ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <span class="muted small">Promedios mensuales de ${periodTxt}${a.k < n ? ` (${a.k} mes${a.k > 1 ? 'es' : ''} con datos)` : ''}.</span>
+    <span class="spacer"></span>
+    ${analysisDemo ? '' : `<button class="btn sm" data-action="monthClose" data-id="${addMonths(currentMonth(), -1)}">${icon('calendar', 14)} Cierre de ${monthLabel(addMonths(currentMonth(), -1), 'long')}</button>`}
   </div>
   <div class="tiles">
     ${tile('Ingreso promedio', fmtMoney(a.income), 'por mes')}
@@ -1565,7 +1593,7 @@ function goalCurrent(g) {
   return a ? toUSD(a.balance, a.currency) : 0;
 }
 
-const isVariable = (t) => t.type === 'gasto' && !t.investment && !t.recurringId;
+const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId;
 
 // Números base del plan, todo en USD por mes
 function planNumbers() {
@@ -1578,8 +1606,8 @@ function planNumbers() {
     const txs = S.transactions.filter((t) => t.date?.startsWith(m));
     return {
       variable: txs.filter(isVariable).reduce((s, t) => s + txUSD(t), 0),
-      extra: txs.filter((t) => t.type === 'ingreso' && !t.investment && !t.recurringId).reduce((s, t) => s + txUSD(t), 0),
-      any: txs.some((t) => !t.investment),
+      extra: txs.filter((t) => t.type === 'ingreso' && !nonFlow(t) && !t.recurringId).reduce((s, t) => s + txUSD(t), 0),
+      any: txs.some((t) => !nonFlow(t)),
     };
   }).filter((p) => p.any);
   let avgVariable, avgExtra;
@@ -1784,11 +1812,7 @@ function goalForm(g) {
 
 /* ---------------- Registrar hablando o escribiendo ----------------
    Entiende frases como "almuerzo 25 bs, taxi 15 con efectivo y ayer me pagaron 500 del sueldo".
-   Sin conexión usa un intérprete propio; si cargaste tu clave de Claude, lo interpreta Claude. */
-
-const AI_KEY_STORE = 'misFinanzas.aiKey'; // fuera de los datos sincronizados: nunca viaja a OneDrive
-const getAiKey = () => { try { return localStorage.getItem(AI_KEY_STORE) || ''; } catch (e) { return ''; } };
-const setAiKey = (k) => { try { k ? localStorage.setItem(AI_KEY_STORE, k) : localStorage.removeItem(AI_KEY_STORE); } catch (e) { /* nada */ } };
+   Todo se interpreta en el teléfono, gratis y sin conexión (no usa ninguna API paga). */
 
 const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -1946,6 +1970,18 @@ function localParse(text) {
     note = note.replace(/\s+/g, ' ').trim();
     note = note ? note[0].toUpperCase() + note.slice(1) : category;
     const d = date || ctxDate || todayISO();
+    // Préstamos: "le presté 50 a Juan", "Juan me prestó 100", "le debo 20 a Ana"
+    const notName = /^(la|las|el|los|mi|un|una|me|le|que|por|con)$/;
+    const pick = (...rx) => { for (const r of rx) { const m = raw.match(r); if (m && !notName.test(m[1])) return m[1]; } return null; };
+    const lentTo = pick(/\bpreste\b.*?\ba\s+([a-z]+)/, /\ble\s+preste\b\s+([a-z]+)/);
+    const borrowedFrom = lentTo ? null : pick(/\b([a-z]+)\s+me\s+presto\b/, /\bme\s+presto\s+([a-z]+)/, /\ble\s+debo\b.*?\ba\s+([a-z]+)/);
+    if (lentTo || borrowedFrom) {
+      const person = (lentTo || borrowedFrom).replace(/^\w/, (c) => c.toUpperCase());
+      const dir = lentTo ? 'preste' : 'debo';
+      out.push({ type: dir === 'preste' ? 'gasto' : 'ingreso', amount, currency, category: dir === 'preste' ? 'Otros gastos' : 'Otros ingresos', accountId: acc?.id || '',
+        date: d, time: time || nowTime(), note: dir === 'preste' ? `Préstamo a ${person}` : `Préstamo de ${person}`, loan: { dir, person } });
+      continue;
+    }
     out.push({ type: isIncome ? 'ingreso' : 'gasto', amount, currency, category, accountId: acc?.id || '', date: d, time: time || (d === todayISO() ? nowTime() : '12:00'), note: note.slice(0, 60) });
   }
   return out;
@@ -1967,84 +2003,6 @@ function parseMovementsJSON(text) {
     const category = cats.find((c) => norm(c) === norm(r.categoria || r.category || '')) || (type === 'ingreso' ? 'Otros ingresos' : 'Otros gastos');
     return { type, amount: parseNum(r.monto ?? r.amount), currency, category, accountId: acc?.id || '', date: r.fecha || r.date || todayISO(), time: r.hora || r.time || nowTime(), note: r.detalle || r.note || category };
   }).filter((r) => r.amount > 0);
-}
-
-let anthropicSDK = null;
-async function claudeParse(text) {
-  // SDK oficial de Anthropic, cargado sólo cuando hace falta (la app sigue funcionando sin conexión)
-  if (!anthropicSDK) anthropicSDK = await import('https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.135.0/+esm');
-  const Anthropic = anthropicSDK.default;
-  const client = new Anthropic({ apiKey: getAiKey(), dangerouslyAllowBrowser: true });
-  const accIds = S.accounts.map((a) => a.id);
-  const schema = {
-    type: 'object',
-    properties: {
-      movimientos: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            tipo: { type: 'string', enum: ['gasto', 'ingreso'] },
-            monto: { type: 'number', description: 'Monto positivo' },
-            moneda: { type: 'string', enum: CURRENCIES.map(([c]) => c) },
-            categoria: { type: 'string', enum: [...CAT_GASTO, ...CAT_INGRESO] },
-            cuenta: { type: 'string', enum: accIds },
-            fecha: { type: 'string', description: 'YYYY-MM-DD' },
-            hora: { type: 'string', description: 'HH:MM, 24 horas' },
-            detalle: { type: 'string', description: 'Descripción corta en español' },
-          },
-          required: ['tipo', 'monto', 'moneda', 'categoria', 'cuenta', 'fecha', 'hora', 'detalle'],
-          additionalProperties: false,
-        },
-      },
-    },
-    required: ['movimientos'],
-    additionalProperties: false,
-  };
-  const system = `Registrás los gastos e ingresos personales del usuario de la app "Mis Finanzas" (vive en Bolivia, habla español rioplatense/boliviano y muchas veces dicta por voz, así que puede haber errores de transcripción).
-Convertí su mensaje en una lista de movimientos:
-- "Bs", "bolivianos" o "pesos" = BOB. "$", "dólares", "verdes" = USD. Si no dice moneda, usá la moneda de la cuenta.
-- Si no dice la cuenta, usá la cuenta por defecto. "Efectivo" es la cuenta de efectivo en esa moneda.
-- Si no dice fecha u hora, usá la fecha y hora actuales. "Ayer", "anoche", "el lunes", "a las 3" (de la tarde) se resuelven desde la fecha actual.
-- Elegí la categoría más parecida. Sueldo o pasantía = Sueldo; mesada o plata de la familia = Mesada / familia.
-- No inventes movimientos que el mensaje no menciona. Si no hay ninguno, devolvé una lista vacía.`;
-  const def = defaultAccount(S.settings.localCurrency);
-  const now = new Date();
-  const ctx = `Fecha y hora actual: ${todayISO()} ${nowTime()} (${WEEKDAYS[now.getDay()]}).
-Moneda local: ${S.settings.localCurrency}.
-Cuentas (id = nombre, tipo, moneda):
-${S.accounts.map((a) => `- ${a.id} = ${a.name}${a.institution ? ` (${a.institution})` : ''}, ${ACCOUNT_TYPES[a.type]?.label}, ${a.currency}`).join('\n')}
-Cuenta por defecto: ${def?.id}.
-
-Mensaje del usuario:
-${text}`;
-  const response = await client.beta.messages.create({
-    model: 'claude-opus-5-5',
-    max_tokens: 4000,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
-    output_config: { effort: 'low', format: { type: 'json_schema', schema } },
-    system,
-    messages: [{ role: 'user', content: ctx }],
-  });
-  if (response.stop_reason === 'refusal') throw new Error('Claude no pudo procesar ese mensaje.');
-  if (response.stop_reason === 'max_tokens') throw new Error('El mensaje es muy largo: probá dividirlo.');
-  const json = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-  const data = JSON.parse(json);
-  return data.movimientos.map((r) => ({
-    type: r.tipo, amount: r.monto, currency: r.moneda, category: r.categoria, accountId: r.cuenta,
-    date: /^\d{4}-\d{2}-\d{2}$/.test(r.fecha) ? r.fecha : todayISO(), time: /^\d{1,2}:\d{2}$/.test(r.hora) ? r.hora.padStart(5, '0') : nowTime(), note: r.detalle,
-  })).filter((r) => r.amount > 0);
-}
-
-function claudeErrorText(e) {
-  const A = anthropicSDK?.default;
-  if (A && e instanceof A.AuthenticationError) return 'tu clave de Claude no es válida (revisala en Ajustes)';
-  if (A && e instanceof A.PermissionDeniedError) return 'tu clave de Claude no tiene permiso para este modelo';
-  if (A && e instanceof A.RateLimitError) return 'Claude está saturado o se terminó tu saldo; probá en un rato';
-  if (A && e instanceof A.APIConnectionError) return 'no hay conexión con Claude';
-  if (A && e instanceof A.APIError) return `Claude respondió con un error (${e.status})`;
-  return e?.message || 'no se pudo contactar a Claude';
 }
 
 /* --- Ventana de chat --- */
@@ -2071,7 +2029,20 @@ function chatBubble(html, who = 'bot') {
 function pendingCardsHTML() {
   const accOpts = (sel) => S.accounts.map((a) => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} (${curLabel(a.currency)})</option>`).join('');
   const catOpts = (type, sel) => (type === 'ingreso' ? CAT_INGRESO : CAT_GASTO).map((c) => `<option ${c === sel ? 'selected' : ''}>${esc(c)}</option>`).join('');
-  return `<div class="pcards">${chatPending.map((p, i) => `
+  return `<div class="pcards">${chatPending.map((p, i) => p.loan ? `
+    <div class="pcard loan" data-i="${i}">
+      <div class="pcard-top">
+        <span class="tag">${icon('handshake', 14)} ${p.loan.dir === 'preste' ? 'Prestaste a' : 'Te prestó'}</span>
+        <input data-k="person" value="${esc(p.loan.person)}" class="pperson">
+        <button class="pdel" data-del="${i}" aria-label="Quitar">${icon('x', 16)}</button>
+      </div>
+      <div class="pcard-top">
+        <input data-k="amount" inputmode="decimal" value="${esc(numInput(p.amount))}" class="pamount">
+        <select data-k="currency">${CURRENCIES.map(([c]) => `<option value="${c}" ${c === p.currency ? 'selected' : ''}>${curLabel(c)}</option>`).join('')}</select>
+      </div>
+      <div class="pcard-row"><select data-k="accountId">${accOpts(p.accountId)}</select><input type="date" data-k="date" value="${p.date}"></div>
+      <div class="small muted">Se anota en Cuentas → Préstamos (no cuenta como gasto ni ingreso).</div>
+    </div>` : `
     <div class="pcard ${p.type}" data-i="${i}">
       <div class="pcard-top">
         <select data-k="type"><option value="gasto" ${p.type === 'gasto' ? 'selected' : ''}>Gasto</option><option value="ingreso" ${p.type === 'ingreso' ? 'selected' : ''}>Ingreso</option></select>
@@ -2112,12 +2083,8 @@ async function handleChatSend() {
   let items = parseMovementsJSON(text);
   let via = 'tu chat de Claude';
   if (!items) {
-    if (getAiKey() && navigator.onLine !== false) {
-      chatBubble('<span class="typing">Claude está leyendo…</span>');
-      try { items = await claudeParse(text); via = 'Claude'; }
-      catch (e) { items = localParse(text); via = `el intérprete de la app, porque ${claudeErrorText(e)}`; }
-      $('#chatLog .bubble:last-child')?.remove();
-    } else { items = localParse(text); via = ''; }
+    items = localParse(text);
+    via = '';
   }
   if (!items.length) {
     chatBubble('No encontré montos en eso. Probá algo como <i>"almuerzo 25 bs y taxi 15 con efectivo"</i>.');
@@ -2137,6 +2104,11 @@ function savePending() {
   const touched = new Set();
   for (const p of ok) {
     const acc = S.accounts.find((a) => a.id === p.accountId);
+    if (p.loan) {
+      createLoan({ dir: p.loan.dir, person: (p.person || p.loan.person).replace(/^\w/, (c) => c.toUpperCase()), amount: p.amount, currency: p.currency, date: p.date, accountId: acc.id });
+      touched.add(acc);
+      continue;
+    }
     const amount = acc.currency === p.currency ? p.amount : round2(fromUSD(toUSD(p.amount, p.currency), acc.currency));
     const tx = { id: uid(), created: new Date().toISOString(), type: p.type, date: p.date || todayISO(), time: p.time || '', accountId: acc.id, amount, category: p.category, note: p.note || p.category, via: 'chat' };
     // "Pagué el gym" o "me llegó la mesada" marca ese fijo como hecho en vez de sumarlo como extra
@@ -2179,7 +2151,6 @@ function toggleMic() {
 function openChat() {
   const dlg = $('#chatDlg');
   const pend = pendingRecurring();
-  const ai = !!getAiKey();
   dlg.innerHTML = `<div class="chat">
     <header class="chat-head"><div><b>Registrar</b><div class="muted small">Contame qué gastaste o qué te entró</div></div>
       <button class="btn ghost icon-btn" data-chat="close" aria-label="Cerrar">${icon('x')}</button></header>
@@ -2192,7 +2163,7 @@ function openChat() {
       <textarea id="chatText" rows="1" placeholder="ej. Almuerzo 25 bs con efectivo"></textarea>
       <button class="btn primary icon-btn" data-chat="send" aria-label="Enviar">${icon('send', 20)}</button>
     </div>
-    <div class="chat-foot">${ai ? `${icon('sparkle', 14)} Interpreta Claude` : `Interpreta la app (sin conexión) · <a href="#" data-chat="ai">Conectar Claude</a>`} · <a href="#" data-chat="prompt">Usar mi chat de Claude</a></div>
+    <div class="chat-foot">Se interpreta en tu teléfono, sin costo · <a href="#" data-chat="prompt">Usar mi chat de Claude</a></div>
   </div>`;
   chatPending = [];
   dlg.showModal();
@@ -2211,7 +2182,6 @@ function openChat() {
     if (act === 'mic') toggleMic();
     if (act === 'save') savePending();
     if (act === 'discard') { chatPending = []; renderPending(); }
-    if (act === 'ai') { dlg.close(); go('ajustes', 'claude'); }
     if (act === 'prompt') {
       try { await navigator.clipboard.writeText(CHAT_CLAUDE_PROMPT()); toast('Instrucciones copiadas: pegalas en tu chat de Claude y después pegá acá lo que te devuelva.', 6000); }
       catch (err) { chatBubble(`Copiá esto en tu chat de Claude:<pre class="prompt-box">${esc(CHAT_CLAUDE_PROMPT())}</pre>`); }
@@ -2227,6 +2197,660 @@ function openChat() {
   };
   dlg.onclose = () => { if (recognizer) try { recognizer.stop(); } catch (e) { /* nada */ } };
   setTimeout(() => ta.focus(), 50);
+}
+
+/* ---------------- Sincronización automática entre dispositivos (GitHub, cifrada) ----------------
+   Tus datos se cifran en el teléfono con TU contraseña (AES-256) y se guardan en un Gist secreto de tu
+   cuenta de GitHub. Sin la contraseña nadie puede leerlos, ni GitHub. Es gratis. */
+
+const CLOUD_STORE = 'misFinanzas.cloud'; // { token, pass, gistId } — queda sólo en este dispositivo
+const CLOUD_FILE = 'mis-finanzas.cifrado.json';
+const cloudCfg = () => { try { return JSON.parse(localStorage.getItem(CLOUD_STORE) || 'null'); } catch (e) { return null; } };
+const setCloudCfg = (c) => { try { c ? localStorage.setItem(CLOUD_STORE, JSON.stringify(c)) : localStorage.removeItem(CLOUD_STORE); } catch (e) { /* nada */ } };
+
+function bufToB64(buf) {
+  const a = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const b64ToBuf = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function deriveKey(pass, salt) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+async function encryptState(pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pass, salt);
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(S)));
+  // editedAt va sin cifrar: sólo una fecha, para saber qué versión es más nueva sin descifrar
+  return JSON.stringify({ app: 'mis-finanzas', v: 1, editedAt: S.editedAt || '', kdf: 'PBKDF2-SHA256-250000', salt: bufToB64(salt), iv: bufToB64(iv), data: bufToB64(data) });
+}
+
+async function decryptPayload(p, pass) {
+  const key = await deriveKey(pass, b64ToBuf(p.salt));
+  try {
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(p.iv) }, key, b64ToBuf(p.data));
+    return JSON.parse(new TextDecoder().decode(plain));
+  } catch (e) { throw Object.assign(new Error('La contraseña de cifrado no coincide con la de tus datos en GitHub.'), { code: 'pass' }); }
+}
+
+async function gh(path, opts = {}, token = cloudCfg()?.token) {
+  const r = await fetch('https://api.github.com' + path, {
+    ...opts, cache: 'no-store',
+    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
+  });
+  if (r.status === 401) throw Object.assign(new Error('El token de GitHub no es válido o venció.'), { code: 'auth' });
+  if (r.status === 403 || r.status === 404) throw Object.assign(new Error('El token no tiene permiso de "gist" o el archivo no existe.'), { code: 'perm' });
+  if (!r.ok) throw new Error(`GitHub respondió con un error (${r.status}).`);
+  return r.json();
+}
+
+async function readGist(id, token) {
+  const g = await gh(`/gists/${id}`, {}, token);
+  const f = g.files?.[CLOUD_FILE];
+  if (!f) return null;
+  const text = f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
+  try { const p = JSON.parse(text); return p.app === 'mis-finanzas' ? p : null; } catch (e) { return null; }
+}
+
+async function findGist(token) {
+  for (let page = 1; page <= 5; page++) {
+    const list = await gh(`/gists?per_page=100&page=${page}`, {}, token);
+    const g = list.find((x) => x.files && x.files[CLOUD_FILE]);
+    if (g) return g.id;
+    if (list.length < 100) break;
+  }
+  return null;
+}
+
+const CloudSync = {
+  status: 'off', // off | ok | syncing | error
+  error: '',
+  timer: null,
+  chain: Promise.resolve(),
+  lastSync: null,
+  lastPull: 0,
+  enabled: () => !!cloudCfg()?.gistId,
+
+  setStatus(st, error = '') {
+    this.status = st;
+    this.error = error;
+    updateFileStatusUI();
+    const box = $('#cloudSync');
+    if (box) box.innerHTML = cloudSyncHTML();
+  },
+
+  schedule() {
+    if (!this.enabled()) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => { this.timer = null; this.push(); }, 1500);
+  },
+
+  push() {
+    clearTimeout(this.timer);
+    this.timer = null;
+    this.chain = this.chain.then(async () => {
+      const c = cloudCfg();
+      if (!c?.gistId) return;
+      try {
+        this.setStatus('syncing');
+        const content = await encryptState(c.pass);
+        await gh(`/gists/${c.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [CLOUD_FILE]: { content } } }) });
+        this.lastSync = new Date().toISOString();
+        this.setStatus('ok');
+      } catch (e) { this.setStatus('error', e.message); }
+    });
+    return this.chain;
+  },
+
+  // Al abrir la app o volver a ella: trae lo más nuevo o sube lo de acá
+  async sync({ quiet = true } = {}) {
+    const c = cloudCfg();
+    if (!c?.gistId) return;
+    this.lastPull = Date.now();
+    try {
+      this.setStatus('syncing');
+      const remote = await readGist(c.gistId);
+      if (!remote) { await this.push(); return; }
+      if (!hasData() || (remote.editedAt || '') > (S.editedAt || '')) {
+        S = migrate(await decryptPayload(remote, c.pass));
+        save(false);
+        render();
+        if (!quiet || remote.editedAt) toast('Datos actualizados desde tu otro dispositivo ✓');
+      } else if ((remote.editedAt || '') < (S.editedAt || '')) {
+        await this.push();
+        return;
+      }
+      this.lastSync = new Date().toISOString();
+      this.setStatus('ok');
+    } catch (e) { this.setStatus('error', e.message); }
+  },
+
+  async connect(token, pass) {
+    this.setStatus('syncing');
+    try {
+      let id = await findGist(token);
+      if (id) {
+        const remote = await readGist(id, token);
+        const data = remote ? await decryptPayload(remote, pass) : null;
+        setCloudCfg({ token, pass, gistId: id });
+        if (data && isValidData(data)) {
+          let useRemote = !hasData() || (remote.editedAt || '') >= (S.editedAt || '');
+          if (hasData() && (remote.editedAt || '') !== (S.editedAt || '')) {
+            const ch = await chooseDlg('Ya tenés datos en GitHub',
+              `Encontré tus datos sincronizados (última edición: ${fmtDateTime(remote.editedAt)}). Este dispositivo tiene cambios del ${fmtDateTime(S.editedAt)}.`,
+              [['remote', 'Usar los datos de GitHub (recomendado si es tu segundo dispositivo)'], ['local', 'Reemplazarlos con los de este dispositivo']]);
+            if (!ch) { setCloudCfg(null); this.setStatus('off'); return; }
+            useRemote = ch === 'remote';
+          }
+          if (useRemote) { S = migrate(data); save(false); render(); } else await this.push();
+        } else await this.push();
+      } else {
+        const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'Mis Finanzas — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: await encryptState(pass) } } }) }, token);
+        id = g.id;
+        setCloudCfg({ token, pass, gistId: id });
+      }
+      this.lastSync = new Date().toISOString();
+      this.setStatus('ok');
+      render();
+      toast('Listo: tus datos se sincronizan solos entre tus dispositivos.', 4000);
+    } catch (e) {
+      if (e.code === 'pass' || e.code === 'auth' || e.code === 'perm') setCloudCfg(null);
+      this.setStatus('error', e.message);
+      toast(e.message, 5000);
+    }
+  },
+
+  disconnect() { setCloudCfg(null); this.setStatus('off'); render(); },
+};
+
+function cloudSyncHTML() {
+  const c = cloudCfg();
+  if (!c?.gistId) {
+    return `<p class="small" style="color:var(--text-2);margin-top:0">Tus datos se guardan solos y <b>cifrados con tu contraseña</b> en tu cuenta de GitHub (gratis),
+      y cada dispositivo (iPhone y PC) se pone al día al abrir la app. Nadie más puede leerlos, ni GitHub.</p>
+      <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0 0 12px">
+        <li>Entrá a <a href="https://github.com/settings/tokens/new?scopes=gist&description=Mis%20Finanzas" target="_blank" rel="noopener">este link de GitHub</a> (ya viene marcado sólo el permiso <b>gist</b>).</li>
+        <li>En "Expiration" elegí <b>No expiration</b>, tocá <b>Generate token</b> y copiá el código (empieza con <code>ghp_</code>).</li>
+        <li>Tocá <b>Activar</b>, pegalo y elegí una contraseña de cifrado. Usá <b>la misma contraseña</b> en todos tus dispositivos.</li></ol>
+      ${CloudSync.status === 'error' ? `<div class="banner" style="margin-bottom:10px">⚠ ${esc(CloudSync.error)}</div>` : ''}
+      <button class="btn primary" data-action="cloudConnect">${icon('sync', 16)} Activar sincronización</button>`;
+  }
+  const st = CloudSync.status === 'syncing' ? `<span class="status neutral">Sincronizando…</span>`
+    : CloudSync.status === 'error' ? `<span class="status critical">⚠ ${esc(CloudSync.error)}</span>`
+    : `<span class="status good">${icon('check', 14)} Activa</span>`;
+  return `<p class="small" style="margin-top:0">${st}<br><span class="muted">Última sincronización: ${fmtDateTime(CloudSync.lastSync)}. Se cifra con tu contraseña antes de salir del dispositivo.</span></p>
+    <div class="toolbar"><button class="btn sm" data-action="cloudNow">${icon('sync', 14)} Sincronizar ahora</button>
+    <button class="btn sm ghost danger" data-action="cloudOff">Desactivar en este dispositivo</button></div>`;
+}
+
+function cloudConnectForm() {
+  openForm({
+    title: 'Sincronización automática',
+    fields: [
+      { name: 'token', label: 'Token de GitHub (permiso gist)', type: 'password', required: true, placeholder: 'ghp_…', full: true },
+      { name: 'pass', label: 'Contraseña de cifrado', type: 'password', required: true, full: true, hint: 'Mínimo 8 caracteres. Si la olvidás, los datos en GitHub no se pueden recuperar (los de cada dispositivo siguen ahí).' },
+      { name: 'pass2', label: 'Repetí la contraseña', type: 'password', required: true, full: true },
+    ],
+    submitLabel: 'Activar',
+    onSubmit: (v) => {
+      if (!/^(ghp_|github_pat_)\w+/.test(v.token)) return 'Ese token no parece de GitHub (empieza con "ghp_").';
+      if (v.pass.length < 8) return 'La contraseña tiene que tener al menos 8 caracteres.';
+      if (v.pass !== v.pass2) return 'Las contraseñas no coinciden.';
+      setTimeout(() => CloudSync.connect(v.token.trim(), v.pass), 50);
+    },
+  });
+}
+
+/* ---------------- Bloqueo con Face ID / huella o PIN ---------------- */
+
+const LOCK_STORE = 'misFinanzas.lock'; // { pinHash, salt, pinLen, credId } — sólo en este dispositivo
+const lockCfg = () => { try { return JSON.parse(localStorage.getItem(LOCK_STORE) || 'null'); } catch (e) { return null; } };
+const setLockCfg = (c) => { try { c ? localStorage.setItem(LOCK_STORE, JSON.stringify(c)) : localStorage.removeItem(LOCK_STORE); } catch (e) { /* nada */ } };
+const LOCK_AFTER_MS = 60 * 1000;
+const bioAvailable = () => !!(window.PublicKeyCredential && location.protocol === 'https:' && navigator.credentials);
+
+async function sha256(text) {
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+const Lock = {
+  locked: false,
+  hiddenAt: 0,
+  entry: '',
+  afterUnlock: [],
+  enabled: () => !!lockCfg()?.pinHash,
+
+  show() {
+    if (!this.enabled()) return;
+    this.locked = true;
+    this.entry = '';
+    document.body.classList.add('locked');
+    const el = $('#lockScreen');
+    const c = lockCfg();
+    el.innerHTML = `<div class="lock-box">
+      <div class="lock-ico">${icon('lock', 30)}</div>
+      <h2>Mis Finanzas</h2><p class="muted">Ingresá tu PIN</p>
+      <div class="pin-dots">${Array.from({ length: c.pinLen }, () => '<i></i>').join('')}</div>
+      <div class="keypad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-k="${n}">${n}</button>`).join('')}
+        <button data-k="bio" ${c.credId && bioAvailable() ? '' : 'style="visibility:hidden"'} aria-label="Face ID">${icon('faceid', 26)}</button>
+        <button data-k="0">0</button><button data-k="del" aria-label="Borrar">${icon('back', 24)}</button></div>
+      <button class="link-btn" data-k="forgot">¿Olvidaste el PIN?</button>
+    </div>`;
+    el.hidden = false;
+    el.onclick = (e) => {
+      const b = e.target.closest('[data-k]');
+      if (!b) return;
+      const k = b.dataset.k;
+      if (k === 'bio') this.bio();
+      else if (k === 'del') { this.entry = this.entry.slice(0, -1); this.paint(); }
+      else if (k === 'forgot') this.forgot();
+      else if (this.entry.length < c.pinLen) { this.entry += k; this.paint(); if (this.entry.length === c.pinLen) this.check(); }
+    };
+  },
+
+  paint() { $$('#lockScreen .pin-dots i').forEach((d, i) => d.classList.toggle('on', i < this.entry.length)); },
+
+  async check() {
+    const c = lockCfg();
+    if (await sha256(c.salt + this.entry) === c.pinHash) return this.unlock();
+    const dots = $('#lockScreen .pin-dots');
+    dots.classList.add('shake');
+    setTimeout(() => { dots.classList.remove('shake'); this.entry = ''; this.paint(); }, 450);
+  },
+
+  async bio() {
+    const c = lockCfg();
+    try {
+      await navigator.credentials.get({ publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ type: 'public-key', id: b64ToBuf(c.credId) }],
+        userVerification: 'required', timeout: 60000,
+      } });
+      this.unlock();
+    } catch (e) { toast('No se pudo verificar. Usá tu PIN.'); }
+  },
+
+  forgot() {
+    openForm({
+      title: '¿Olvidaste el PIN?',
+      fields: [{ type: 'html', html: `<p style="margin:0">Por seguridad no se puede ver el PIN. Podés <b>borrar los datos de este dispositivo</b> y quitar el bloqueo.
+        ${CloudSync.enabled() ? 'Tus datos siguen guardados en GitHub y vuelven cuando reactives la sincronización.' : 'Si no tenés respaldo ni sincronización, se pierden.'}</p>` }],
+      submitLabel: 'Borrar datos de este dispositivo', danger: true,
+      onSubmit: () => {
+        try { localStorage.removeItem(STORE_KEY); } catch (e) { /* nada */ }
+        setLockCfg(null);
+        location.reload();
+      },
+    });
+  },
+
+  unlock() {
+    this.locked = false;
+    document.body.classList.remove('locked', 'veiled');
+    $('#lockScreen').hidden = true;
+    const fns = this.afterUnlock.splice(0);
+    fns.forEach((f) => f());
+  },
+
+  // Corre f ahora, o apenas se desbloquee
+  then(f) { if (this.locked) this.afterUnlock.push(f); else f(); },
+};
+
+function lockSettingsHTML() {
+  const c = lockCfg();
+  if (!c?.pinHash) {
+    return `<p class="small" style="color:var(--text-2);margin-top:0">Pide un PIN (o Face ID / huella) al abrir la app y cuando volvés después de 1 minuto.
+      Se configura por dispositivo.</p><button class="btn primary" data-action="lockOn">${icon('lock', 16)} Activar bloqueo</button>`;
+  }
+  return `<p class="small" style="margin-top:0"><span class="status good">${icon('check', 14)} Bloqueo activo</span> · PIN de ${c.pinLen} dígitos${c.credId ? ' · Face ID / huella activado' : ''}</p>
+    <div class="toolbar">
+      ${bioAvailable() ? `<button class="btn sm" data-action="${c.credId ? 'bioOff' : 'bioOn'}">${icon('faceid', 16)} ${c.credId ? 'Quitar Face ID' : 'Usar Face ID / huella'}</button>` : '<span class="muted small">Face ID funciona en la app instalada (https).</span>'}
+      <button class="btn sm" data-action="lockOn">Cambiar PIN</button>
+      <button class="btn sm ghost danger" data-action="lockOff">Quitar bloqueo</button></div>`;
+}
+
+function pinForm(onDone) {
+  openForm({
+    title: 'Elegí un PIN',
+    fields: [
+      { name: 'pin', label: 'PIN (4 a 6 números)', type: 'password', required: true, full: true },
+      { name: 'pin2', label: 'Repetí el PIN', type: 'password', required: true, full: true },
+    ],
+    onSubmit: (v) => {
+      if (!/^\d{4,6}$/.test(v.pin)) return 'El PIN tiene que tener de 4 a 6 números.';
+      if (v.pin !== v.pin2) return 'Los PIN no coinciden.';
+      const salt = bufToB64(crypto.getRandomValues(new Uint8Array(16)));
+      sha256(salt + v.pin).then((pinHash) => {
+        setLockCfg({ ...(lockCfg() || {}), pinHash, salt, pinLen: v.pin.length });
+        render();
+        toast('Bloqueo activado.');
+        onDone?.();
+      });
+    },
+  });
+  $$('#dlgForm input[type=password]').forEach((i) => { i.inputMode = 'numeric'; i.maxLength = 6; });
+}
+
+async function enableBio() {
+  try {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: 'Mis Finanzas', id: location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'mis-finanzas', displayName: 'Mis Finanzas' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+      timeout: 60000,
+    } });
+    setLockCfg({ ...lockCfg(), credId: bufToB64(cred.rawId) });
+    render();
+    toast('Face ID / huella activado.');
+  } catch (e) { toast('No se pudo activar Face ID en este dispositivo.'); }
+}
+
+/* ---------------- Hábito: racha de días registrando ---------------- */
+
+function activeDays() {
+  const set = new Set(S.checkins || []);
+  for (const t of S.transactions) if (t.date) set.add(t.date);
+  return set;
+}
+
+function streak() {
+  const set = activeDays();
+  const d = new Date();
+  if (!set.has(isoOf(d))) d.setDate(d.getDate() - 1); // hoy todavía no cuenta como cortada
+  let n = 0;
+  while (set.has(isoOf(d))) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+
+function bestStreak() {
+  const days = [...activeDays()].sort();
+  let best = 0, cur = 0, prev = null;
+  for (const d of days) {
+    cur = prev && (Date.parse(d) - Date.parse(prev)) / 864e5 === 1 ? cur + 1 : 1;
+    best = Math.max(best, cur);
+    prev = d;
+  }
+  return best;
+}
+
+function habitHTML() {
+  const today = todayISO();
+  const doneToday = activeDays().has(today);
+  const n = streak();
+  const late = new Date().getHours() >= 19;
+  return `<div class="habit ${doneToday ? 'done' : ''}">
+    <span class="habit-ico">${icon('flame', 20)}</span>
+    <div class="grow"><b>${n} ${n === 1 ? 'día seguido' : 'días seguidos'} registrando</b>
+      <div class="small muted">${doneToday ? 'Hoy ya registraste ✓' : late ? '¿Registraste lo de hoy?' : 'Registrá lo de hoy para sumar un día'} · récord: ${Math.max(n, bestStreak())}</div></div>
+    ${doneToday ? '' : `<button class="btn sm" data-action="checkin">Hoy no gasté</button>`}
+  </div>`;
+}
+
+/* ---------------- Devaluación: tu plata frente al dólar ---------------- */
+
+const BOB_PEG = 6.96; // el tipo de cambio fijo histórico del boliviano
+
+function logRate() {
+  const cur = S.settings.localCurrency;
+  const r = rate(cur);
+  if (USD_PEGGED.has(cur) || !r) return;
+  S.rateLog = S.rateLog || [];
+  const today = todayISO();
+  const last = S.rateLog[S.rateLog.length - 1];
+  if (last && last.date === today) { last.rate = r; last.cur = cur; } else S.rateLog.push({ date: today, cur, rate: r });
+  if (S.rateLog.length > 2000) S.rateLog.shift();
+}
+
+function fxCardHTML() {
+  const n2 = (n) => Number(n).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const cur = S.settings.localCurrency;
+  const r = rate(cur);
+  if (USD_PEGGED.has(cur) || !r) return '';
+  const accs = S.accounts.filter((a) => a.type !== 'credito');
+  const local = accs.filter((a) => a.currency === cur).reduce((s, a) => s + Math.max(0, Number(a.balance) || 0), 0);
+  const liquid = accs.reduce((s, a) => s + Math.max(0, toUSD(a.balance, a.currency)), 0);
+  const pct = liquid ? (toUSD(local, cur) / liquid) * 100 : 0;
+  const log = (S.rateLog || []).filter((x) => x.cur === cur);
+  const first = log[0];
+  const ch = first && first.rate !== r ? (r / first.rate - 1) * 100 : null;
+  const lost = first ? local / first.rate - local / r : 0;
+  return `<section class="card"><div class="card-head" style="margin-bottom:10px"><h2>Tu plata frente al dólar</h2><span class="muted small">${curLabel(cur)} ${n2(r)} por US$</span></div>
+    <div class="fx-row"><span>En ${cur === 'BOB' ? 'bolivianos' : cur}</span><b class="money">${fmtIn(local, cur)}</b><span class="muted small">${fmtPct(pct, false)} de tu liquidez</span></div>
+    <div class="meter"><div style="width:${Math.min(100, pct)}%;background:var(--c2)"></div></div>
+    <div class="small" style="margin-top:10px;color:var(--text-2)">
+      ${ch != null ? `Desde el ${fmtDate(first.date)} el dólar pasó de ${curLabel(cur)} ${n2(first.rate)} a ${n2(r)} (<b class="${ch > 0 ? 'down' : 'up'}">${fmtPct(ch)}</b>):
+        tus ${fmtIn(local, cur)} ${lost > 0 ? `valen <b class="money down">US$ ${n2(lost)} menos</b>` : `valen <b class="money up">US$ ${n2(-lost)} más</b>`} que entonces.<br>` : 'La app va guardando el tipo de cambio cada día para mostrarte cómo cambia tu poder de compra.<br>'}
+      ${cur === 'BOB' && local > 0 ? `Con el tipo de cambio fijo de Bs ${n2(BOB_PEG)}, tus ${fmtIn(local, 'BOB')} eran <b class="money">US$ ${n2(local / BOB_PEG)}</b>; hoy son <b class="money">US$ ${n2(local / r)}</b>.` : ''}
+    </div>
+    <p class="muted small" style="margin:8px 0 0">Sólo informativo: muestra cuánto de tu plata depende del tipo de cambio.</p></section>`;
+}
+
+/* ---------------- Próximos pagos y cobros ---------------- */
+
+function nextMonthlyDate(day, fromISO) {
+  let m = fromISO.slice(0, 7);
+  for (let i = 0; i < 2; i++) {
+    const d = `${m}-${String(Math.min(day, daysInMonth(m))).padStart(2, '0')}`;
+    if (d >= fromISO) return d;
+    m = addMonths(m, 1);
+  }
+  return null;
+}
+
+function upcomingItems(days = 30) {
+  const today = todayISO();
+  const end = isoOf(Date.now() + days * 864e5);
+  const out = [];
+  for (const r of S.recurring) {
+    if (r.day) {
+      let d = nextMonthlyDate(r.day, today);
+      if (d && recurringTx(r, d.slice(0, 7))) d = nextMonthlyDate(r.day, `${addMonths(d.slice(0, 7), 1)}-01`);
+      if (d && d <= end) out.push({ date: d, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo' });
+    }
+  }
+  for (const r of pendingRecurring()) out.push({ date: `${currentMonth()}-${String(daysInMonth(currentMonth())).padStart(2, '0')}`, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo sin día', undated: true, recId: r.id });
+  for (const a of S.accounts) {
+    if (a.type === 'credito' && Number(a.balance) > 0 && Number(a.dueDay)) {
+      const d = nextMonthlyDate(Number(a.dueDay), today);
+      if (d && d <= end) out.push({ date: d, name: `Pagar ${a.name}`, amount: a.balance, currency: a.currency, type: 'gasto', kind: 'Tarjeta', accId: a.id });
+    }
+  }
+  for (const l of S.loans || []) {
+    const rem = loanRemaining(l);
+    if (l.closed || rem <= 0 || !l.dueDate || l.dueDate > end) continue;
+    out.push({ date: l.dueDate, name: l.dir === 'preste' ? `${l.person} te devuelve` : `Devolverle a ${l.person}`, amount: rem, currency: l.currency, type: l.dir === 'preste' ? 'ingreso' : 'gasto', kind: 'Préstamo', loanId: l.id, overdue: l.dueDate < today });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function daysUntil(iso) {
+  const n = Math.round((Date.parse(iso) - Date.parse(todayISO())) / 864e5);
+  return n < 0 ? `vencido hace ${-n} día${n === -1 ? '' : 's'}` : n === 0 ? 'hoy' : n === 1 ? 'mañana' : `en ${n} días`;
+}
+
+function upcomingHTML() {
+  const items = upcomingItems(30);
+  if (!items.length) return '';
+  return `<section class="card"><div class="card-head" style="margin-bottom:6px"><h2>Próximos 30 días</h2><span class="muted small">pagos y cobros</span></div>
+    <div class="list">${items.slice(0, 8).map((it) => {
+      const soon = !it.undated && (it.overdue || Math.round((Date.parse(it.date) - Date.parse(todayISO())) / 864e5) <= 3);
+      const btn = it.recId ? `<button class="btn sm" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
+        : it.accId ? `<button class="btn sm" data-action="payCard" data-id="${it.accId}">Pagar</button>`
+        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>` : '';
+      return `<div class="list-row act ${soon && it.type === 'gasto' ? 'soon' : ''}">
+        <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
+        <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Fijo · pendiente este mes' : `${it.kind} · ` + `${fmtDate(it.date)} · <b class="${soon ? 'warn-text' : ''}">${daysUntil(it.date)}</b>`}</div></div>
+        <span class="money ${it.type === 'ingreso' ? 'up' : ''}">${it.type === 'ingreso' ? '+' : '−'}${fmtIn(it.amount, it.currency)}</span>${btn}</div>`;
+    }).join('')}</div></section>`;
+}
+
+function dueSoonBanner() {
+  const urgent = upcomingItems(3).filter((it) => it.type === 'gasto' && !it.undated);
+  if (!urgent.length) return '';
+  return `<div class="banner">${icon('alert', 16)} ${urgent.map((it) => `<b>${esc(it.name)}</b> ${daysUntil(it.date)} (${fmtIn(it.amount, it.currency)})`).join(' · ')}</div>`;
+}
+
+/* ---------------- Cierre de mes ---------------- */
+
+function monthCloseHTML(m) {
+  const ms = monthStats(m);
+  const prev = monthStats(addMonths(m, -1));
+  const saving = ms.income - ms.expense;
+  const rateM = ms.income ? (saving / ms.income) * 100 : null;
+  const prevSaving = prev.income - prev.expense;
+  // Récord: mejor ahorro mensual antes de este mes
+  const first = S.transactions.reduce((min, t) => (t.date && t.date < min ? t.date : min), m).slice(0, 7);
+  let record = null;
+  for (let k = first; k < m; k = addMonths(k, 1)) {
+    const s = monthStats(k);
+    if ((s.income || s.expense) && (record == null || s.income - s.expense > record)) record = s.income - s.expense;
+  }
+  const cats = Object.entries(ms.byCat).sort((a, b) => b[1] - a[1]);
+  const over = Object.entries(S.budgets).filter(([c, b]) => (ms.byCat[c] || 0) > toUSD(b.amount, b.currency));
+  const days = [...activeDays()].filter((d) => d.startsWith(m)).length;
+  const st = savingsStatus(rateM);
+  const lines = [];
+  if (record != null) lines.push(saving > record ? ['★', `¡Nuevo récord! Superaste tu mejor mes (${fmtMoney(record)}).`] : ['🏁', `Tu récord sigue siendo ${fmtMoney(record)}: te faltaron ${fmtMoney(record - saving)}.`]);
+  if (prev.income || prev.expense) lines.push([saving >= prevSaving ? '📈' : '📉', `Ahorraste ${fmtMoney(Math.abs(saving - prevSaving))} ${saving >= prevSaving ? 'más' : 'menos'} que el mes anterior.`]);
+  if (cats.length) lines.push(['🥇', `Tu mayor gasto fue ${esc(cats[0][0])}: ${fmtMoney(cats[0][1])} (${fmtPct((cats[0][1] / ms.expense) * 100, false)}).`]);
+  if (over.length) lines.push(['⚠', `Te pasaste del presupuesto en ${over.map(([c]) => esc(c)).join(', ')}.`]);
+  lines.push(['🔥', `Registraste ${days} de ${daysInMonth(m)} días.`]);
+  for (const g of S.goals) { const M = goalMath(g, planNumbers()); lines.push(['🎯', `${esc(g.name)}: vas ${fmtNum(M.pct, 0)}% (${fmtMoney(M.current)} de ${fmtIn(g.target, g.currency)}).`]); }
+  return `<div class="close-grid">
+      <div><span class="muted small">Ingresos</span><b class="money">${fmtMoney(ms.income)}</b></div>
+      <div><span class="muted small">Gastos</span><b class="money">${fmtMoney(ms.expense)}</b></div>
+      <div><span class="muted small">Ahorro</span><b class="money ${cls(saving)}">${fmtMoney(saving, { sign: true })}</b></div>
+      <div><span class="muted small">Tasa de ahorro</span><b>${rateM != null ? fmtPct(rateM, false) : '—'}</b> ${statusPill(st)}</div>
+    </div>
+    <div class="insights" style="margin-top:14px">${lines.map(([i, t]) => `<div class="insight"><span class="ins-ico">${i}</span><div class="small">${t}</div></div>`).join('')}</div>`;
+}
+
+function showMonthClose(m) {
+  openForm({ title: `Cierre de ${monthLabel(m, 'long')} ${m.slice(0, 4)}`, fields: [{ type: 'html', html: monthCloseHTML(m) }], submitLabel: 'Listo', onSubmit: () => {} });
+  $('#dlgForm [data-close]').style.display = 'none';
+}
+
+// El primer día que abrís la app en un mes nuevo, te muestra el resumen del mes que terminó
+function maybeMonthClose() {
+  const prev = addMonths(currentMonth(), -1);
+  if (S.settings.lastClosedMonth === prev) return;
+  const s = monthStats(prev);
+  S.settings.lastClosedMonth = prev;
+  save(false);
+  if (s.income || s.expense) Lock.then(() => setTimeout(() => { if (!$('#dlg').open) showMonthClose(prev); }, 900));
+}
+
+/* ---------------- Préstamos ---------------- */
+
+const loanRemaining = (l) => round2((Number(l.amount) || 0) - (l.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0));
+
+// Mueve plata de una cuenta por un préstamo, sin contarlo como gasto ni ingreso
+function loanTx(l, kind, amount, accountId, date) {
+  const acc = S.accounts.find((a) => a.id === accountId);
+  if (!acc) return null;
+  const out = (l.dir === 'preste') === (kind === 'start'); // prestar o devolver lo que debo = sale plata
+  const amt = acc.currency === l.currency ? amount : round2(fromUSD(toUSD(amount, l.currency), acc.currency));
+  const tx = { id: uid(), created: new Date().toISOString(), type: out ? 'gasto' : 'ingreso', date: date || todayISO(), time: nowTime(), accountId: acc.id,
+    amount: amt, category: out ? 'Otros gastos' : 'Otros ingresos', loan: true, loanId: l.id,
+    note: kind === 'start' ? (l.dir === 'preste' ? `Préstamo a ${l.person}` : `Préstamo de ${l.person}`) : (l.dir === 'preste' ? `${l.person} me devolvió` : `Le devolví a ${l.person}`) };
+  S.transactions.push(tx);
+  applyTx(tx, 1);
+  return tx;
+}
+
+function createLoan({ dir, person, amount, currency, date, dueDate, accountId, note }) {
+  const l = { id: uid(), dir, person, amount, currency, date: date || todayISO(), dueDate: dueDate || '', accountId: accountId || '', note: note || '', payments: [], closed: false };
+  S.loans.push(l);
+  if (accountId) loanTx(l, 'start', amount, accountId, l.date);
+  return l;
+}
+
+function loanForm(l) {
+  const isNew = !l;
+  l = l || { dir: 'preste', person: '', amount: '', currency: S.settings.localCurrency, date: todayISO(), dueDate: '', accountId: S.accounts.find((a) => a.type === 'efectivo')?.id || '', note: '' };
+  openForm({
+    title: isNew ? 'Nuevo préstamo' : `Préstamo: ${l.person}`,
+    fields: [
+      { name: 'dir', label: 'Tipo', type: 'select', value: l.dir, full: true, options: [['preste', 'Yo presté (me tienen que devolver)'], ['debo', 'Me prestaron (tengo que devolver)']] },
+      { name: 'person', label: 'Persona', value: l.person, required: true, placeholder: 'ej. Juan' },
+      { name: 'amount', label: 'Monto', type: 'number', value: l.amount, required: true },
+      { name: 'currency', label: 'Moneda', type: 'select', value: l.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
+      { name: 'date', label: 'Fecha', type: 'date', value: l.date },
+      { name: 'dueDate', label: 'Fecha para devolver (opcional)', type: 'date', value: l.dueDate },
+      ...(isNew ? [{ name: 'accountId', label: '¿De qué cuenta salió / a cuál entró?', type: 'select', value: l.accountId, full: true,
+        options: [['', '— No mover plata de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`])] }] : []),
+      { name: 'note', label: 'Nota', value: l.note, full: true, placeholder: 'Opcional' },
+      ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este préstamo (revierte lo que movió en tus cuentas)', type: 'checkbox', full: true }]),
+    ],
+    onSubmit: (v) => {
+      if (v.remove) {
+        for (const t of S.transactions.filter((x) => x.loanId === l.id)) applyTx(t, -1);
+        S.transactions = S.transactions.filter((x) => x.loanId !== l.id);
+        S.loans = S.loans.filter((x) => x !== l);
+        snapshot(); save(); render(); return;
+      }
+      if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      const person = v.person.replace(/^\w/, (c) => c.toUpperCase());
+      if (isNew) createLoan({ ...v, person });
+      else Object.assign(l, { dir: v.dir, person, amount: v.amount, currency: v.currency, date: v.date, dueDate: v.dueDate, note: v.note, closed: loanRemaining({ ...l, amount: v.amount }) <= 0 });
+      snapshot(); save(); render();
+    },
+  });
+}
+
+function loanPayForm(l) {
+  const rem = loanRemaining(l);
+  openForm({
+    title: l.dir === 'preste' ? `¿Cuánto te devolvió ${l.person}?` : `Devolverle a ${l.person}`,
+    fields: [
+      { type: 'html', html: `<div class="muted small">Falta: <b class="money">${fmtIn(rem, l.currency)}</b> de ${fmtIn(l.amount, l.currency)}</div>` },
+      { name: 'amount', label: `Monto (${curLabel(l.currency)})`, type: 'number', value: rem, required: true },
+      { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
+      { name: 'accountId', label: l.dir === 'preste' ? '¿A qué cuenta entró?' : '¿De qué cuenta salió?', type: 'select', value: l.accountId || S.accounts.find((a) => a.type === 'efectivo')?.id, full: true,
+        options: [['', '— No mover plata de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`])] },
+    ],
+    submitLabel: 'Registrar',
+    onSubmit: (v) => {
+      if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      l.payments = l.payments || [];
+      l.payments.push({ date: v.date || todayISO(), amount: v.amount });
+      if (v.accountId) loanTx(l, 'pay', v.amount, v.accountId, v.date);
+      if (loanRemaining(l) <= 0.005) l.closed = true;
+      snapshot(); save(); render();
+      toast(l.closed ? 'Préstamo saldado ✓' : `Registrado. Falta ${fmtIn(loanRemaining(l), l.currency)}.`);
+    },
+  });
+}
+
+function loansHTML() {
+  const open = (S.loans || []).filter((l) => !l.closed && loanRemaining(l) > 0);
+  const closed = (S.loans || []).filter((l) => l.closed || loanRemaining(l) <= 0);
+  const lent = open.filter((l) => l.dir === 'preste').reduce((s, l) => s + toUSD(loanRemaining(l), l.currency), 0);
+  const owed = open.filter((l) => l.dir === 'debo').reduce((s, l) => s + toUSD(loanRemaining(l), l.currency), 0);
+  const row = (l) => {
+    const rem = loanRemaining(l);
+    const overdue = !l.closed && l.dueDate && l.dueDate < todayISO();
+    return `<div class="list-row act">
+      <span class="acc-ico sm ${l.dir === 'preste' ? 'in' : ''}">${icon('handshake', 16)}</span>
+      <div class="grow"><div class="name">${esc(l.person)} <span class="muted small">· ${l.dir === 'preste' ? 'te debe' : 'le debés'}</span></div>
+        <div class="meta">${fmtDate(l.date)}${l.dueDate ? ` · devolver: <span class="${overdue ? 'down' : ''}">${fmtDate(l.dueDate)}${overdue ? ' (vencido)' : ''}</span>` : ''}${l.note ? ` · ${esc(l.note)}` : ''}</div></div>
+      <div class="val"><div class="money ${l.dir === 'preste' ? 'up' : 'down'}">${fmtIn(rem, l.currency)}</div>${rem !== Number(l.amount) ? `<div class="meta money">de ${fmtIn(l.amount, l.currency)}</div>` : ''}</div>
+      ${l.closed ? '<span class="status good">Saldado</span>' : `<button class="btn sm primary" data-action="loanPay" data-id="${l.id}">${l.dir === 'preste' ? 'Me devolvió' : 'Devolví'}</button>`}
+      <button class="btn sm ghost icon-only" data-action="loanEdit" data-id="${l.id}" title="Editar">${icon('settings', 16)}</button></div>`;
+  };
+  return `<section class="card" id="prestamos"><div class="card-head"><h2>Préstamos</h2><button class="btn sm" data-action="loanAdd">+ Préstamo</button></div>
+    ${open.length || closed.length ? `<div class="fx-row" style="margin-bottom:6px"><span>Te deben</span><b class="money up">${fmtMoney(lent)}</b><span class="spacer"></span><span>Debés</span><b class="money down">${fmtMoney(owed)}</b></div>` : ''}
+    <div class="list">${open.map(row).join('') || '<div class="empty">Anotá lo que prestás o te prestan para que no se olvide. Tip: en el chat podés decir "le presté 50 a Juan".</div>'}</div>
+    ${closed.length ? `<details class="small" style="margin-top:8px"><summary class="muted">Saldados (${closed.length})</summary><div class="list">${closed.map(row).join('')}</div></details>` : ''}
+  </section>`;
 }
 
 /* ---------------- Render ---------------- */
@@ -2867,7 +3491,8 @@ function footHTML() {
     : f.status === 'error' ? '⚠ Error al guardar en archivo'
     : f.status === 'unsupported' ? `OneDrive: ${S.settings.lastSync ? 'sincronizado ' + fmtDateTime(S.settings.lastSync) : 'sin sincronizar'}`
     : 'Guardado sólo en este navegador';
-  return `Precios: ${fmtDateTime(S.settings.lastRefresh)}<br>${file}`;
+  const cloud = CloudSync.enabled() ? `<br>${CloudSync.status === 'error' ? '⚠ Error al sincronizar' : `✓ Sincronizado ${CloudSync.lastSync ? fmtDateTime(CloudSync.lastSync).split(', ').pop() : ''}`}` : '';
+  return `Precios: ${fmtDateTime(S.settings.lastRefresh)}<br>${file}${cloud}`;
 }
 
 function updateFileStatusUI() {
@@ -2932,16 +3557,23 @@ const ACTIONS = {
     toast('Listo: tus metas quedaron como presupuesto mensual.');
   },
   openChat: () => openChat(),
+  cloudConnect: () => cloudConnectForm(),
+  cloudNow: () => CloudSync.sync({ quiet: false }),
+  cloudOff: async () => { if (await confirmDlg('Desactivar sincronización', 'Este dispositivo deja de sincronizarse. Tus datos siguen acá y en GitHub.', 'Desactivar')) CloudSync.disconnect(); },
+  lockOn: () => pinForm(() => { if (bioAvailable() && !lockCfg()?.credId) setTimeout(() => toast('Tip: también podés activar Face ID / huella acá abajo.', 4000), 600); }),
+  lockOff: async () => { if (await confirmDlg('Quitar bloqueo', 'La app se va a abrir sin pedir PIN en este dispositivo.', 'Quitar')) { setLockCfg(null); render(); } },
+  bioOn: () => enableBio(),
+  bioOff: () => { const c = lockCfg(); delete c.credId; setLockCfg(c); render(); },
+  checkin: () => { if (!S.checkins.includes(todayISO())) S.checkins.push(todayISO()); save(); render(); toast('Anotado: hoy sin gastos 💪'); },
+  loanAdd: () => loanForm(),
+  loanEdit: (id) => loanForm(byId(S.loans, id)),
+  loanPay: (id) => loanPayForm(byId(S.loans, id)),
+  monthClose: (m) => showMonthClose(m),
   addRecurring: () => recurringForm(),
   editRecurring: (id) => recurringForm(byId(S.recurring, id)),
   payRecurring: (id) => payRecurringForm(byId(S.recurring, id)),
   addGoal: () => goalForm(),
   editGoal: (id) => goalForm(byId(S.goals, id)),
-  saveAiKey: () => {
-    const k = $('#setAiKey').value.trim();
-    if (k && !/^sk-ant-/.test(k)) return toast('Esa no parece una clave de Claude (empieza con "sk-ant-").');
-    setAiKey(k); render(); toast(k ? 'Listo: ahora Claude interpreta lo que registrás.' : 'Clave borrada.');
-  },
   syncPush: () => syncPush(),
   syncPull: () => syncPull(),
   fileLink: () => FileSync.link(),
@@ -2976,7 +3608,8 @@ function bindEvents() {
   $('#privacyBtn').addEventListener('click', () => { S.settings.privacy = !S.settings.privacy; save(false); render(); });
   $('#refreshBtn').addEventListener('click', () => refreshAll());
   $('#syncBtn').addEventListener('click', () => {
-    if (FileSync.status === 'unsupported') syncDialog();
+    if (CloudSync.enabled()) CloudSync.sync({ quiet: false }).then(() => toast(CloudSync.status === 'error' ? CloudSync.error : 'Sincronizado ✓'));
+    else if (FileSync.status === 'unsupported') syncDialog();
     else if (FileSync.status === 'paused') FileSync.reconnect();
     else go('ajustes', 'respaldo');
   });
@@ -3022,7 +3655,20 @@ function bindEvents() {
   }, 150); });
   window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { load(); render(); } });
   // Si cerrás o cambiás de pestaña con un guardado pendiente, se escribe ya
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && FileSync.timer) FileSync.write(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      if (FileSync.timer) FileSync.write();
+      if (CloudSync.timer) CloudSync.push();
+      // Tapa los saldos antes de que el iPhone saque la "foto" del selector de apps
+      Lock.hiddenAt = Date.now();
+      if (Lock.enabled()) document.body.classList.add('veiled');
+      return;
+    }
+    if (Lock.enabled() && !Lock.locked && Date.now() - Lock.hiddenAt > LOCK_AFTER_MS) Lock.show();
+    else if (!Lock.locked) document.body.classList.remove('veiled');
+    // Al volver: traer lo que hayas cargado en el otro dispositivo
+    if (CloudSync.enabled() && Date.now() - CloudSync.lastPull > 30000) CloudSync.sync().then(() => { processRecurring(); });
+  });
 }
 
 function welcome() {
@@ -3057,15 +3703,18 @@ function welcome() {
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
   navigator.storage?.persist?.().catch(() => {});
   const existed = load();
+  if (Lock.enabled()) Lock.show();
   bindEvents();
   render();
-  // Primero se compara con el archivo vinculado, así nunca se pisa una versión más nueva
+  // Primero se compara con el archivo vinculado y con GitHub, así nunca se pisa una versión más nueva
   try { await FileSync.init(); } catch (e) { console.warn(e); }
+  if (CloudSync.enabled()) await CloudSync.sync();
   // Intereses del día y fijos que ya vencieron (ej. el sueldo del 12)
   if (accrueInterest()) save(false);
   processRecurring();
   render();
-  if (!existed && !FileSync.handle) { save(false); welcome(); return; }
+  if (!existed && !FileSync.handle && !CloudSync.enabled()) { save(false); Lock.then(welcome); return; }
+  maybeMonthClose();
   const last = S.settings.lastRefresh ? Date.parse(S.settings.lastRefresh) : 0;
   if (Date.now() - last > 10 * 60 * 1000) refreshAll({ silent: true });
   else { snapshot(); save(false); }

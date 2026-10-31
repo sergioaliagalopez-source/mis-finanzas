@@ -378,6 +378,46 @@ tr.best td { background: color-mix(in srgb, #0ca30c 7%, transparent); }
 .saved-box { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
 .pcard-row > * { min-width: 0; }
 
+/* ---------- Bloqueo ---------- */
+.lock {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+  background: var(--bg); padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+}
+.lock[hidden] { display: none; }
+body.locked .app, body.locked .fab, body.veiled .app, body.veiled .fab { visibility: hidden; }
+.lock-box { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; max-width: 300px; text-align: center; }
+.lock-box h2 { font-size: 20px; }
+.lock-box p { margin: 0; }
+.lock-ico { width: 60px; height: 60px; border-radius: 18px; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
+.pin-dots { display: flex; gap: 14px; margin: 14px 0 18px; }
+.pin-dots i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--text-2); }
+.pin-dots i.on { background: var(--text); border-color: var(--text); }
+.pin-dots.shake { animation: shake .4s; }
+@keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
+.keypad { display: grid; grid-template-columns: repeat(3, 72px); gap: 14px 22px; }
+.keypad button { width: 72px; height: 72px; border-radius: 50%; border: 0; background: var(--surface-2); font-size: 26px; cursor: pointer; display: grid; place-items: center; }
+.keypad button:active { background: var(--border); }
+.link-btn { border: 0; background: none; color: var(--accent); cursor: pointer; margin-top: 14px; font-size: 14px; }
+
+/* ---------- Hábito, próximos pagos, devaluación, cierre ---------- */
+.habit { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
+.habit .grow { flex: 1; }
+.habit-ico { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, #eb6834 16%, transparent); color: #eb6834; flex: none; }
+.habit.done .habit-ico { background: color-mix(in srgb, #0ca30c 16%, transparent); color: var(--good); }
+.list-row.soon .name { color: var(--text); }
+.warn-text { color: var(--warn-ink); }
+:root:not([data-theme="light"]) .warn-text { color: #fab219; }
+.banner .ico { display: inline-block; vertical-align: -3px; }
+h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
+.fx-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.fx-row .spacer { flex: 1; }
+.close-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.close-grid > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.close-grid b { font-size: 18px; }
+.pcard.loan { border-left-color: var(--c7); }
+.pcard .pperson { flex: 1; font-weight: 600; }
+details summary { cursor: pointer; padding: 4px 0; }
+
 /* Celular: van al final para ganarle a las reglas de arriba */
 @media (max-width: 760px) {
   .nav-secondary { display: none; }
@@ -392,5 +432,7 @@ tr.best td { background: color-mix(in srgb, #0ca30c 7%, transparent); }
   .rec-status { flex-basis: 100%; justify-content: flex-end; }
   .list-row { flex-wrap: wrap; }
   .content { padding-bottom: 150px; }
+  .list-row.act { justify-content: flex-end; row-gap: 6px; }
+  .list-row.act .grow { flex: 1 1 calc(100% - 46px); }
 }
 @media (min-width: 761px) { .more-menu { display: none !important; } }
