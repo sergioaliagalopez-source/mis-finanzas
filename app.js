@@ -2560,7 +2560,7 @@ const Lock = {
     const el = $('#lockScreen');
     const c = lockCfg();
     el.innerHTML = `<div class="lock-box">
-      <div class="lock-ico">${icon('lock', 30)}</div>
+      <img class="lock-logo" src="icons/logo-96.png" alt="">
       <h2>Mis Finanzas</h2><p class="muted">Ingresá tu PIN</p>
       <div class="pin-dots">${Array.from({ length: c.pinLen }, () => '<i></i>').join('')}</div>
       <div class="keypad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-k="${n}">${n}</button>`).join('')}

@@ -79,6 +79,8 @@ h2 { font-size: 15px; }
   padding: 20px 14px; border-right: 1px solid var(--border); background: var(--surface);
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; font-weight: 700; font-size: 17px; }
+.brand-logo { width: 32px; height: 32px; border-radius: 9px; object-fit: cover; }
+.lock-logo { width: 72px; height: 72px; border-radius: 18px; object-fit: cover; box-shadow: 0 6px 20px rgba(0,0,0,.35); }
 .brand-mark {
   display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px;
   background: var(--accent); color: var(--accent-ink); font-weight: 800;
