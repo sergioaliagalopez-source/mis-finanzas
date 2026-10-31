@@ -518,6 +518,35 @@ details summary { cursor: pointer; padding: 4px 0; }
 .quick.ingreso .q-save { background: #0a8f0a; }
 .q-del { border: 0; background: none; color: var(--bad); cursor: pointer; font-size: 14px; }
 
+/* ---------- "Hoy podés gastar" ---------- */
+.spend-card .label { color: var(--text-2); font-size: 14px; }
+.spend-value { font-size: 36px; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 10px; }
+.spend-value.good { color: var(--text); }
+.spend-value.warning { color: #e09600; }
+.spend-value.critical { color: var(--bad); }
+.spend-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.spend-foot .link-btn { margin: 0; padding: 0; font-size: 13px; }
+.calc { display: flex; flex-direction: column; gap: 6px; }
+.calc-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--text-2); }
+.calc-row b { color: var(--text); white-space: nowrap; }
+.calc-row.total { border-top: 1px solid var(--grid); padding-top: 6px; color: var(--text); font-weight: 600; }
+
+/* ---------- Favoritos de un toque ---------- */
+.favs-label { margin-top: 14px; font-size: 12px; color: var(--muted); }
+.favs { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 2px; scrollbar-width: none; }
+.favs::-webkit-scrollbar { display: none; }
+.fav { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-2); cursor: pointer; font-size: 14px; color: var(--text); }
+.fav .ico { display: inline-block; color: var(--text-2); }
+.fav b { font-weight: 600; }
+.fav.gasto b { color: var(--bad); }
+.fav.ingreso b { color: var(--good); }
+.fav:active { transform: scale(.97); }
+.quick .favs { padding-top: 0; }
+
+/* Aviso con botón (ej. Deshacer) */
+.toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
+.toast-btn { border: 0; background: none; color: #3987e5; font-weight: 700; cursor: pointer; padding: 4px 2px; font-size: 14px; }
+
 /* Celular: van al final para ganarle a las reglas de arriba */
 @media (max-width: 760px) {
   .nav-secondary { display: none; }

@@ -147,7 +147,9 @@ const BOB_TYPES = [['oficial', 'Oficial del BCB (el que usan los bancos)'], ['bi
 // Blend: el protocolo DeFi (Stellar) donde Meru invierte tus USDC. Fuente: DefiLlama.
 const BLEND_USDC_POOL = 'ecf788e3-d2ef-4fdd-9ece-8a2d96226ddf';
 
-const VIEWS = { resumen: 'Resumen', movimientos: 'Movimientos', metas: 'Metas', analisis: 'Análisis', inversiones: 'Inversiones', cuentas: 'Cuentas', ajustes: 'Ajustes' };
+const VIEWS = { resumen: 'Inicio', movimientos: 'Movimientos', plan: 'Plan', inversiones: 'Inversiones', cuentas: 'Cuentas', ajustes: 'Ajustes' };
+// Metas y Análisis ahora viven dentro de Plan
+const VIEW_ALIAS = { metas: 'plan', analisis: 'plan' };
 
 /* ---------------- Estado ---------------- */
 
@@ -514,9 +516,18 @@ async function refreshAll({ silent = false } = {}) {
 /* ---------------- UI helpers ---------------- */
 
 let toastTimer;
-function toast(msg, ms = 2600) {
+// action = { label, fn }: agrega un botón (ej. "Deshacer") al aviso
+function toast(msg, ms = 2600, action) {
   const el = $('#toast');
   el.textContent = msg;
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-btn';
+    b.textContent = action.label;
+    b.onclick = () => { el.classList.remove('show'); action.fn(); };
+    el.append(b);
+  }
+  el.classList.toggle('has-action', !!action);
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), ms);
@@ -724,8 +735,6 @@ function viewResumen() {
   const stale = !CloudSync.enabled() && (FileSync.status === 'none' || FileSync.status === 'unsupported') && hasData();
   const recent = [...S.transactions].sort(sortTx).slice(0, 5);
   const pend = upcomingItems(7).slice(0, 3);
-  const doneToday = activeDays().has(todayISO());
-  const n = streak();
   const holdings = [...S.holdings].sort((a, b) => holdingValue(b) - holdingValue(a));
   const accounts = [...S.accounts].sort((a, b) => Math.abs(toUSD(b.balance, b.currency)) - Math.abs(toUSD(a.balance, a.currency)));
 
@@ -743,14 +752,10 @@ function viewResumen() {
       <div><span class="muted small">Te deben</span><b class="money up">+${fmtMoney(t.lent)}</b></div>
     </div>` : ''}
     ${quickActionsHTML()}
+    ${favorites().length ? `<div class="favs-label">Rápidos: un toque y queda guardado</div>${favChipsHTML()}` : ''}
   </section>
 
-  <section class="card">
-    <div class="card-head" style="margin-bottom:10px"><h2>${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</h2>
-      <span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span></div>
-    ${monthSummaryHTML(currentMonth())}
-    ${!doneToday && new Date().getHours() >= 19 ? `<div class="checkin">¿Hoy no gastaste nada? <button class="btn sm" data-action="checkin">Hoy no gasté</button></div>` : ''}
-  </section>
+  ${spendCardHTML()}
 
   ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="movimientos" class="small">Ver fijos</a></div>
     <div class="list">${pend.map((it) => `<div class="list-row act">
@@ -767,8 +772,7 @@ function viewResumen() {
 
   ${S.goals.length ? (() => { const P = planNumbers(); return `<section class="card"><div class="card-head" style="margin-bottom:8px"><h2>Metas</h2><a href="#" data-action="go" data-id="metas" class="small">Ver plan</a></div>
     ${S.goals.map((g) => { const M = goalMath(g, P); return `<div class="goal-mini"><div class="budget-top"><b>${esc(g.name)}</b><span class="spacer"></span><b class="small">${fmtNum(M.pct, 0)}%</b></div>
-      <div class="meter"><div style="width:${M.pct}%"></div></div>
-      ${M.maxVariable != null ? `<div class="small muted money">Podés gastar hasta ${fmtMoney(Math.max(0, M.maxVariable))} por mes en variables.</div>` : ''}</div>`; }).join('')}</section>`; })() : ''}
+      <div class="meter"><div style="width:${M.pct}%"></div></div></div>`; }).join('')}</section>`; })() : ''}
 
   <details class="more-box" ${S.settings.resumenMore ? 'open' : ''} data-pref="resumenMore">
     <summary>Ver más: cuentas, inversiones y gráficos</summary>
@@ -848,6 +852,16 @@ function viewInversiones() {
   </section>`;
 }
 
+// Cuentas sin saldo que nunca se usaron (ej. "Tarjeta 2" de ejemplo): se pueden quitar de un toque
+function unusedAccounts() {
+  // (las que configuraste con banco/entidad o rendimiento, como Meru, nunca se sugieren)
+  return S.accounts.filter((a) => !Number(a.balance) && !a.institution && !(Number(a.apy) > 0)
+    && !S.transactions.some((t) => t.accountId === a.id || t.toAccountId === a.id)
+    && !S.recurring.some((r) => r.accountId === a.id)
+    && !(S.loans || []).some((l) => l.accountId === a.id)
+    && !(S.goals || []).some((g) => g.source === a.id));
+}
+
 function viewCuentas() {
   const groups = Object.entries(ACCOUNT_TYPES).map(([k, info]) => [k, info, S.accounts.filter((a) => a.type === k)]).filter(([, , list]) => list.length);
   const card = (a) => {
@@ -888,6 +902,7 @@ function viewCuentas() {
     ${tile('Liquidez neta', fmtMoney(t.liquid - t.debt), 'Liquidez − deudas')}
     ${tile('Cuentas', String(S.accounts.length), `${groups.length} tipo(s)`)}
   </div>
+  ${unusedAccounts().length ? `<div class="banner">Tenés ${unusedAccounts().length} cuenta(s) que nunca usaste: <b>${unusedAccounts().map((a) => esc(a.name)).join(", ")}</b>. <a href="#" data-action="cleanAccounts">Quitarlas</a></div>` : ""}
   <div class="toolbar"><span class="muted small">Por seguridad guardá sólo los últimos 4 dígitos de cada tarjeta.</span><span class="spacer"></span>
     <button class="btn primary" data-action="addAccount">+ Agregar cuenta o tarjeta</button></div>
   ${groups.map(([k, info, list]) => `<div class="acc-group"><h3>${info.label}</h3><div class="acc-grid">${list.map(card).join('')}</div></div>`).join('')
@@ -1164,83 +1179,91 @@ const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devol
 function viewAjustes() {
   const s = S.settings;
   const used = [...new Set([s.localCurrency, ...S.accounts.map((a) => a.currency)])].filter((c) => !USD_PEGGED.has(c));
+  const hr = '<hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">';
+  const manualBOB = used.includes('BOB') && s.bobRateType === 'manual';
   return `
   <div class="settings-grid">
     <section class="card" id="respaldo">
-      <h2 style="margin-bottom:8px">${icon('sync', 18)} Sincronización automática (iPhone + PC)</h2>
+      <h2 style="margin-bottom:8px">${icon('sync', 18)} Tus datos en iPhone y PC</h2>
       <div id="cloudSync">${cloudSyncHTML()}</div>
-      <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
-      <h2 style="margin-bottom:8px">${FileSync.supported ? 'Guardado automático en OneDrive' : 'Sincronizar con OneDrive (manual)'}</h2>
-      <div id="fileSync">${fileSyncHTML()}</div>
-      <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
-      <h2 style="margin-bottom:8px">Respaldo manual</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">Todo se guarda solo en este navegador mientras usás la app. Además podés descargar una copia con fecha cuando quieras.</p>
-      <p class="small">Último respaldo manual: <b>${fmtDateTime(s.lastBackup)}</b></p>
+      ${hr}
+      <h2 style="margin-bottom:8px">Copia de seguridad</h2>
+      <p class="small" style="color:var(--text-2);margin-top:0">Un archivo con todos tus datos, por si acaso. Última copia: <b>${fmtDateTime(s.lastBackup)}</b></p>
       <div class="toolbar">
-        <button class="btn primary" data-action="backup">Exportar respaldo (.json)</button>
-        <label class="btn">Restaurar respaldo<input type="file" id="restoreFile" accept=".json,application/json" hidden></label>
+        <button class="btn" data-action="backup">Descargar copia</button>
+        <label class="btn">Restaurar copia<input type="file" id="restoreFile" accept=".json,application/json" hidden></label>
       </div>
-      <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
-      <h2 style="margin-bottom:8px">Zona peligrosa</h2>
-      <button class="btn danger" data-action="resetAll">Borrar todos los datos</button>
     </section>
+
     <section class="card" id="bloqueo">
       <h2 style="margin-bottom:8px">${icon('lock', 18)} Bloqueo con Face ID o PIN</h2>
       ${lockSettingsHTML()}
-      <hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">
-      <h2 style="margin-bottom:8px">${icon('flame', 18)} Recordatorio diario (gratis, con el iPhone)</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">La app no puede mandarte notificaciones sin un servidor pago, pero tu iPhone sí, gratis:</p>
-      <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0">
-        <li>Abrí la app <b>Atajos</b> → pestaña <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
-        <li>Elegí <b>21:00</b>, <b>Diariamente</b> y <b>Ejecutar inmediatamente</b>.</li>
-        <li>Agregá la acción <b>Mostrar notificación</b> con el texto "¿Registraste tus gastos de hoy?".</li></ol>
-      <p class="small" style="color:var(--text-2);margin-bottom:0">Para abrir la app con la voz: <i>"Oye Siri, abrir MyFinance"</i>, y tocá el micrófono.</p>
     </section>
+
     <section class="card">
-      <h2 style="margin-bottom:14px">Monedas</h2>
-      <div class="form-row"><label for="setLocal">Tu moneda local</label>
-        <select id="setLocal">${CURRENCIES.filter(([c]) => !USD_PEGGED.has(c)).map(([c, n]) => `<option value="${c}" ${c === s.localCurrency ? 'selected' : ''}>${c} — ${n}</option>`).join('')}</select></div>
-      ${used.includes('ARS') ? `<div class="form-row"><label for="setArsType">Dólar para convertir pesos argentinos</label>
-        <select id="setArsType">${ARS_TYPES.map(([v, l]) => `<option value="${v}" ${v === s.arsRateType ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        <span class="hint">Se toma el valor de venta de dolarapi.com.</span></div>` : ''}
-      ${used.includes('BOB') ? `<div class="form-row"><label for="setBobType">Dólar para convertir bolivianos</label>
+      <h2 style="margin-bottom:14px">Moneda y tipo de cambio</h2>
+      <div class="form-row"><label for="setLocal">Tu moneda</label>
+        <select id="setLocal">${CURRENCIES.filter(([c]) => !USD_PEGGED.has(c)).map(([c, n]) => `<option value="${c}" ${c === s.localCurrency ? 'selected' : ''}>${curLabel(c)} — ${n}</option>`).join('')}</select></div>
+      ${used.includes('BOB') ? `<div class="form-row"><label for="setBobType">Dólar que se usa para convertir</label>
         <select id="setBobType">${BOB_TYPES.map(([v, l]) => `<option value="${v}" ${v === s.bobRateType ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        <span class="hint">${s.bobRateType === 'manual' ? 'Escribí abajo, en la tabla, el tipo de cambio de tu banco.' : 'Valor de venta de bo.dolarapi.com.'} Hoy: Bs ${fmtNum(s.rates.BOB || 0, 2)} por dólar.</span></div>` : ''}
-      <div class="form-row"><label for="setDefAcc">Cuenta por defecto para registrar</label>
-        <select id="setDefAcc"><option value="">Automática (efectivo en la moneda que digas)</option>${S.accounts.filter((a) => a.type !== 'credito').map((a) => `<option value="${a.id}" ${a.id === s.defaultAccountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
-        <span class="hint">Se usa cuando registrás un gasto sin decir de qué cuenta salió.</span></div>
-      <div class="form-row"><label><input type="checkbox" id="setAutoRates" ${s.autoRates ? 'checked' : ''}> Actualizar tipos de cambio automáticamente</label>
-        <span class="hint">Desactivalo si preferís cargarlos a mano. Última actualización: ${fmtDateTime(s.ratesUpdated)}</span></div>
-      <table class="rates-table"><thead><tr><th>Moneda</th><th class="num">Unidades por 1 USD</th></tr></thead><tbody>
-        ${used.map((c) => `<tr><td>${c}</td><td class="num"><input type="text" inputmode="decimal" data-rate="${c}" value="${numInput(s.rates[c])}" placeholder="ej. 1250"></td></tr>`).join('') || '<tr><td colspan="2" class="muted">Sólo usás dólares.</td></tr>'}
-      </tbody></table>
+        <span class="hint">Hoy: <b>Bs ${fmtNum(s.rates.BOB || 0, 2)}</b> por dólar${manualBOB ? '' : ` · actualizado ${fmtDateTime(s.ratesUpdated)}`}</span></div>` : ''}
+      ${manualBOB ? `<div class="form-row"><label>Tipo de cambio de tu banco (Bs por 1 dólar)</label>
+        <input type="text" inputmode="decimal" data-rate="BOB" value="${numInput(s.rates.BOB)}" placeholder="ej. 12,10"></div>` : ''}
+      ${used.includes('ARS') ? `<div class="form-row"><label for="setArsType">Dólar para convertir pesos argentinos</label>
+        <select id="setArsType">${ARS_TYPES.map(([v, l]) => `<option value="${v}" ${v === s.arsRateType ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
     </section>
+  </div>
 
-    <section class="card">
-      <h2 style="margin-bottom:14px">Precios automáticos</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">Cripto y oro tokenizado (BTC, ETH, PAXG…) se actualizan solos con CoinGecko.
-      Para acciones y ETF (VOO, NVDA, GOOGL) necesitás una clave gratuita de <b>Finnhub</b>:</p>
-      <ol class="small" style="color:var(--text-2);padding-left:18px">
-        <li>Entrá a <a href="https://finnhub.io/register" target="_blank" rel="noopener">finnhub.io/register</a> y creá una cuenta gratis.</li>
-        <li>Copiá tu “API key” del panel.</li><li>Pegala acá y tocá Guardar.</li></ol>
-      <div class="form-row"><label for="setFinnhub">Clave de Finnhub</label>
-        <input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Pegá tu API key" autocomplete="off">
-        <span class="hint">Se guarda sólo en este navegador.</span></div>
-      <button class="btn primary" data-action="saveKey">Guardar clave</button>
-    </section>
+  <details class="more-box" ${s.settingsAdvOpen ? 'open' : ''} data-pref="settingsAdvOpen">
+    <summary>Avanzado</summary>
+    <div class="more-inner"><div class="settings-grid">
+      <section class="card">
+        <h2 style="margin-bottom:8px">${icon('flame', 18)} Recordatorio diario (con el iPhone)</h2>
+        <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0">
+          <li>App <b>Atajos</b> → <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
+          <li><b>21:00</b>, <b>Diariamente</b>, <b>Ejecutar inmediatamente</b>.</li>
+          <li>Acción <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>
+        <p class="small" style="color:var(--text-2);margin-bottom:0">Con la voz: <i>"Oye Siri, abrir MyFinance"</i>.</p>
+      </section>
 
-    <section class="card" id="importar">
-      <h2 style="margin-bottom:8px">Importar mi portafolio desde mi chat</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">1. Copiá este pedido y pegalo en el chat donde tenés la info de tu portafolio.<br>
-      2. Pegá abajo el JSON que te devuelva y tocá Importar. Actualiza los activos que ya existen y agrega los nuevos.</p>
-      <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
-      <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
-      <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
-      <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
-    </section>
-  </div>`;
+      <section class="card">
+        <h2 style="margin-bottom:14px">Tipos de cambio</h2>
+        <div class="form-row"><label><input type="checkbox" id="setAutoRates" ${s.autoRates ? 'checked' : ''}> Actualizar automáticamente</label>
+          <span class="hint">Última actualización: ${fmtDateTime(s.ratesUpdated)}</span></div>
+        <table class="rates-table"><thead><tr><th>Moneda</th><th class="num">Unidades por 1 USD</th></tr></thead><tbody>
+          ${used.map((c) => `<tr><td>${curLabel(c)}</td><td class="num"><input type="text" inputmode="decimal" data-rate="${c}" value="${numInput(s.rates[c])}"></td></tr>`).join('') || '<tr><td colspan="2" class="muted">Sólo usás dólares.</td></tr>'}
+        </tbody></table>
+      </section>
+
+      <section class="card">
+        <h2 style="margin-bottom:8px">Guardado en OneDrive</h2>
+        <div id="fileSync">${fileSyncHTML()}</div>
+      </section>
+
+      <section class="card">
+        <h2 style="margin-bottom:8px">Precios de acciones y ETF</h2>
+        <p class="small" style="color:var(--text-2);margin-top:0">BTC, ETH y PAXG se actualizan solos. Para VOO, NVDA y GOOGL hace falta una clave gratis de
+          <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub</a>.</p>
+        <div class="form-row"><input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Clave de Finnhub" autocomplete="off"></div>
+        <button class="btn" data-action="saveKey">Guardar clave</button>
+      </section>
+
+      <section class="card" id="importar">
+        <h2 style="margin-bottom:8px">Importar mi portafolio desde mi chat</h2>
+        <p class="small" style="color:var(--text-2);margin-top:0">Copiá este pedido, pegalo en tu chat de Claude y pegá abajo lo que te devuelva.</p>
+        <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
+        <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
+        <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
+        <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
+      </section>
+
+      <section class="card">
+        <h2 style="margin-bottom:8px">Zona peligrosa</h2>
+        <button class="btn danger" data-action="resetAll">Borrar todos los datos</button>
+      </section>
+    </div></div>
+  </details>`;
 }
-
 /* ---------------- Análisis ---------------- */
 
 // Necesidades (regla 50/30/20). Todo lo demás cuenta como "gustos".
@@ -1713,23 +1736,6 @@ function etaLabel(months) {
 
 function goalCardHTML(g, P) {
   const M = goalMath(g, P);
-  const month = currentMonth();
-  const spentVar = S.transactions.filter((t) => t.date?.startsWith(month) && isVariable(t)).reduce((s, t) => s + txUSD(t), 0);
-  const daysLeft = daysInMonth(month) - new Date().getDate() + 1;
-  let budget = '';
-  if (M.maxVariable != null) {
-    const left = M.maxVariable - spentVar;
-    const st = M.maxVariable <= 0 ? { tone: 'critical', icon: '⛔', label: 'Con tus fijos no alcanza' }
-      : left < 0 ? { tone: 'critical', icon: '⛔', label: 'Te pasaste este mes' }
-      : spentVar / M.maxVariable > new Date().getDate() / daysInMonth(month) ? { tone: 'warning', icon: '⚠', label: 'Vas rápido' }
-      : { tone: 'good', icon: '✓', label: 'Vas bien' };
-    budget = `<div class="goal-budget">
-      <div class="budget-top"><b>Gasto variable máximo: <span class="money">${fmtMoney(Math.max(0, M.maxVariable))}</span> por mes</b> ${statusPill(st)}</div>
-      <div class="meter"><div class="${st.tone}" style="width:${M.maxVariable > 0 ? Math.min(100, (spentVar / M.maxVariable) * 100) : 100}%"></div></div>
-      <div class="small muted money">Este mes llevás ${fmtMoney(spentVar)} en comida, salidas, transporte y otros variables.
-        ${left >= 0 ? `Te quedan <b>${fmtMoney(left)}</b> → unos <b>${fmtMoney(left / daysLeft)} por día</b> hasta fin de mes.` : `Te pasaste ${fmtMoney(-left)}.`}</div>
-    </div>`;
-  }
   const onTrack = M.needed == null || P.projectedSaving >= M.needed;
   return `<section class="card goal-card">
     <div class="card-head"><div><h2>${esc(g.name)}</h2><div class="muted small">${g.date ? `Para el ${fmtDate(g.date)}` : 'Sin fecha límite'} · ${esc(GOAL_SOURCES().find(([v]) => v === (g.source || 'liquid'))?.[1] || '')}</div></div>
@@ -1743,7 +1749,7 @@ function goalCardHTML(g, P) {
       <div><span class="muted small">A tu ritmo (${fmtMoney(P.projectedSaving)}/mes) llegás en</span><b>${etaLabel(M.etaMonths)}</b></div>
     </div>
     ${M.needed != null ? `<div class="small ${onTrack ? 'up' : 'down'}" style="margin:8px 0">${onTrack ? '✓ A tu ritmo actual llegás a tiempo.' : `⚠ A tu ritmo actual no llegás: necesitás ${fmtMoney(M.needed - P.projectedSaving)} más por mes.`}</div>` : ''}
-    ${budget}
+    <div class="small muted">Lo que podés gastar por día ya tiene en cuenta esta meta (arriba, en "Hoy podés gastar").</div>
   </section>`;
 }
 
@@ -1823,17 +1829,20 @@ function viewMetas() {
   lastProjection = { start, perMonth: P.projectedSaving, target: M0?.target || null, needed: M0?.needed ?? null, months: M0?.monthsLeft || (M0?.etaMonths ? Math.min(36, M0.etaMonths + 1) : 12) };
   const thisMonth = monthStats(currentMonth());
   return `
+  ${S.goals.length ? S.goals.map((g) => goalCardHTML(g, P)).join('') : `<section class="card" style="text-align:center;padding:28px 20px">
+    <h2 style="font-size:18px;margin-bottom:6px">¿A qué querés llegar?</h2>
+    <p class="muted" style="margin:0 auto 14px;max-width:460px">Poné una meta (un monto y, si querés, una fecha) y te digo cuánto ahorrar por mes y cuánto podés gastar como máximo para llegar.</p>
+    <button class="btn primary" data-action="addGoal">${icon('target', 16)} Crear mi meta</button></section>`}
+  ${S.goals.length ? '<div class="toolbar"><span class="spacer"></span><button class="btn" data-action="addGoal">+ Otra meta</button></div>' : ''}
+  <details class="more-box" ${S.settings.planProjOpen ? 'open' : ''} data-pref="planProjOpen">
+  <summary>Proyección y récord de ahorro</summary>
+  <div class="more-inner">
   <div class="tiles">
     ${tile('Ahorro máximo posible', fmtMoney(P.maxSaving) + '<span class="t-unit">/mes</span>', 'Ingresos fijos + intereses − gastos fijos')}
     ${tile('Ahorro de este mes', `<span class="${cls(thisMonth.income - thisMonth.expense)}">${fmtMoney(thisMonth.income - thisMonth.expense, { sign: true })}</span>`, 'Lo que va del mes')}
     ${tile('Tu récord mensual', T.best ? fmtMoney(T.best.real) : '—', T.best ? `${monthLabel(T.best.m, 'long')} ${T.best.m.slice(0, 4)}` : 'Todavía sin meses completos')}
     ${tile('Proyección a 12 meses', `<span class="${cls(P.projectedSaving)}">${fmtMoney(P.projectedSaving * 12, { sign: true })}</span>`, `A tu ritmo: ${fmtMoney(P.projectedSaving)}/mes`)}
   </div>
-  ${S.goals.length ? S.goals.map((g) => goalCardHTML(g, P)).join('') : `<section class="card" style="text-align:center;padding:28px 20px">
-    <h2 style="font-size:18px;margin-bottom:6px">¿A qué querés llegar?</h2>
-    <p class="muted" style="margin:0 auto 14px;max-width:460px">Poné una meta (un monto y, si querés, una fecha) y te digo cuánto ahorrar por mes y cuánto podés gastar como máximo para llegar.</p>
-    <button class="btn primary" data-action="addGoal">${icon('target', 16)} Crear mi meta</button></section>`}
-  ${S.goals.length ? '<div class="toolbar"><span class="spacer"></span><button class="btn" data-action="addGoal">+ Otra meta</button></div>' : ''}
   <section class="card"><div class="card-head"><h2>Proyección${g0 ? `: ${esc(g0.name)}` : ' de tu ahorro'}</h2>
     <div class="legend"><span><i class="swatch" style="background:var(--c1)"></i>A tu ritmo</span>${M0?.needed != null ? '<span><i class="swatch" style="background:var(--c2)"></i>Lo necesario</span>' : ''}</div></div>
     <div id="projChart" class="line-chart" style="height:240px"></div>
@@ -1849,7 +1858,19 @@ function viewMetas() {
         <td class="num">${r.max > 0 ? fmtPct((r.real / r.max) * 100, false) : '—'}</td>
         <td class="num money">${fmtMoney(r.acc)}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">Registrá movimientos para ver la tabla.</td></tr>'}</tbody>
     </table></div>
-    <p class="small muted" style="margin:8px 0 0"><b>Ahorro máximo</b> = lo que te quedaría si sólo pagaras los gastos fijos. <b>% del máximo</b> = cuánto de ese máximo lograste ahorrar de verdad.</p></section>`;
+    <p class="small muted" style="margin:8px 0 0"><b>Ahorro máximo</b> = lo que te quedaría si sólo pagaras los gastos fijos. <b>% del máximo</b> = cuánto de ese máximo lograste ahorrar de verdad.</p></section>
+  </div></details>`;
+}
+
+// Plan = metas + análisis en un solo lugar: arriba tu meta y cuánto podés gastar, abajo el detalle
+function viewPlan() {
+  return `
+  ${spendCardHTML()}
+  ${viewMetas()}
+  <details class="more-box" ${S.settings.planAnalysisOpen ? 'open' : ''} data-pref="planAnalysisOpen">
+    <summary>En qué gastás y cómo ahorrar más</summary>
+    <div class="more-inner">${viewAnalisis()}</div>
+  </details>`;
 }
 
 function goalForm(g) {
@@ -3102,6 +3123,8 @@ function quickEntry(type = 'gasto', t = null) {
         <button type="button" class="q-icon" data-q="mic" aria-label="Dictar">${icon('mic', 20)}</button>
         <button type="button" class="q-icon" data-q="close" aria-label="Cerrar">${icon('x', 20)}</button>
       </div>
+      
+      ${t ? '' : favChipsHTML(st.type, 'data-q-fav')}
       <label class="q-amount"><span class="q-sign">${out ? '−' : '+'}</span><span class="q-cur">${curLabel(acc?.currency || '')}</span>
         <input id="qAmount" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(st.amount === '' ? '' : numInput(st.amount))}"></label>
       <div class="q-cats">${catsByUse(st.type).map((c) => `<button type="button" class="q-cat ${c === st.category ? 'on' : ''}" data-q-cat="${esc(c)}">
@@ -3123,8 +3146,9 @@ function quickEntry(type = 'gasto', t = null) {
   const err = (m) => { const p = dlg.querySelector('.form-error'); p.textContent = m; p.hidden = false; };
 
   dlg.onclick = (e) => {
-    const b = e.target.closest('[data-q],[data-q-type],[data-q-cat],[data-q-acc]');
+    const b = e.target.closest('[data-q],[data-q-type],[data-q-cat],[data-q-acc],[data-q-fav]');
     if (!b) { if (e.target === dlg) dlg.close(); return; }
+    if (b.hasAttribute('data-q-fav')) { dlg.close(); addFavorite(b.dataset.id); return; }
     read();
     if (b.dataset.qType) {
       if (b.dataset.qType === st.type) return;
@@ -3236,15 +3260,146 @@ function monthSummaryHTML(month) {
   </div>`;
 }
 
+/* ---------------- "Hoy podés gastar" ----------------
+   Ingresos del mes (lo que ya entró + los fijos que faltan) − gastos fijos − lo que querés ahorrar
+   = plata para el día a día. Se reparte entre los días que quedan del mes. */
+
+function spendPlan() {
+  const P = planNumbers();
+  const month = currentMonth(), today = todayISO();
+  const txs = S.transactions.filter((t) => t.date?.startsWith(month) && !nonFlow(t));
+  const sum = (list) => list.reduce((s, t) => s + txUSD(t), 0);
+  const pendingRules = (type) => S.recurring.filter((r) => r.type === type && !recurringTx(r, month) && !(r.skip || []).includes(month));
+  const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').reduce((s, r) => s + toUSD(r.amount, r.currency), 0) + P.interest;
+  const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  const g = S.goals[0];
+  const M = g ? goalMath(g, P) : null;
+  const rate = Number(S.settings.saveRate ?? 10);
+  const save = M?.needed != null ? M.needed : Math.max(0, income * rate / 100);
+  const budget = income - fixed - save;
+  const spentBefore = sum(txs.filter((t) => isVariable(t) && t.date < today));
+  const spentToday = sum(txs.filter((t) => isVariable(t) && t.date === today));
+  const daysLeft = daysInMonth(month) - new Date().getDate() + 1;
+  const perDay = (budget - spentBefore) / daysLeft;
+  return { income, fixed, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent: spentBefore + spentToday, daysLeft, perDay, todayLeft: perDay - spentToday };
+}
+
+function spendCardHTML() {
+  const p = spendPlan();
+  const cur = S.settings.localCurrency;
+  const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
+  const n = streak(), doneToday = activeDays().has(todayISO());
+  const pct = p.budget > 0 ? Math.min(100, (p.spent / p.budget) * 100) : 100;
+  const tone = p.budget <= 0 || p.todayLeft < 0 ? 'critical' : p.todayLeft < p.perDay * 0.3 ? 'warning' : 'good';
+  const big = p.budget <= 0 ? '' : p.todayLeft >= 0
+    ? `<div class="label">Hoy podés gastar</div><div class="spend-value money ${tone}">${L(p.todayLeft)}</div>`
+    : `<div class="label">Hoy te pasaste</div><div class="spend-value money critical">${L(-p.todayLeft)}</div>`;
+  return `<section class="card spend-card">
+    <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
+      <span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span></div>
+    ${p.budget <= 0 ? `<div class="label">Este mes no queda para gastos del día a día</div>
+      <div class="small muted" style="margin:4px 0 8px">Tus ingresos (${L(p.income)}) no cubren tus fijos más el ahorro. Revisá tu meta o tus fijos.</div>` : big}
+    <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
+    <div class="small muted money" style="margin-top:6px">Gastaste ${L(p.spent)} de ${L(Math.max(0, p.budget))} del mes · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}${p.budget > 0 && p.perDay > 0 ? ` (${L(p.perDay)}/día)` : ''}</div>
+    <div class="spend-foot">
+      <button class="link-btn" data-action="spendInfo">¿Cómo se calcula?</button>
+      ${!doneToday && new Date().getHours() >= 19 ? `<button class="btn sm" data-action="checkin">Hoy no gasté</button>` : ''}
+    </div>
+  </section>`;
+}
+
+function spendInfo() {
+  const p = spendPlan();
+  const cur = S.settings.localCurrency;
+  const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
+  const row = (a, b, c = '') => `<div class="calc-row ${c}"><span>${a}</span><b class="money">${b}</b></div>`;
+  openForm({
+    title: '¿Cómo se calcula?',
+    fields: [
+      { type: 'html', html: `<div class="calc">
+        ${row('Ingresos del mes (lo que entró + fijos que faltan)', L(p.income))}
+        ${row('− Gastos fijos (gym, alquiler…)', L(p.fixed))}
+        ${row(p.goal ? `− Ahorro para tu meta "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}% de tus ingresos)`, L(p.save))}
+        ${row('= Para el día a día este mes', L(p.budget), 'total')}
+        ${row('− Ya gastaste antes de hoy', L(p.spentBefore))}
+        ${row(`÷ ${p.daysLeft} días que quedan`, `${L(p.perDay)} por día`, 'total')}
+        ${row('− Gastaste hoy', L(p.spentToday))}
+        ${row('= Hoy podés gastar', L(p.todayLeft), 'total')}
+      </div>` },
+      ...(p.goal ? [{ type: 'html', html: '<p class="small muted" style="margin:0">El ahorro sale de tu meta (Plan). Si no tenés meta, se usa el porcentaje de abajo.</p>' }] : []),
+      { name: 'saveRate', label: 'Si no tenés meta, ¿qué % de tus ingresos querés ahorrar?', type: 'number', value: p.rate, full: true },
+    ],
+    submitLabel: 'Listo',
+    onSubmit: (v) => {
+      if (v.saveRate != null && !(v.saveRate >= 0 && v.saveRate <= 90)) return 'Elegí un porcentaje entre 0 y 90.';
+      if (v.saveRate != null) S.settings.saveRate = v.saveRate;
+      save(); render();
+    },
+  });
+}
+
+/* ---------------- Favoritos de un toque ----------------
+   Lo que registrás seguido (mismo detalle, categoría, monto y cuenta) aparece como botón:
+   un toque y queda guardado, con "Deshacer" por si acaso. */
+
+function favorites(type, n = 6) {
+  const since = isoOf(Date.now() - 90 * 864e5);
+  const groups = new Map();
+  for (const t of S.transactions) {
+    if (t.date < since || (type && t.type !== type) || !['gasto', 'ingreso'].includes(t.type) || nonFlow(t) || t.recurringId) continue;
+    if (!S.accounts.some((a) => a.id === t.accountId)) continue;
+    const key = [t.type, norm(t.note || ''), t.category, t.amount, t.accountId].join('|');
+    const g = groups.get(key) || { t, n: 0, last: '' };
+    g.n++;
+    if (t.date >= g.last) { g.last = t.date; g.t = t; }
+    groups.set(key, g);
+  }
+  return [...groups.values()].filter((g) => g.n >= 2).sort((a, b) => b.n - a.n || b.last.localeCompare(a.last)).slice(0, n).map((g) => g.t);
+}
+
+function favChipsHTML(type, attr = 'data-action="fav"') {
+  const favs = favorites(type);
+  if (!favs.length) return '';
+  return `<div class="favs">${favs.map((t) => {
+    const acc = S.accounts.find((a) => a.id === t.accountId);
+    const label = t.note && t.note !== t.category ? t.note : shortCat(t.category);
+    return `<button class="fav ${t.type}" ${attr} data-id="${t.id}">${catIcon(t.category, 16)}<span>${esc(label.length > 16 ? label.slice(0, 15) + '…' : label)}</span>
+      <b class="money">${t.type === 'gasto' ? '−' : '+'}${fmtIn(t.amount, acc?.currency || 'USD')}</b></button>`;
+  }).join('')}</div>`;
+}
+
+function addFavorite(id) {
+  const src = byId(S.transactions, id);
+  if (!src) return;
+  const tx = { id: uid(), created: new Date().toISOString(), type: src.type, date: todayISO(), time: nowTime(), accountId: src.accountId,
+    amount: src.amount, category: src.category, note: src.note, via: 'favorito' };
+  S.transactions.push(tx);
+  applyTx(tx, 1);
+  snapshot(); save(); render();
+  const acc = S.accounts.find((a) => a.id === tx.accountId);
+  toast(`Guardado: ${tx.note || tx.category} ${tx.type === 'gasto' ? '−' : '+'}${fmtIn(tx.amount, acc?.currency || 'USD')}`, 6000, {
+    label: 'Deshacer',
+    fn: () => {
+      if (!S.transactions.includes(tx)) return;
+      applyTx(tx, -1);
+      S.transactions = S.transactions.filter((x) => x !== tx);
+      tombstone(tx.id);
+      snapshot(); save(); render();
+      toast('Listo, lo deshice.');
+    },
+  });
+}
+
 /* ---------------- Render ---------------- */
 
 function render() {
+  if (VIEW_ALIAS[S.settings.view]) S.settings.view = VIEW_ALIAS[S.settings.view];
   const v = VIEWS[S.settings.view] ? S.settings.view : 'resumen';
   $$('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   $('#viewTitle').textContent = VIEWS[v];
   document.title = `${VIEWS[v]} · MyFinance`;
   const content = $('#content');
-  content.innerHTML = fileBannerHTML() + { resumen: viewResumen, inversiones: viewInversiones, cuentas: viewCuentas, movimientos: viewMovimientos, metas: viewMetas, analisis: viewAnalisis, ajustes: viewAjustes }[v]();
+  content.innerHTML = fileBannerHTML() + { resumen: viewResumen, inversiones: viewInversiones, cuentas: viewCuentas, movimientos: viewMovimientos, plan: viewPlan, ajustes: viewAjustes }[v]();
   drawCharts();
   $('#curLocalBtn').textContent = curLabel(S.settings.localCurrency);
   $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.cur === S.settings.displayCurrency));
@@ -3259,14 +3414,14 @@ function render() {
 function drawCharts() {
   const v = S.settings.view;
   if (v === 'resumen') drawLine($('#nwChart'), S.history);
-  if (v === 'analisis' && lastAnalysis) drawBars($('#barsChart'), lastAnalysis.per);
+  if (v === 'plan' && lastAnalysis) drawBars($('#barsChart'), lastAnalysis.per);
   if (v === 'movimientos' && lastMonthly) drawMonthly($('#monthlyChart'), lastMonthly);
-  if (v === 'metas' && lastProjection) drawProjection($('#projChart'), lastProjection);
+  if (v === 'plan' && lastProjection) drawProjection($('#projChart'), lastProjection);
 }
 
 function go(view, anchor) {
   $('#moreMenu').hidden = true;
-  S.settings.view = view;
+  S.settings.view = VIEW_ALIAS[view] || view;
   save(false);
   render();
   window.scrollTo(0, 0);
@@ -3989,6 +4144,17 @@ const ACTIONS = {
   lockOff: async () => { if (await confirmDlg('Quitar bloqueo', 'La app se va a abrir sin pedir PIN en este dispositivo.', 'Quitar')) { setLockCfg(null); render(); } },
   bioOn: () => enableBio(),
   bioOff: () => { const c = lockCfg(); delete c.credId; setLockCfg(c); render(); },
+  spendInfo: () => spendInfo(),
+  cleanAccounts: async () => {
+    const list = unusedAccounts();
+    if (!list.length) return;
+    if (await confirmDlg('Quitar cuentas sin usar', `Se van a quitar: <b>${list.map((a) => esc(a.name)).join(', ')}</b>. No tienen saldo ni movimientos, así que no cambia nada de tus números.`, 'Quitar')) {
+      for (const a of list) tombstone(a.id);
+      S.accounts = S.accounts.filter((a) => !list.includes(a));
+      save(); render(); toast('Listo, cuentas quitadas.');
+    }
+  },
+  fav: (id) => addFavorite(id),
   checkin: () => { if (!S.checkins.includes(todayISO())) S.checkins.push(todayISO()); save(); render(); toast('Anotado: hoy sin gastos 💪'); },
   loanAdd: () => loanForm(),
   loanEdit: (id) => loanForm(byId(S.loans, id)),
