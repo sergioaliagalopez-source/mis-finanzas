@@ -2172,7 +2172,7 @@ async function handleChatSend() {
   const ta = $('#chatText');
   const text = ta.value.trim();
   if (!text) return;
-  if (recognizer) { try { recognizer.stop(); } catch (e) { /* nada */ } }
+  stopMic({ keepResult: false });
   ta.value = '';
   chatBubble(esc(text), 'me');
   let items = parseMovementsJSON(text);
@@ -2227,29 +2227,94 @@ function savePending() {
     <span class="muted small">Este mes llevás gastado <span class="money">${fmtMoney(m.expense)}</span>.</span>`);
 }
 
-function toggleMic() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const btn = $('#chatMic');
-  if (!SR) {
-    $('#chatText').focus();
-    toast('Usá el micrófono del teclado para dictar.', 3500);
-    return;
-  }
-  if (recognizer) { recognizer.stop(); return; }
-  const ta = $('#chatText');
-  const base = ta.value ? ta.value.trimEnd() + ' ' : '';
-  recognizer = new SR();
-  recognizer.lang = /^es/.test(navigator.language) ? navigator.language : 'es-419';
-  recognizer.interimResults = true;
-  recognizer.continuous = false;
-  recognizer.onresult = (e) => { ta.value = base + [...e.results].map((r) => r[0].transcript).join(''); };
-  recognizer.onerror = (e) => { if (e.error === 'not-allowed') toast('Permití el micrófono, o usá el micrófono del teclado.', 4000); };
-  recognizer.onend = () => { recognizer = null; btn?.classList.remove('rec'); };
-  btn?.classList.add('rec');
-  try { recognizer.start(); } catch (e) { recognizer = null; btn?.classList.remove('rec'); }
+/* --- Micrófono (dictado del iPhone / navegador) ---
+   iOS a veces no avisa cuando termina de escuchar (si cerrás el chat, cambiás de app o no hablás).
+   Por eso cada escucha se maneja por separado y hay un "seguro" que la libera sola,
+   así el botón nunca queda trabado. */
+
+let recWatch = null;
+const SPEECH_LANGS = ['es-MX', 'es-ES', 'es-US', 'es-CL', 'es-CO', 'es-419'];
+const speechLang = () => (SPEECH_LANGS.includes(navigator.language) ? navigator.language : 'es-MX');
+
+function micUI(on, hint = '') {
+  $('#chatMic')?.classList.toggle('rec', on);
+  const h = $('#micHint');
+  if (h) { h.textContent = hint; h.hidden = !hint; }
 }
 
-function openChat() {
+// Corta cualquier escucha (sin esperar a que iOS avise) y deja el botón listo para la próxima
+function stopMic({ keepResult = false } = {}) {
+  clearTimeout(recWatch);
+  const r = recognizer;
+  recognizer = null;
+  micUI(false);
+  if (!r) return;
+  r._done = !keepResult;
+  try { keepResult ? r.stop() : r.abort(); } catch (e) { /* ya estaba cortada */ }
+}
+
+function toggleMic({ autoSend = false } = {}) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const ta = $('#chatText');
+  if (!ta) return;
+  if (!SR) {
+    ta.focus();
+    toast('Tocá el micrófono del teclado para dictar.', 3500);
+    return;
+  }
+  if (recognizer) { stopMic({ keepResult: true }); return; } // segundo toque = "ya terminé"
+
+  ta.blur(); // con el teclado abierto, iOS a veces no le da el micrófono a la app
+  const base = ta.value ? ta.value.trimEnd() + ' ' : '';
+  const rec = new SR();
+  rec.lang = speechLang();
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.maxAlternatives = 1;
+  let heard = false;
+  const arm = (ms) => { clearTimeout(recWatch); recWatch = setTimeout(() => { if (recognizer === rec) stopMic({ keepResult: heard }); }, ms); };
+
+  rec.onstart = () => { if (recognizer === rec) micUI(true, 'Escuchando… hablá ahora'); };
+  rec.onresult = (e) => {
+    if (rec._done) return;
+    heard = true;
+    ta.value = base + [...e.results].map((r) => r[0].transcript).join('');
+    ta.dispatchEvent(new Event('input'));
+    if (recognizer === rec) { micUI(true, 'Escuchando… (tocá el micrófono cuando termines)'); arm(6000); }
+  };
+  rec.onerror = (e) => {
+    if (rec._done || e.error === 'aborted') return;
+    const msg = {
+      'no-speech': 'No te escuché. Tocá el micrófono y hablá enseguida.',
+      'not-allowed': 'MyFinance no tiene permiso para el micrófono. Revisá Ajustes del iPhone → Safari → Micrófono, o usá el micrófono del teclado.',
+      'service-not-allowed': 'El dictado no está disponible ahora. Usá el micrófono del teclado.',
+      'audio-capture': 'Otra app está usando el micrófono. Probá de nuevo.',
+      'network': 'El dictado necesita internet. Probá de nuevo o usá el micrófono del teclado.',
+      'language-not-supported': 'Tu iPhone no tiene el dictado en español activado. Usá el micrófono del teclado.',
+    }[e.error] || 'El micrófono se cortó. Tocá de nuevo.';
+    toast(msg, 5000);
+  };
+  rec.onend = () => {
+    rec._done = true;
+    if (recognizer === rec) { clearTimeout(recWatch); recognizer = null; micUI(false); }
+    // Si lo abriste para hablar y dijiste algo, se interpreta solo (después revisás y guardás)
+    if (heard && autoSend && $('#chatDlg')?.open && ta.value.trim()) handleChatSend();
+  };
+
+  recognizer = rec;
+  micUI(true, 'Preparando el micrófono…');
+  try {
+    rec.start();
+    arm(12000); // seguro: si en 12 s no escuchó nada ni avisó, se libera solo
+  } catch (e) {
+    recognizer = null;
+    micUI(false);
+    toast('El micrófono estaba ocupado. Tocá de nuevo.', 3500);
+  }
+}
+
+function openChat({ listen = false } = {}) {
+  stopMic(); // por si quedó una escucha trabada de antes
   const dlg = $('#chatDlg');
   const pend = pendingRecurring();
   dlg.innerHTML = `<div class="chat">
@@ -2259,6 +2324,7 @@ function openChat() {
       <div class="bubble bot">Decímelo como te salga, por ejemplo:<br><i>"Almuerzo 25 bs, taxi 15 y ayer a la noche cine 40 con la tarjeta 1"</i><br><i>"Me pagaron el sueldo, 500 bs"</i></div>
       ${pend.length ? `<div class="bubble bot">Pendientes de este mes:<div class="chips">${pend.map((r) => `<button class="chip" data-rec="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}: ${esc(r.name)}</button>`).join('')}</div></div>` : ''}
     </div>
+    <div id="micHint" class="mic-hint" hidden></div>
     <div class="chat-input">
       <button class="btn ghost icon-btn mic" id="chatMic" data-chat="mic" aria-label="Dictar">${icon('mic', 22)}</button>
       <textarea id="chatText" rows="1" placeholder="ej. Almuerzo 25 bs con efectivo"></textarea>
@@ -2296,8 +2362,10 @@ function openChat() {
     p.category = p.type === 'ingreso' ? 'Otros ingresos' : 'Otros gastos';
     renderPending();
   };
-  dlg.onclose = () => { if (recognizer) try { recognizer.stop(); } catch (e) { /* nada */ } };
-  setTimeout(() => ta.focus(), 50);
+  dlg.onclose = () => stopMic();
+  // Abierto desde un botón de micrófono: empieza a escuchar en el mismo toque
+  if (listen) toggleMic({ autoSend: true });
+  else setTimeout(() => ta.focus(), 50);
 }
 
 /* ---------------- Sincronización automática entre dispositivos (GitHub, cifrada) ----------------
@@ -2608,7 +2676,7 @@ const Lock = {
   show() {
     if (!this.enabled()) return;
     closeDialogs(); // un formulario abierto quedaría por encima del bloqueo
-    if (recognizer) try { recognizer.stop(); } catch (e) { /* nada */ }
+    stopMic();
     this.locked = true;
     this.entry = '';
     document.body.classList.add('locked');
@@ -3172,7 +3240,7 @@ function quickEntry(type = 'gasto', t = null) {
     if (b.dataset.qAcc) { st.accountId = b.dataset.qAcc; st.showAcc = false; return paint(false); }
     const q = b.dataset.q;
     if (q === 'close') dlg.close();
-    if (q === 'mic') { dlg.close(); openChat(); }
+    if (q === 'mic') { dlg.close(); openChat({ listen: true }); }
     if (q === 'acc') { st.showAcc = !st.showAcc; st.showWhen = false; paint(false); }
     if (q === 'when') { st.showWhen = !st.showWhen; st.showAcc = false; paint(false); }
     if (q === 'del') { dlg.close(); ACTIONS.delTx(t.id); }
@@ -4136,7 +4204,7 @@ const ACTIONS = {
     $('#planBox')?.closest('section')?.nextElementSibling?.scrollIntoView({ block: 'start' });
     toast('Listo: tus metas quedaron como presupuesto mensual.');
   },
-  openChat: () => openChat(),
+  openChat: () => openChat({ listen: true }),
   cloudConnect: () => cloudConnectForm(),
   cloudNow: () => CloudSync.sync({ quiet: false }),
   cloudOff: async () => { if (await confirmDlg('Desactivar sincronización', 'Este dispositivo deja de sincronizarse. Tus datos siguen acá y en GitHub.', 'Desactivar')) CloudSync.disconnect(); },
@@ -4257,6 +4325,7 @@ function bindEvents() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       if (FileSync.timer) FileSync.write();
+      stopMic({ keepResult: true }); // al salir de la app, iOS corta el micrófono: lo dejamos listo para la vuelta
       if (CloudSync.timer) CloudSync.push();
       // Tapa los saldos antes de que el iPhone saque la "foto" del selector de apps
       Lock.hiddenAt = Date.now();
