@@ -576,3 +576,10 @@ details summary { cursor: pointer; padding: 4px 0; }
 
 /* Aviso "Escuchando…" del micrófono */
 .mic-hint { margin: 0 12px 6px; padding: 8px 12px; border-radius: 12px; font-size: 14px; text-align: center; color: #fff; background: #d03b3b; animation: pulse 1.2s infinite; }
+
+/* Transferencias con tipo de cambio */
+.fx-hint { font-size: 13px; color: var(--text-2); padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+.fx-hint:empty { display: none; }
+.tx-amt { display: flex; flex-direction: column; align-items: flex-end; }
+.tx-to { font-size: 12px; color: var(--muted); font-weight: 500; }
+.calc-sub { font-size: 14px; }

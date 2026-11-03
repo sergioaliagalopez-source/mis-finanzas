@@ -889,7 +889,7 @@ function viewCuentas() {
       ${a.notes ? `<div class="muted small">${esc(a.notes)}</div>` : ''}
       <div class="row-actions" style="justify-content:flex-start">
         <button class="btn sm" data-action="setBalance" data-id="${a.id}">${isCredit ? 'Actualizar deuda' : 'Actualizar saldo'}</button>
-        ${isCredit ? `<button class="btn sm" data-action="payCard" data-id="${a.id}">Pagar</button>` : ''}
+        ${isCredit ? `<button class="btn sm" data-action="payCard" data-id="${a.id}">Pagar</button>` : `<button class="btn sm" data-action="transferFrom" data-id="${a.id}">${icon('swap', 14)} Pasar</button>`}
         <button class="btn sm ghost" data-action="editAccount" data-id="${a.id}">Editar</button>
         <button class="btn sm ghost danger" data-action="delAccount" data-id="${a.id}" title="Eliminar">✕</button>
       </div></section>`;
@@ -915,6 +915,8 @@ function viewCuentas() {
    Sin día (ej. la mesada o el gym): quedan "pendientes" hasta que tocás "Ya entró" / "Ya pagué". */
 
 const daysInMonth = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
+// Ingresos fijos que elegiste no contar (ej. una mesada que no sabés si llega) quedan fuera de "Hoy podés gastar"
+const countsInPlan = (r) => r.countInPlan !== false;
 const recurringTx = (r, month) => S.transactions.find((t) => t.recurringId === r.id && t.date?.startsWith(month));
 
 // Monto de la regla convertido a la moneda de la cuenta donde entra / sale
@@ -971,7 +973,7 @@ function recurringHTML(month) {
     return `<div class="list-row">
       <span class="acc-ico sm ${r.type === 'ingreso' ? 'in' : 'out'}">${icon(r.type === 'ingreso' ? 'plus' : 'repeat', 16)}</span>
       <div class="grow"><div class="name">${esc(r.name)}</div>
-        <div class="meta">${r.day ? `Todos los ${r.day}` : 'Sin día fijo'} · ${esc(acc?.name || 'sin cuenta')}</div></div>
+        <div class="meta">${r.day ? `Todos los ${r.day}` : 'Sin día fijo'}${r.type === 'ingreso' && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
       <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}</div></div>
       <div class="rec-status">${status}</div>
       <button class="btn sm ghost icon-only" data-action="editRecurring" data-id="${r.id}" title="Editar">${icon('settings', 16)}</button>
@@ -998,6 +1000,7 @@ function recurringForm(r) {
       { name: 'catGasto', label: 'Categoría', type: 'select', value: r.category, options: CAT_GASTO.map((c) => [c, c]), showIf: (v) => v.type === 'gasto' },
       { name: 'catIngreso', label: 'Categoría', type: 'select', value: r.category, options: CAT_INGRESO.map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
       { name: 'day', label: 'Día del mes', value: r.day || '', placeholder: 'Vacío = sin día fijo', hint: 'Con día: se registra solo. Sin día: te queda pendiente para marcar cuando pase.' },
+      { name: 'countInPlan', label: 'Contarlo en "Hoy podés gastar" (apagalo si no sabés si va a llegar)', type: 'checkbox', value: r.countInPlan !== false, full: true, showIf: (v) => v.type === 'ingreso' },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este fijo (los movimientos ya registrados quedan)', type: 'checkbox', full: true }]),
     ],
     onSubmit: (v) => {
@@ -1006,7 +1009,7 @@ function recurringForm(r) {
       if (day != null && !(day >= 1 && day <= 31)) return 'El día tiene que ser un número del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
-        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day };
+        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true };
       // Al crear un fijo o cambiarle el día, sólo se registra solo desde el próximo vencimiento
       // (si el día de este mes ya pasó, ya lo tenés en tu saldo; marcalo a mano si hace falta)
       if (isNew || day !== r.day) next.startMonth = day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
@@ -1686,7 +1689,7 @@ const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId;
 
 // Números base del plan, todo en USD por mes
 function planNumbers() {
-  const recInc = S.recurring.filter((r) => r.type === 'ingreso').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  const recInc = S.recurring.filter((r) => r.type === 'ingreso' && countsInPlan(r)).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const recOut = S.recurring.filter((r) => r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const interest = monthlyInterestUSD();
   // Gasto variable promedio de los 3 meses anteriores con datos (o lo que va de este mes si recién empezás)
@@ -3283,12 +3286,12 @@ function txRowHTML(t) {
   const cur = acc?.currency || t.currency || 'USD';
   const ico = t.type === 'transferencia' ? icon('swap', 18) : t.loan ? icon('handshake', 18) : catIcon(t.category);
   const title = t.note || (t.type === 'transferencia' ? 'Transferencia' : t.category);
-  const meta = t.type === 'transferencia' ? `${esc(acc?.name || '—')} → ${esc(to?.name || '—')}`
+  const meta = t.type === 'transferencia' ? `${esc(acc?.name || '—')} → ${esc(to?.name || '—')}${t.fxRate ? ` · a ${Number(t.fxRate).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}`
     : `${esc(shortCat(t.category || ''))} · ${esc(acc?.name || 'cuenta eliminada')}`;
   return `<button class="tx-row" data-action="editTx" data-id="${t.id}">
     <span class="tx-ico ${t.type}">${ico}</span>
     <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ' <span class="tag">fijo</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
-    <span class="tx-amt money ${t.type}">${sign}${fmtIn(t.amount, cur)}</span>
+    <span class="tx-amt money ${t.type}">${sign}${fmtIn(t.amount, cur)}${t.type === 'transferencia' && t.toAmount && to ? `<small class="tx-to">→ ${fmtIn(t.toAmount, to.currency)}</small>` : ''}</span>
   </button>`;
 }
 
@@ -3338,7 +3341,7 @@ function spendPlan() {
   const txs = S.transactions.filter((t) => t.date?.startsWith(month) && !nonFlow(t));
   const sum = (list) => list.reduce((s, t) => s + txUSD(t), 0);
   const pendingRules = (type) => S.recurring.filter((r) => r.type === type && !recurringTx(r, month) && !(r.skip || []).includes(month));
-  const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').reduce((s, r) => s + toUSD(r.amount, r.currency), 0) + P.interest;
+  const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(r.amount, r.currency), 0) + P.interest;
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const g = S.goals[0];
   const M = g ? goalMath(g, P) : null;
@@ -3369,8 +3372,9 @@ function spendCardHTML() {
       <div class="small muted" style="margin:4px 0 8px">Tus ingresos (${L(p.income)}) no cubren tus fijos más el ahorro. Revisá tu meta o tus fijos.</div>` : big}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
     <div class="small muted money" style="margin-top:6px">Gastaste ${L(p.spent)} de ${L(Math.max(0, p.budget))} del mes · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}${p.budget > 0 && p.perDay > 0 ? ` (${L(p.perDay)}/día)` : ''}</div>
+    ${S.recurring.some((r) => r.type === "ingreso" && !countsInPlan(r)) ? `<div class="small muted" style="margin-top:4px">Sin contar: ${S.recurring.filter((r) => r.type === "ingreso" && !countsInPlan(r)).map((r) => esc(r.name)).join(", ")}</div>` : ""}
     <div class="spend-foot">
-      <button class="link-btn" data-action="spendInfo">¿Cómo se calcula?</button>
+      <button class="link-btn" data-action="spendInfo">Cómo se calcula · elegir ingresos</button>
       ${!doneToday && new Date().getHours() >= 19 ? `<button class="btn sm" data-action="checkin">Hoy no gasté</button>` : ''}
     </div>
   </section>`;
@@ -3381,11 +3385,17 @@ function spendInfo() {
   const cur = S.settings.localCurrency;
   const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
   const row = (a, b, c = '') => `<div class="calc-row ${c}"><span>${a}</span><b class="money">${b}</b></div>`;
+  const incomes = S.recurring.filter((r) => r.type === 'ingreso');
   openForm({
     title: '¿Cómo se calcula?',
     fields: [
+      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos fijos contás?</b><br><span class="muted small">Apagá los que no sabés si van a llegar. Lo que ya te entró siempre cuenta.</span></div>` }] : []),
+      ...incomes.map((r) => ({
+        name: `inc_${r.id}`, type: 'checkbox', full: true, value: countsInPlan(r),
+        label: `${r.name} · ${fmtIn(r.amount, r.currency)}${recurringTx(r, currentMonth()) ? ' (ya entró este mes)' : ''}`,
+      })),
       { type: 'html', html: `<div class="calc">
-        ${row('Ingresos del mes (lo que entró + fijos que faltan)', L(p.income))}
+        ${row('Ingresos del mes (lo que entró + los fijos que contás)', L(p.income))}
         ${row('− Gastos fijos (gym, alquiler…)', L(p.fixed))}
         ${row(p.goal ? `− Ahorro para tu meta "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}% de tus ingresos)`, L(p.save))}
         ${row('= Para el día a día este mes', L(p.budget), 'total')}
@@ -3401,6 +3411,7 @@ function spendInfo() {
     onSubmit: (v) => {
       if (v.saveRate != null && !(v.saveRate >= 0 && v.saveRate <= 90)) return 'Elegí un porcentaje entre 0 y 90.';
       if (v.saveRate != null) S.settings.saveRate = v.saveRate;
+      for (const r of incomes) r.countInPlan = !!v[`inc_${r.id}`];
       save(); render();
     },
   });
@@ -3748,6 +3759,99 @@ function txForm(type, t) {
       snapshot(); save(); render();
     },
   });
+}
+
+/* Pasar plata entre tus cuentas, con el tipo de cambio que te dieron de verdad
+   (ej. Meru → banco: Meru te paga menos Bs por dólar que el oficial). */
+
+// Cómo se expresa el tipo de cambio entre dos monedas: siempre "Bs por 1 US$" cuando hay dólares de por medio
+function fxPair(from, to) {
+  if (USD_PEGGED.has(from) && !USD_PEGGED.has(to)) return { label: `${curLabel(to)} por 1 US$`, out: (amt, r) => amt * r, rate: (amt, got) => got / amt };
+  if (!USD_PEGGED.has(from) && USD_PEGGED.has(to)) return { label: `${curLabel(from)} por 1 US$`, out: (amt, r) => amt / r, rate: (amt, got) => amt / got };
+  return { label: `${curLabel(to)} por 1 ${curLabel(from)}`, out: (amt, r) => amt * r, rate: (amt, got) => got / amt };
+}
+const marketFx = (from, to) => { const one = convert(1, from, to); if (one == null) return null; return fxPair(from, to).rate(1, one); };
+
+function transferForm(fromId, t = null) {
+  const accs = S.accounts;
+  if (accs.length < 2) return toast('Necesitás al menos dos cuentas.');
+  const last = S.settings.lastTransfer || {};
+  const from0 = t?.accountId || fromId || last.from || accs.find((a) => /meru/i.test(a.name + a.institution))?.id || accs[0].id;
+  // Destino: el último que usaste; si no, una cuenta de banco en otra moneda (ej. Meru en dólares → banco en Bs)
+  const fromCur = accs.find((a) => a.id === from0)?.currency;
+  const others = accs.filter((a) => a.id !== from0 && a.type !== 'credito');
+  const to0 = t?.toAccountId || (last.to !== from0 && accs.some((a) => a.id === last.to) && last.to)
+    || (others.find((a) => a.currency !== fromCur && (a.type === 'banco' || a.type === 'debito'))
+      || others.find((a) => a.currency !== fromCur) || others[0])?.id;
+  const accOpts = accs.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]);
+  const curOf = (id) => accs.find((a) => a.id === id)?.currency;
+  const pairKey = (a, b) => `${curOf(a)}>${curOf(b)}`;
+  const rateFor = (a, b) => S.settings.lastFx?.[pairKey(a, b)] || marketFx(curOf(a), curOf(b));
+  const r0 = t?.fxRate || rateFor(from0, to0);
+  openForm({
+    title: t ? 'Editar transferencia' : 'Pasar plata entre cuentas',
+    fields: [
+      { name: 'from', label: 'Sale de', type: 'select', value: from0, options: accOpts },
+      { name: 'to', label: 'Llega a', type: 'select', value: to0, options: accOpts },
+      { name: 'amount', label: `Monto que sale (${curLabel(curOf(from0))})`, type: 'number', value: t?.amount ?? '', required: true, full: true },
+      { name: 'rate', label: `Tipo de cambio que te dieron (${fxPair(curOf(from0), curOf(to0)).label})`, type: 'number', value: r0 ? round2(r0) : '', full: true,
+        showIf: (v) => curOf(v.from) !== curOf(v.to) },
+      { name: 'got', label: 'Monto que te llegó', type: 'number', value: t?.toAmount || '', full: true, hint: 'Si escribís lo que te llegó, calculo el tipo de cambio solo.',
+        showIf: (v) => curOf(v.from) !== curOf(v.to) },
+      { type: 'html', html: '<div id="fxHint" class="fx-hint"></div>' },
+      { name: 'date', label: 'Fecha', type: 'date', value: t?.date || todayISO() },
+      { name: 'time', label: 'Hora', type: 'time', value: t?.time || nowTime() },
+      { name: 'note', label: 'Detalle', value: t?.note || '', full: true, placeholder: 'ej. Meru al banco por QR' },
+      ...(t ? [{ name: 'remove', label: 'Eliminar esta transferencia', type: 'checkbox', full: true }] : []),
+    ],
+    submitLabel: t ? 'Guardar cambios' : 'Pasar plata',
+    onInput: (form, v, changed) => {
+      const c1 = curOf(v.from), c2 = curOf(v.to);
+      const P = fxPair(c1, c2);
+      if (changed === 'from' || changed === 'to') {
+        form.querySelector('[data-field="amount"] label').textContent = `Monto que sale (${curLabel(c1)})`;
+        form.querySelector('[data-field="rate"] label').textContent = `Tipo de cambio que te dieron (${P.label})`;
+        const r = rateFor(v.from, v.to);
+        if (c1 !== c2 && r) { form.elements.rate.value = numInput(round2(r)); v.rate = round2(r); }
+      }
+      if (c1 === c2) { $('#fxHint').innerHTML = ''; return; }
+      // Escribiste lo que te llegó → calculo el tipo de cambio; si no, calculo lo que llega
+      if (changed === 'got' && v.amount > 0 && v.got > 0) { v.rate = P.rate(v.amount, v.got); form.elements.rate.value = numInput(round2(v.rate)); }
+      else if (v.amount > 0 && v.rate > 0) { v.got = round2(P.out(v.amount, v.rate)); form.elements.got.value = numInput(v.got); }
+      const market = convert(v.amount, c1, c2);
+      const mr = marketFx(c1, c2);
+      if (!(v.amount > 0) || !(v.got > 0) || market == null) { $('#fxHint').innerHTML = mr ? `Tipo de cambio de referencia hoy: <b>${fmtNum(mr, 2)}</b>` : ''; return; }
+      const diff = market - v.got;
+      $('#fxHint').innerHTML = Math.abs(diff) < 0.005 ? `Igual al tipo de cambio de referencia (${fmtNum(mr, 2)}).`
+        : diff > 0 ? `Referencia hoy: <b>${fmtNum(mr, 2)}</b>. Con este cambio recibís <b class="down">${fmtIn(diff, c2)} menos</b> (${fmtPct((diff / market) * 100, false)}).`
+        : `Referencia hoy: <b>${fmtNum(mr, 2)}</b>. Con este cambio recibís <b class="up">${fmtIn(-diff, c2)} más</b>.`;
+    },
+    onSubmit: (v) => {
+      if (v.remove) { setTimeout(() => ACTIONS.delTx(t.id), 50); return; }
+      if (v.from === v.to) return 'Elegí dos cuentas distintas.';
+      if (!(v.amount > 0)) return 'Escribí el monto que sale.';
+      const c1 = curOf(v.from), c2 = curOf(v.to);
+      const same = c1 === c2;
+      let got = '', rate = null;
+      if (!same) {
+        const P = fxPair(c1, c2);
+        rate = v.rate > 0 ? v.rate : v.got > 0 ? P.rate(v.amount, v.got) : null;
+        got = v.got > 0 ? v.got : rate ? round2(P.out(v.amount, rate)) : null;
+        if (!(got > 0)) return 'Escribí el tipo de cambio o el monto que te llegó.';
+        S.settings.lastFx = { ...(S.settings.lastFx || {}), [`${c1}>${c2}`]: round2(rate) };
+      }
+      S.settings.lastTransfer = { from: v.from, to: v.to };
+      const next = { type: 'transferencia', date: v.date || todayISO(), time: v.time || '', accountId: v.from, toAccountId: v.to, amount: v.amount,
+        toAmount: same ? '' : got, fxRate: same ? null : round2(rate), category: '', note: v.note };
+      if (t) { applyTx(t, -1); Object.assign(t, next); applyTx(t, 1); }
+      else { const tx = { id: uid(), created: new Date().toISOString(), ...next }; S.transactions.push(tx); applyTx(tx, 1); }
+      snapshot(); save(); render();
+      const to = S.accounts.find((a) => a.id === v.to);
+      toast(`Listo ✓ ${esc(to.name)}: ${fmtIn(to.balance, to.currency)}`);
+    },
+  });
+  // Calcula "lo que llega" y la comparación con el oficial apenas se abre
+  setTimeout(() => $('#dlgForm')?.dispatchEvent(new Event('input')), 0);
 }
 
 function payCardForm(card) {
@@ -4156,13 +4260,15 @@ const ACTIONS = {
       S.accounts = S.accounts.filter((x) => x !== a); tombstone(a.id); snapshot(); save(); render();
     }
   },
-  addTx: (type) => (type === 'transferencia' ? txForm(type) : quickEntry(type)),
+  addTx: (type) => (type === 'transferencia' ? transferForm() : quickEntry(type)),
+  transferFrom: (id) => transferForm(id),
   quick: (type) => quickEntry(type),
   editTx: (id) => {
     const t = byId(S.transactions, id);
     if (!t) return;
     if (t.loanId) return go('cuentas', 'prestamos');
-    if (t.type === 'transferencia' || t.investment) return txForm(null, t);
+    if (t.type === 'transferencia') return transferForm(null, t);
+    if (t.investment) return txForm(null, t);
     quickEntry(null, t);
   },
   monthShift: (d) => {
