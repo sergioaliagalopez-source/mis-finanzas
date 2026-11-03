@@ -166,28 +166,17 @@ function defaultState() {
       rates: { USD: 1 }, ratesUpdated: null, finnhubKey: '', lastRefresh: null,
       lastBackup: null, privacy: false, view: 'resumen', txMonth: '', txAccount: '',
       aiKey: '', defaultAccountId: '', blendApy: null, blendUpdated: null,
+      // Las migraciones viejas (cargar mis fijos, Meru, etc.) no corren en una instalación nueva
+      seededRecurring: true, seededMeru: true, migratedBOB: true, migratedBCB: true,
     },
-    accounts: [
-      acc('Efectivo en dólares', 'efectivo', '', 'USD'),
-      acc('Efectivo en bolivianos', 'efectivo', '', 'BOB'),
-      acc('Meru', 'billetera', 'Meru', 'USD', { apy: 5.05, apySource: 'blend', apyOffset: 0.78, apyAccrue: true }),
-      acc('Tarjeta 1', 'credito', '', 'BOB'),
-      acc('Tarjeta 2', 'credito', '', 'BOB'),
-      acc('Tarjeta 3', 'credito', '', 'BOB'),
-    ],
+    // Instalación nueva: vacía (sin datos de nadie). Cada uno agrega sus cuentas, inversiones y fijos
+    accounts: [acc('Efectivo', 'efectivo', '', 'BOB')],
     recurring: [], // ingresos y gastos fijos: { id, type, name, amount, currency, accountId, category, day|null, startMonth }
     goals: [],     // metas: { id, name, target, currency, date, source }
     loans: [],     // préstamos: { id, dir: preste|debo, person, amount, currency, date, dueDate, payments }
     checkins: [],  // días marcados como "hoy no gasté"
     rateLog: [],   // tipo de cambio de cada día, para ver la devaluación
-    holdings: [
-      h('VOO', 'Vanguard S&P 500 ETF', 'etf', ''),
-      h('PAXG', 'PAX Gold (oro tokenizado)', 'oro', 'Binance', 'pax-gold'),
-      h('BTC', 'Bitcoin', 'cripto', '', 'bitcoin'),
-      h('ETH', 'Ethereum', 'cripto', '', 'ethereum'),
-      h('NVDA', 'NVIDIA', 'accion', ''),
-      h('GOOGL', 'Alphabet (Google)', 'accion', ''),
-    ],
+    holdings: [],
     transactions: [],
     budgets: {}, // { categoría: { amount, currency } } presupuesto mensual
     history: [],
@@ -915,6 +904,8 @@ function viewCuentas() {
    Sin día (ej. la mesada o el gym): quedan "pendientes" hasta que tocás "Ya entró" / "Ya pagué". */
 
 const daysInMonth = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
+// Un fijo con "Se repite todos los meses" desmarcado queda guardado en la lista, pero no se registra ni se espera solo
+const repeats = (r) => r.active !== false;
 // Ingresos fijos que elegiste no contar (ej. una mesada que no sabés si llega) quedan fuera de "Hoy podés gastar"
 const countsInPlan = (r) => r.countInPlan !== false;
 const recurringTx = (r, month) => S.transactions.find((t) => t.recurringId === r.id && t.date?.startsWith(month));
@@ -943,7 +934,7 @@ function processRecurring() {
   const today = todayISO(), cur = currentMonth();
   const done = [];
   for (const r of S.recurring) {
-    if (!r.day) continue;
+    if (!r.day || !repeats(r)) continue;
     for (let m = r.startMonth || cur; m <= cur; m = addMonths(m, 1)) {
       const day = Math.min(Number(r.day), daysInMonth(m));
       const date = `${m}-${String(day).padStart(2, '0')}`;
@@ -957,37 +948,66 @@ function processRecurring() {
   }
 }
 
-const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => !r.day && !recurringTx(r, month));
+const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => repeats(r) && !r.day && !recurringTx(r, month));
 
-function recurringHTML(month) {
-  if (!S.recurring.length) return '<div class="empty">Agregá tu sueldo, mesada, gym, alquiler… y la app los tiene en cuenta todos los meses.</div>';
+// Sugerencias para crear fijos con un toque (útil cuando recién empezás)
+const RECURRING_PRESETS = [
+  { type: 'ingreso', name: 'Sueldo', category: 'Sueldo' },
+  { type: 'ingreso', name: 'Mesada', category: 'Mesada / familia' },
+  { type: 'gasto', name: 'Alquiler', category: 'Vivienda / alquiler' },
+  { type: 'gasto', name: 'Luz', category: 'Servicios' },
+  { type: 'gasto', name: 'Agua', category: 'Servicios' },
+  { type: 'gasto', name: 'Internet', category: 'Servicios' },
+  { type: 'gasto', name: 'Celular', category: 'Servicios' },
+  { type: 'gasto', name: 'Gimnasio', category: 'Gimnasio / deporte' },
+  { type: 'gasto', name: 'Suscripción', category: 'Suscripciones' },
+  { type: 'gasto', name: 'Universidad', category: 'Educación' },
+];
+
+function recurringRowHTML(r, month) {
   const isCur = month === currentMonth();
-  const rows = [...S.recurring].sort((a, b) => (a.type === b.type ? 0 : a.type === 'ingreso' ? -1 : 1)).map((r) => {
-    const tx = recurringTx(r, month);
-    let status;
-    if (tx) status = `<span class="status good">${icon('check', 14)} ${r.type === 'ingreso' ? 'Entró' : 'Pagado'} el ${fmtDate(tx.date).slice(0, 5)}</span>`;
-    else if (r.day) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
-    else if (isCur) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`;
-    else status = '<span class="status warning">No registrado</span>';
-    const acc = S.accounts.find((a) => a.id === r.accountId);
-    return `<div class="list-row">
-      <span class="acc-ico sm ${r.type === 'ingreso' ? 'in' : 'out'}">${icon(r.type === 'ingreso' ? 'plus' : 'repeat', 16)}</span>
-      <div class="grow"><div class="name">${esc(r.name)}</div>
-        <div class="meta">${r.day ? `Todos los ${r.day}` : 'Sin día fijo'}${r.type === 'ingreso' && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
-      <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}</div></div>
-      <div class="rec-status">${status}</div>
-      <button class="btn sm ghost icon-only" data-action="editRecurring" data-id="${r.id}" title="Editar">${icon('settings', 16)}</button>
-    </div>`;
-  }).join('');
-  const inc = S.recurring.filter((r) => r.type === 'ingreso').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
-  const out = S.recurring.filter((r) => r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
-  return `<div class="list">${rows}</div>
-    <div class="small muted" style="margin-top:10px">Fijos por mes: entran <b class="money">${fmtMoney(inc)}</b>, salen <b class="money">${fmtMoney(out)}</b> → te quedan <b class="money">${fmtMoney(inc - out)}</b> para gastos variables y ahorro.</div>`;
+  const on = repeats(r);
+  const tx = recurringTx(r, month);
+  const acc = S.accounts.find((a) => a.id === r.accountId);
+  let status = '';
+  if (tx) status = `<span class="status good">${icon('check', 14)} ${r.type === 'ingreso' ? 'Entró' : 'Pagado'} el ${fmtDate(tx.date).slice(0, 5)}</span>`;
+  else if (!on) status = isCur ? `<button class="btn sm" data-action="payRecurring" data-id="${r.id}">Registrar este mes</button>` : '';
+  else if (r.day) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
+  else if (isCur) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`;
+  else status = '<span class="status warning">No registrado</span>';
+  return `<div class="list-row act rec-row ${on ? '' : 'off'}">
+    <label class="rec-check" title="Se repite todos los meses"><input type="checkbox" data-repeat="${r.id}" ${on ? 'checked' : ''}><span></span></label>
+    <div class="grow"><div class="name">${esc(r.name)}</div>
+      <div class="meta">${on ? (r.day ? `Todos los ${r.day}` : 'Cada mes, sin día fijo') : 'No se repite'}${r.type === 'ingreso' && on && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
+    <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}</div></div>
+    ${status}
+    <button class="btn sm ghost icon-only" data-action="editRecurring" data-id="${r.id}" title="Editar">${icon('settings', 16)}</button>
+  </div>`;
 }
 
-function recurringForm(r) {
+function recurringHTML(month) {
+  const presets = `<div class="rec-presets"><span class="muted small">Agregar rápido:</span>${RECURRING_PRESETS
+    .filter((p) => !S.recurring.some((r) => norm(r.name) === norm(p.name)))
+    .map((p, i) => `<button class="chip ${p.type}" data-action="addRecurringPreset" data-id="${RECURRING_PRESETS.indexOf(p)}">${p.type === 'ingreso' ? '+' : '−'} ${esc(p.name)}</button>`).join('')}
+    <button class="chip" data-action="addRecurring">Otro…</button></div>`;
+  if (!S.recurring.length) {
+    return `<div class="empty" style="padding:8px 0 12px">Agregá lo que entra o sale todos los meses (sueldo, alquiler, luz…).
+      La app lo tiene en cuenta para decirte cuánto podés gastar.</div>${presets}`;
+  }
+  const byType = (list) => [...list].sort((a, b) => (a.type === b.type ? 0 : a.type === 'ingreso' ? -1 : 1));
+  const on = byType(S.recurring.filter(repeats)), off = byType(S.recurring.filter((r) => !repeats(r)));
+  const inc = on.filter((r) => r.type === 'ingreso').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  const out = on.filter((r) => r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  return `<div class="small muted" style="margin-bottom:6px">Marcá la casilla de los que se repiten todos los meses. Los desmarcados quedan guardados acá para registrarlos cuando pasen.</div>
+    <div class="list">${on.map((r) => recurringRowHTML(r, month)).join('') || '<div class="empty">Ninguno marcado para repetirse.</div>'}</div>
+    ${on.length ? `<div class="small muted" style="margin-top:10px">Cada mes: entran <b class="money">${fmtMoney(inc)}</b>, salen <b class="money">${fmtMoney(out)}</b> → quedan <b class="money">${fmtMoney(inc - out)}</b> para el día a día y el ahorro.</div>` : ''}
+    ${off.length ? `<div class="rec-sub">Guardados (no se repiten)</div><div class="list">${off.map((r) => recurringRowHTML(r, month)).join('')}</div>` : ''}
+    ${presets}`;
+}
+
+function recurringForm(r, preset = null) {
   const isNew = !r;
-  r = r || { type: 'gasto', name: '', amount: '', currency: S.settings.localCurrency, accountId: S.accounts.find((a) => a.type !== 'credito')?.id, category: '', day: null };
+  r = r || { type: 'gasto', name: '', amount: '', currency: S.settings.localCurrency, accountId: S.accounts.find((a) => a.type !== 'credito')?.id, category: '', day: null, ...(preset || {}) };
   const accOpts = S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]);
   openForm({
     title: isNew ? 'Nuevo ingreso o gasto fijo' : `Editar: ${r.name}`,
@@ -1000,6 +1020,7 @@ function recurringForm(r) {
       { name: 'catGasto', label: 'Categoría', type: 'select', value: r.category, options: CAT_GASTO.map((c) => [c, c]), showIf: (v) => v.type === 'gasto' },
       { name: 'catIngreso', label: 'Categoría', type: 'select', value: r.category, options: CAT_INGRESO.map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
       { name: 'day', label: 'Día del mes', value: r.day || '', placeholder: 'Vacío = sin día fijo', hint: 'Con día: se registra solo. Sin día: te queda pendiente para marcar cuando pase.' },
+      { name: 'active', label: 'Se repite todos los meses', type: 'checkbox', value: repeats(r), full: true, hint: 'Desmarcalo si no es todos los meses: queda guardado para registrarlo cuando pase.' },
       { name: 'countInPlan', label: 'Contarlo en "Hoy podés gastar" (apagalo si no sabés si va a llegar)', type: 'checkbox', value: r.countInPlan !== false, full: true, showIf: (v) => v.type === 'ingreso' },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este fijo (los movimientos ya registrados quedan)', type: 'checkbox', full: true }]),
     ],
@@ -1009,10 +1030,10 @@ function recurringForm(r) {
       if (day != null && !(day >= 1 && day <= 31)) return 'El día tiene que ser un número del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
-        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true };
+        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true, active: !!v.active };
       // Al crear un fijo o cambiarle el día, sólo se registra solo desde el próximo vencimiento
       // (si el día de este mes ya pasó, ya lo tenés en tu saldo; marcalo a mano si hace falta)
-      if (isNew || day !== r.day) next.startMonth = day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
+      if (isNew || day !== r.day || (next.active && !repeats(r))) next.startMonth = day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
       if (isNew) S.recurring.push({ id: uid(), ...next }); else Object.assign(r, next);
       processRecurring();
       save(); render();
@@ -1154,7 +1175,7 @@ function viewMovimientos() {
     ${txListHTML(list)}
   </section>
 
-  <details class="more-box" ${pendN ? 'open' : ''}>
+  <details class="more-box" id="fijos" ${pendN || !S.recurring.length ? 'open' : ''}>
     <summary>Ingresos y gastos fijos${pendN ? ` <span class="tag warn">${pendN} pendiente${pendN > 1 ? 's' : ''}</span>` : ''}</summary>
     <div class="more-inner"><section class="card"><div class="card-head"><span class="muted small">Sueldo, mesada, gym…: se tienen en cuenta todos los meses</span><button class="btn sm" data-action="addRecurring">+ Fijo</button></div>
       ${recurringHTML(month)}</section></div>
@@ -1689,8 +1710,8 @@ const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId;
 
 // Números base del plan, todo en USD por mes
 function planNumbers() {
-  const recInc = S.recurring.filter((r) => r.type === 'ingreso' && countsInPlan(r)).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
-  const recOut = S.recurring.filter((r) => r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  const recInc = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && countsInPlan(r)).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  const recOut = S.recurring.filter((r) => repeats(r) && r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const interest = monthlyInterestUSD();
   // Gasto variable promedio de los 3 meses anteriores con datos (o lo que va de este mes si recién empezás)
   const prev = [1, 2, 3].map((k) => addMonths(currentMonth(), -k));
@@ -2213,7 +2234,7 @@ function savePending() {
     // "Pagué el gym" o "me llegó la mesada" marca ese fijo como hecho en vez de sumarlo como extra
     // Sólo fijos sin día, y si el monto se parece (±25%) o dijiste su nombre ("cancha 50" no es el gym de 300)
     const rule = S.recurring.find((r) => {
-      if (r.day || r.type !== p.type || r.category !== p.category || recurringTx(r, tx.date.slice(0, 7))) return false;
+      if (!repeats(r) || r.day || r.type !== p.type || r.category !== p.category || recurringTx(r, tx.date.slice(0, 7))) return false;
       const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(p.amount, p.currency);
       return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || norm(p.note || '').includes(norm(r.name).split(' ')[0]);
     });
@@ -2900,7 +2921,7 @@ function upcomingItems(days = 30) {
   const end = isoOf(Date.now() + days * 864e5);
   const out = [];
   for (const r of S.recurring) {
-    if (r.day) {
+    if (r.day && repeats(r)) {
       let d = nextMonthlyDate(r.day, today);
       if (d && recurringTx(r, d.slice(0, 7))) d = nextMonthlyDate(r.day, `${addMonths(d.slice(0, 7), 1)}-01`);
       if (d && d <= end) out.push({ date: d, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo' });
@@ -3158,7 +3179,7 @@ function lastAccountFor(type) {
 // Un gasto/ingreso que coincide con un fijo pendiente (ej. "Gym 300") lo marca como pagado
 function matchRecurring(type, category, amount, currency, note, date) {
   return S.recurring.find((r) => {
-    if (r.day || r.type !== type || r.category !== category || recurringTx(r, date.slice(0, 7))) return false;
+    if (!repeats(r) || r.day || r.type !== type || r.category !== category || recurringTx(r, date.slice(0, 7))) return false;
     const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(amount, currency);
     return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || norm(note || '').includes(norm(r.name).split(' ')[0]);
   });
@@ -3232,7 +3253,7 @@ function quickEntry(type = 'gasto', t = null) {
     if (b.dataset.qCat) {
       st.category = b.dataset.qCat;
       // Si es un fijo pendiente (ej. Mesada, Gym), trae su cuenta y su monto
-      const r = !t && S.recurring.find((x) => !x.day && x.type === st.type && x.category === st.category && !recurringTx(x, st.date.slice(0, 7)));
+      const r = !t && S.recurring.find((x) => repeats(x) && !x.day && x.type === st.type && x.category === st.category && !recurringTx(x, st.date.slice(0, 7)));
       const ra = r && S.accounts.find((a) => a.id === r.accountId);
       if (ra) {
         st.accountId = ra.id;
@@ -3340,7 +3361,7 @@ function spendPlan() {
   const month = currentMonth(), today = todayISO();
   const txs = S.transactions.filter((t) => t.date?.startsWith(month) && !nonFlow(t));
   const sum = (list) => list.reduce((s, t) => s + txUSD(t), 0);
-  const pendingRules = (type) => S.recurring.filter((r) => r.type === type && !recurringTx(r, month) && !(r.skip || []).includes(month));
+  const pendingRules = (type) => S.recurring.filter((r) => repeats(r) && r.type === type && !recurringTx(r, month) && !(r.skip || []).includes(month));
   const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
@@ -3377,11 +3398,14 @@ function spendCardHTML() {
   return `<section class="card spend-card">
     <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
       <span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span></div>
-    ${p.budget <= 0 ? `<div class="label">Este mes no queda para gastos del día a día</div>
+    ${p.budget <= 0 && p.income <= 0 && !S.recurring.length ? `<div class="label">¿Cuánto podés gastar por día?</div>
+      <div class="small muted" style="margin:4px 0 8px">Agregá lo que te entra y sale todos los meses (sueldo, alquiler, luz…) y la app te lo calcula.</div>
+      <button class="btn sm primary" data-action="go" data-id="movimientos" data-anchor="fijos" style="margin-bottom:8px">Agregar mis fijos</button>`
+    : p.budget <= 0 ? `<div class="label">Este mes no queda para gastos del día a día</div>
       <div class="small muted" style="margin:4px 0 8px">Tus ingresos (${L(p.income)}) no cubren tus fijos más el ahorro. Revisá tu meta o tus fijos.</div>` : big}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
     <div class="small muted money" style="margin-top:6px">Gastaste ${L(p.spent)} de ${L(Math.max(0, p.budget))} del mes · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}${p.budget > 0 && p.perDay > 0 ? ` (${L(p.perDay)}/día)` : ''}</div>
-    ${S.recurring.some((r) => r.type === "ingreso" && !countsInPlan(r)) ? `<div class="small muted" style="margin-top:4px">Sin contar: ${S.recurring.filter((r) => r.type === "ingreso" && !countsInPlan(r)).map((r) => esc(r.name)).join(", ")}</div>` : ""}
+    ${S.recurring.some((r) => repeats(r) && r.type === "ingreso" && !countsInPlan(r)) ? `<div class="small muted" style="margin-top:4px">Sin contar: ${S.recurring.filter((r) => repeats(r) && r.type === "ingreso" && !countsInPlan(r)).map((r) => esc(r.name)).join(", ")}</div>` : ""}
     <div class="spend-foot">
       <button class="link-btn" data-action="spendInfo">Cómo se calcula · elegir ingresos</button>
       ${!doneToday && new Date().getHours() >= 19 ? `<button class="btn sm" data-action="checkin">Hoy no gasté</button>` : ''}
@@ -3394,7 +3418,7 @@ function spendInfo() {
   const cur = S.settings.localCurrency;
   const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
   const row = (a, b, c = '') => `<div class="calc-row ${c}"><span>${a}</span><b class="money">${b}</b></div>`;
-  const incomes = S.recurring.filter((r) => r.type === 'ingreso');
+  const incomes = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso');
   openForm({
     title: '¿Cómo se calcula?',
     fields: [
@@ -4351,6 +4375,7 @@ const ACTIONS = {
   loanPay: (id) => loanPayForm(byId(S.loans, id)),
   monthClose: (m) => showMonthClose(m),
   addRecurring: () => recurringForm(),
+  addRecurringPreset: (i) => recurringForm(null, { ...RECURRING_PRESETS[Number(i)] }),
   editRecurring: (id) => recurringForm(byId(S.recurring, id)),
   payRecurring: (id) => payRecurringForm(byId(S.recurring, id)),
   addGoal: () => goalForm(),
@@ -4427,6 +4452,18 @@ function bindEvents() {
     if (t.id === 'goalRange') save(false);
     if (t.id === 'setLocal') { S.settings.localCurrency = t.value; save(); render(); refreshAll({ silent: true }); }
     if (t.id === 'setArsType') { S.settings.arsRateType = t.value; save(); refreshAll(); }
+    // Casilla "se repite" de la lista de fijos
+    if (t.dataset.repeat) {
+      const r = S.recurring.find((x) => x.id === t.dataset.repeat);
+      if (r) {
+        const turnOn = t.checked && !repeats(r);
+        r.active = t.checked;
+        // Al volver a activarlo, no se cobran los meses que estuvo apagado
+        if (turnOn) r.startMonth = r.day && r.day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
+        processRecurring(); save(); render();
+        toast(t.checked ? `${r.name}: se repite todos los meses` : `${r.name}: guardado, ya no se repite`);
+      }
+    }
     if (t.id === 'setBobType') { S.settings.bobRateType = t.value; save(); refreshAll(); }
     if (t.id === 'setDefAcc') { S.settings.defaultAccountId = t.value; save(); toast('Cuenta por defecto guardada.'); }
     if (t.id === 'setAutoRates') { S.settings.autoRates = t.checked; save(); render(); }
@@ -4466,7 +4503,7 @@ function welcome() {
   openForm({
     title: '¡Bienvenido a MyFinance!',
     fields: [
-      { type: 'html', html: `<p style="margin:0;color:var(--text-2)">Ya cargué tu portafolio (<b>VOO, PAXG, BTC, ETH, NVDA, GOOGL</b>), efectivo, Meru y 3 tarjetas de ejemplo. Sólo falta que pongas cantidades y saldos.</p>` },
+      { type: 'html', html: `<p style="margin:0;color:var(--text-2)">La app empieza vacía. Para arrancar: cargá tu efectivo y cuentas en <b>Cuentas</b>, y lo que entra o sale todos los meses (sueldo, alquiler, luz…) en <b>Movimientos → Ingresos y gastos fijos</b>.</p>` },
       { name: 'localCurrency', label: '¿Cuál es tu moneda local?', type: 'select', value: 'BOB', full: true,
         options: CURRENCIES.filter(([c]) => !USD_PEGGED.has(c)).map(([c, n]) => [c, `${c} — ${n}`]) },
       { type: 'html', html: `<div class="small muted">¿Ya usás MyFinance en otro dispositivo?
@@ -4477,8 +4514,6 @@ function welcome() {
       const old = S.settings.localCurrency;
       S.settings.localCurrency = v.localCurrency;
       for (const a of S.accounts) if (a.currency === old) a.currency = v.localCurrency;
-      const cashLocal = S.accounts.find((a) => a.name === 'Efectivo en bolivianos');
-      if (cashLocal && v.localCurrency !== 'BOB') cashLocal.name = `Efectivo en ${v.localCurrency}`;
       save(); render();
       refreshAll({ silent: true });
       setTimeout(() => toast('Tip: tocá − Gasto o + Ingreso para registrar. En Ajustes podés activar la sincronización automática.', 6000), 2800);
