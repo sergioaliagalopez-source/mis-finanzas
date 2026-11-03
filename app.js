@@ -3341,7 +3341,8 @@ function spendPlan() {
   const txs = S.transactions.filter((t) => t.date?.startsWith(month) && !nonFlow(t));
   const sum = (list) => list.reduce((s, t) => s + txUSD(t), 0);
   const pendingRules = (type) => S.recurring.filter((r) => r.type === type && !recurringTx(r, month) && !(r.skip || []).includes(month));
-  const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(r.amount, r.currency), 0) + P.interest;
+  const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const g = S.goals[0];
   const M = g ? goalMath(g, P) : null;
@@ -3352,7 +3353,9 @@ function spendPlan() {
   const spentToday = sum(txs.filter((t) => isVariable(t) && t.date === today));
   const daysLeft = daysInMonth(month) - new Date().getDate() + 1;
   const perDay = (budget - spentBefore) / daysLeft;
-  return { income, fixed, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent: spentBefore + spentToday, daysLeft, perDay, todayLeft: perDay - spentToday };
+  const spent = spentBefore + spentToday;
+  // monthLeft < 0 = ya gastaste más de lo que tenías para todo el mes
+  return { income, fixed, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
 }
 
 function spendCardHTML() {
@@ -3362,8 +3365,11 @@ function spendCardHTML() {
   const n = streak(), doneToday = activeDays().has(todayISO());
   const pct = p.budget > 0 ? Math.min(100, (p.spent / p.budget) * 100) : 100;
   const tone = p.budget <= 0 || p.todayLeft < 0 ? 'critical' : p.todayLeft < p.perDay * 0.3 ? 'warning' : 'good';
-  const big = p.budget <= 0 ? '' : p.todayLeft >= 0
-    ? `<div class="label">Hoy podés gastar</div><div class="spend-value money ${tone}">${L(p.todayLeft)}</div>`
+  const big = p.budget <= 0 ? ''
+    // Ya se gastó todo lo del mes: no tiene sentido un "por día" negativo
+    : p.monthLeft < 0 ? `<div class="label">Este mes ya te pasaste</div><div class="spend-value money critical">${L(-p.monthLeft)}</div>
+      <div class="small muted" style="margin:-6px 0 8px">Lo ideal: no gastar en cosas del día a día hasta que te entre plata.</div>`
+    : p.todayLeft >= 0 ? `<div class="label">Hoy podés gastar</div><div class="spend-value money ${tone}">${L(p.todayLeft)}</div>`
     : `<div class="label">Hoy te pasaste</div><div class="spend-value money critical">${L(-p.todayLeft)}</div>`;
   return `<section class="card spend-card">
     <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
@@ -3399,10 +3405,14 @@ function spendInfo() {
         ${row('− Gastos fijos (gym, alquiler…)', L(p.fixed))}
         ${row(p.goal ? `− Ahorro para tu meta "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}% de tus ingresos)`, L(p.save))}
         ${row('= Para el día a día este mes', L(p.budget), 'total')}
+        ${p.monthLeft < 0 || p.perDay < 0 ? `
+        ${row('− Ya gastaste este mes', L(p.spent))}
+        ${row('= Te pasaste del mes', L(-p.monthLeft), 'total over')}
+        ${row('Hoy podés gastar', L(0), 'total')}` : `
         ${row('− Ya gastaste antes de hoy', L(p.spentBefore))}
         ${row(`÷ ${p.daysLeft} días que quedan`, `${L(p.perDay)} por día`, 'total')}
         ${row('− Gastaste hoy', L(p.spentToday))}
-        ${row('= Hoy podés gastar', L(p.todayLeft), 'total')}
+        ${row('= Hoy podés gastar', L(p.todayLeft), 'total')}`}
       </div>` },
       ...(p.goal ? [{ type: 'html', html: '<p class="small muted" style="margin:0">El ahorro sale de tu meta (Plan). Si no tenés meta, se usa el porcentaje de abajo.</p>' }] : []),
       { name: 'saveRate', label: 'Si no tenés meta, ¿qué % de tus ingresos querés ahorrar?', type: 'number', value: p.rate, full: true },
