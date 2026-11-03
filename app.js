@@ -3365,12 +3365,15 @@ function spendCardHTML() {
   const n = streak(), doneToday = activeDays().has(todayISO());
   const pct = p.budget > 0 ? Math.min(100, (p.spent / p.budget) * 100) : 100;
   const tone = p.budget <= 0 || p.todayLeft < 0 ? 'critical' : p.todayLeft < p.perDay * 0.3 ? 'warning' : 'good';
-  const big = p.budget <= 0 ? ''
-    // Ya se gastó todo lo del mes: no tiene sentido un "por día" negativo
-    : p.monthLeft < 0 ? `<div class="label">Este mes ya te pasaste</div><div class="spend-value money critical">${L(-p.monthLeft)}</div>
-      <div class="small muted" style="margin:-6px 0 8px">Lo ideal: no gastar en cosas del día a día hasta que te entre plata.</div>`
-    : p.todayLeft >= 0 ? `<div class="label">Hoy podés gastar</div><div class="spend-value money ${tone}">${L(p.todayLeft)}</div>`
-    : `<div class="label">Hoy te pasaste</div><div class="spend-value money critical">${L(-p.todayLeft)}</div>`;
+  // El número grande siempre responde "¿cuánto puedo gastar hoy?": si te pasaste es Bs 0,
+  // y el detalle de cuánto te pasaste se ve al tocar la tarjeta
+  const overMonth = p.monthLeft < 0, overToday = !overMonth && p.todayLeft < 0;
+  const why = overMonth ? 'Te pasaste del presupuesto del mes · tocá para ver' : overToday ? 'Hoy gastaste más de lo del día · tocá para ver' : '';
+  const big = p.budget <= 0 ? '' : `<button class="spend-main" data-action="spendInfo">
+      <div class="label">Hoy podés gastar</div>
+      <div class="spend-value money ${tone}">${L(Math.max(0, p.todayLeft))}</div>
+      ${why ? `<div class="over-note">${why}</div>` : ''}
+    </button>`;
   return `<section class="card spend-card">
     <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
       <span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span></div>
@@ -3412,7 +3415,10 @@ function spendInfo() {
         ${row('− Ya gastaste antes de hoy', L(p.spentBefore))}
         ${row(`÷ ${p.daysLeft} días que quedan`, `${L(p.perDay)} por día`, 'total')}
         ${row('− Gastaste hoy', L(p.spentToday))}
-        ${row('= Hoy podés gastar', L(p.todayLeft), 'total')}`}
+        ${p.todayLeft < 0 ? `${row('= Te pasaste hoy', L(-p.todayLeft), 'total over')}
+        ${row('Hoy podés gastar', L(0), 'total')}
+        <div class="small muted">Mañana el monto por día se recalcula con lo que te queda del mes (${L(Math.max(0, p.monthLeft))}).</div>`
+        : row('= Hoy podés gastar', L(p.todayLeft), 'total')}`}
       </div>` },
       ...(p.goal ? [{ type: 'html', html: '<p class="small muted" style="margin:0">El ahorro sale de tu meta (Plan). Si no tenés meta, se usa el porcentaje de abajo.</p>' }] : []),
       { name: 'saveRate', label: 'Si no tenés meta, ¿qué % de tus ingresos querés ahorrar?', type: 'number', value: p.rate, full: true },

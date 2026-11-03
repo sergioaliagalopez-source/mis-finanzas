@@ -585,3 +585,8 @@ details summary { cursor: pointer; padding: 4px 0; }
 .calc-sub { font-size: 14px; }
 
 .calc-row.over b { color: var(--bad); }
+
+/* La parte grande de "Hoy podés gastar" se toca para ver el detalle */
+.spend-main { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.spend-main .spend-value { margin-bottom: 6px; }
+.over-note { font-size: 13px; color: var(--bad); margin: -2px 0 10px; }
