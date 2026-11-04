@@ -560,6 +560,17 @@ details summary { cursor: pointer; padding: 4px 0; }
 .chip.ingreso { color: var(--good); }
 .chip.gasto { color: var(--text-2); }
 
+/* Monto con − / + y montos rápidos */
+.stepper { display: flex; align-items: stretch; gap: 8px; }
+.stepper input { flex: 1; min-width: 0; text-align: center; font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.step-btn { flex: none; width: 52px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 12px; font-size: 26px; line-height: 1; cursor: pointer; touch-action: manipulation; }
+.step-btn:active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.amount-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.amount-chips .chip { font-variant-numeric: tabular-nums; }
+.amount-chips .chip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.amt-btn { border: 0; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 4px 0; display: inline-flex; align-items: center; gap: 5px; border-bottom: 1px dashed var(--muted); }
+.amt-btn .ico { color: var(--muted); }
+
 /* Celular: van al final para ganarle a las reglas de arriba */
 @media (max-width: 760px) {
   .nav-secondary { display: none; }

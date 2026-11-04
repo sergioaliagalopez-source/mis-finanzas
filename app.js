@@ -45,6 +45,7 @@ const ICONS = {
   swap: '<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 20 4-4-4-4"/><path d="M21 16H7"/>',
   card: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 10h19"/><path d="M6.5 15h4"/>',
   repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   check: '<path d="M4 12.5 9.5 18 20 6.5"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
@@ -568,6 +569,11 @@ function openForm({ title, fields, submitLabel = 'Guardar', onSubmit, onInput, o
         return `<div class="field check ${f.full ? 'full' : ''}" data-field="${f.name}"><input type="checkbox" id="${id}" name="${f.name}" ${val ? 'checked' : ''}><label for="${id}">${esc(f.label)}</label></div>`;
       case 'number':
         input = `<input type="text" inputmode="decimal" autocomplete="off" id="${id}" name="${f.name}" value="${esc(val === 0 && f.blankZero ? '' : numInput(val))}" placeholder="${esc(f.placeholder || '0')}">`; break;
+      case 'stepper':
+        input = `<div class="stepper"><button type="button" class="step-btn" data-step="-1" data-for="${f.name}" aria-label="Menos ${f.step}">−</button>
+          <input type="text" inputmode="decimal" autocomplete="off" id="${id}" name="${f.name}" value="${esc(numInput(val))}" placeholder="0">
+          <button type="button" class="step-btn" data-step="1" data-for="${f.name}" aria-label="Más ${f.step}">+</button></div>
+          ${f.chips?.length ? `<div class="amount-chips">${f.chips.map((c) => `<button type="button" class="chip" data-set="${c}" data-for="${f.name}">${esc(numInput(c))}</button>`).join('')}</div>` : ''}`; break;
       default:
         input = `<input type="${f.type || 'text'}" id="${id}" name="${f.name}" value="${esc(val)}" placeholder="${esc(f.placeholder || '')}" autocomplete="off">`;
     }
@@ -584,7 +590,7 @@ function openForm({ title, fields, submitLabel = 'Guardar', onSubmit, onInput, o
       if (!f.name) continue;
       const el = form.elements[f.name];
       if (!el) continue;
-      vals[f.name] = f.type === 'checkbox' ? el.checked : f.type === 'number' ? parseNum(el.value) : el.value.trim();
+      vals[f.name] = f.type === 'checkbox' ? el.checked : f.type === 'number' || f.type === 'stepper' ? parseNum(el.value) : el.value.trim();
     }
     return vals;
   };
@@ -594,6 +600,18 @@ function openForm({ title, fields, submitLabel = 'Guardar', onSubmit, onInput, o
     for (const f of fields) if (f.showIf) { const el = form.querySelector(`[data-field="${f.name}"]`); if (el) el.hidden = !f.showIf(vals); }
   };
   form.oninput = update; form.onchange = update; update();
+  // − / + y montos rápidos de los campos "stepper"
+  form.onclick = (e) => {
+    const b = e.target.closest('[data-step], [data-set]');
+    if (!b) return;
+    const f = fields.find((x) => x.name === b.dataset.for), el = form.elements[b.dataset.for];
+    if (!f || !el) return;
+    const cur = parseNum(el.value) || 0;
+    const next = b.dataset.set != null ? Number(b.dataset.set) : Math.max(0, Math.round((cur + Number(b.dataset.step) * (f.step || 1)) * 100) / 100);
+    el.value = numInput(next);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    form.querySelectorAll(`[data-set][data-for="${f.name}"]`).forEach((c) => c.classList.toggle('on', Number(c.dataset.set) === next));
+  };
 
   let done = false;
   form.onsubmit = (e) => {
@@ -603,7 +621,7 @@ function openForm({ title, fields, submitLabel = 'Guardar', onSubmit, onInput, o
       const visible = !f.showIf || f.showIf(vals);
       if (!visible) continue;
       if (f.required && (vals[f.name] === '' || vals[f.name] == null)) return showErr(`Completá "${f.label}".`);
-      if (f.type === 'number' && Number.isNaN(vals[f.name])) return showErr(`"${f.label}" no es un número válido.`);
+      if ((f.type === 'number' || f.type === 'stepper') && Number.isNaN(vals[f.name])) return showErr(`"${f.label}" no es un número válido.`);
     }
     const err = onSubmit(vals);
     if (err) return showErr(err);
@@ -724,7 +742,8 @@ function viewResumen() {
   const missing = missingRates();
   const stale = !CloudSync.enabled() && (FileSync.status === 'none' || FileSync.status === 'unsupported') && hasData();
   const recent = [...S.transactions].sort(sortTx).slice(0, 5);
-  const pend = upcomingItems(7).slice(0, 3);
+  // Pendientes: lo de esta semana + tus gastos programados del próximo mes (para que los veas venir)
+  const pend = upcomingItems(31).filter((it) => it.schedId || it.undated || it.overdue || Date.parse(it.date) - Date.parse(todayISO()) <= 7 * 864e5).slice(0, 5);
   const holdings = [...S.holdings].sort((a, b) => holdingValue(b) - holdingValue(a));
   const accounts = [...S.accounts].sort((a, b) => Math.abs(toUSD(b.balance, b.currency)) - Math.abs(toUSD(a.balance, a.currency)));
 
@@ -747,15 +766,15 @@ function viewResumen() {
 
   ${spendCardHTML()}
 
-  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="movimientos" class="small">Ver fijos</a></div>
+  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="movimientos" data-anchor="programados" class="small">Ver todo</a></div>
     <div class="list">${pend.map((it) => `<div class="list-row act">
       <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
-      <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Este mes' : daysUntil(it.date)}</div></div>
+      <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Este mes' : `${it.schedId ? `${fmtDay(it.date)} · ` : ''}${daysUntil(it.date)}`}</div></div>
       <span class="money ${it.type === 'ingreso' ? 'up' : ''}">${it.type === 'ingreso' ? '+' : '−'}${fmtIn(it.amount, it.currency)}</span>
-      ${it.recId ? `<button class="btn sm" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
-        : it.accId ? `<button class="btn sm" data-action="payCard" data-id="${it.accId}">Pagar</button>`
-        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>`
-        : it.schedId ? `<button class="btn sm" data-action="paySched" data-id="${it.schedId}">Ya pagué</button>` : ''}
+      ${it.recId ? `<button class="btn sm primary" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
+        : it.accId ? `<button class="btn sm primary" data-action="payCard" data-id="${it.accId}">Pagar</button>`
+        : it.loanId ? `<button class="btn sm primary" data-action="loanPay" data-id="${it.loanId}">Registrar</button>`
+        : it.schedId ? `<button class="btn sm primary" data-action="paySched" data-id="${it.schedId}">Ya pagué</button>` : ''}
     </div>`).join('')}</div></section>` : ''}
 
   <section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Últimos movimientos</h2><a href="#" data-action="go" data-id="movimientos" class="small">Ver todos</a></div>
@@ -1050,7 +1069,7 @@ function payRecurringForm(r) {
     title: r.type === 'ingreso' ? `¿Cuánto entró de ${r.name}?` : `Pago de ${r.name}`,
     fields: [
       { name: 'accountId', label: 'Cuenta', type: 'select', value: acc?.id, full: true, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
-      { name: 'amount', label: 'Monto (en la moneda de la cuenta)', type: 'number', value: recurringAmountFor(r, acc), required: true },
+      { name: 'amount', label: 'Monto (en la moneda de la cuenta)', type: 'stepper', step: stepFor(r.amount), value: recurringAmountFor(r, acc), required: true, full: true },
       { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
       { name: 'time', label: 'Hora', type: 'time', value: nowTime() },
     ],
@@ -1081,6 +1100,18 @@ const schedPending = () => (S.scheduled || []).filter((s) => !schedTx(s)).sort((
 // Sin pagar que caen este mes o ya vencieron: se reservan en el presupuesto de este mes
 const schedDueThisMonth = () => schedPending().filter((s) => s.date <= monthEndISO(currentMonth()));
 const fmtDay = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit' }).replace(',', '').replace('-', '/');
+// Paso del − / +: Bs 300 sube de a 5, Bs 1.500 de a 10…
+const stepFor = (a) => ((a = Math.abs(Number(a) || 0)) >= 2000 ? 50 : a >= 500 ? 10 : a >= 50 ? 5 : 1);
+// Montos rápidos entre el mínimo y el máximo (ej. 280 · 285 · 290 · 295 · 300)
+function rangeChips(min, max) {
+  min = Number(min); max = Number(max);
+  if (!(min > 0) || !(max > min)) return [];
+  const step = stepFor(max);
+  const out = new Set();
+  for (let i = 0; i <= 4; i++) out.add(Math.round((min + ((max - min) * i) / 4) / step) * step);
+  return [...out].filter((v) => v >= min && v <= max);
+}
+const schedAmountLabel = (s) => (Number(s.minAmount) > 0 && Number(s.minAmount) < Number(s.amount) ? `${curLabel(s.currency)} ${numInput(s.minAmount)} a ${numInput(s.amount)}` : fmtIn(s.amount, s.currency));
 
 function scheduledForm(s, preset = null) {
   const isNew = !s;
@@ -1092,7 +1123,8 @@ function scheduledForm(s, preset = null) {
       ...(isNew ? [{ type: 'html', html: '<div class="small muted">Un gasto de una sola vez con fecha (tu turno en la fraternidad, una matrícula, un cumpleaños…). El mes en que cae se descuenta de "Hoy podés gastar", así te lo vas guardando.</div>' }] : []),
       { name: 'name', label: 'Qué es', value: s.name, required: true, placeholder: 'ej. Turno fraternidad', full: true },
       { name: 'date', label: 'Fecha', type: 'date', value: s.date, required: true },
-      { name: 'amount', label: 'Monto', type: 'number', value: s.amount, required: true, hint: 'Si varía (ej. 280 a 300), poné el más alto.' },
+      { name: 'amount', label: 'Monto (si varía, el más alto)', type: 'stepper', step: stepFor(s.amount || 100), value: s.amount, required: true },
+      { name: 'minAmount', label: '¿Varía? Desde (opcional)', type: 'number', value: s.minAmount || '', placeholder: 'ej. 280', hint: 'Se reserva el más alto; al pagar elegís el real.' },
       { name: 'currency', label: 'Moneda', type: 'select', value: s.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
       { name: 'accountId', label: 'Lo pagás desde', type: 'select', value: s.accountId, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
       { name: 'category', label: 'Categoría', type: 'select', value: s.category, options: CAT_GASTO.map((c) => [c, c]), full: true },
@@ -1103,7 +1135,8 @@ function scheduledForm(s, preset = null) {
       if (v.remove) { S.scheduled = S.scheduled.filter((x) => x !== s); tombstone(s.id); save(); render(); return; }
       if (!v.date) return 'Elegí la fecha.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
-      const next = { name: v.name, date: v.date, amount: v.amount, currency: v.currency, accountId: v.accountId, category: v.category };
+      if (v.minAmount && !(v.minAmount < v.amount)) return 'El "desde" tiene que ser menor que el monto.';
+      const next = { name: v.name, date: v.date, amount: v.amount, minAmount: v.minAmount > 0 ? v.minAmount : null, currency: v.currency, accountId: v.accountId, category: v.category };
       if (isNew) S.scheduled.push({ id: uid(), ...next }); else Object.assign(s, next);
       save(); render();
       if (isNew) toast(`Programado: ${v.name} el ${fmtDay(v.date)}`);
@@ -1119,7 +1152,8 @@ function paySchedForm(s) {
     title: `Pago de ${s.name}`,
     fields: [
       { name: 'accountId', label: 'Cuenta', type: 'select', value: acc?.id, full: true, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
-      { name: 'amount', label: 'Cuánto pagaste (en la moneda de la cuenta)', type: 'number', value: amountIn(acc) ?? '', required: true },
+      { name: 'amount', label: 'Cuánto pagaste (en la moneda de la cuenta)', type: 'stepper', step: stepFor(s.amount), value: amountIn(acc) ?? '', required: true, full: true,
+        chips: acc?.currency === s.currency ? rangeChips(s.minAmount, s.amount) : [] },
       { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
       { name: 'time', label: 'Hora', type: 'time', value: nowTime() },
     ],
@@ -1138,7 +1172,25 @@ function paySchedForm(s) {
       applyTx(tx, 1);
       snapshot(); save(); render();
       // Para la fraternidad: cuando sepas tu próximo turno, lo cargás con el mismo nombre y monto
-      toast(`${s.name}: pagado ✓`, 7000, { label: 'Programar el próximo', fn: () => scheduledForm(null, { name: s.name, amount: s.amount, currency: s.currency, accountId: s.accountId, category: s.category }) });
+      toast(`${s.name}: pagado ✓`, 7000, { label: 'Programar el próximo', fn: () => scheduledForm(null, { name: s.name, amount: s.amount, minAmount: s.minAmount, currency: s.currency, accountId: s.accountId, category: s.category }) });
+    },
+  });
+}
+
+// Cambiar sólo el monto (ej. este turno sale 290 en vez de 300)
+function schedAmountForm(s) {
+  openForm({
+    title: `Monto de ${s.name}`,
+    fields: [
+      { name: 'amount', label: `Monto (${curLabel(s.currency)})`, type: 'stepper', step: stepFor(s.amount), value: s.amount, required: true, full: true, chips: rangeChips(s.minAmount, s.amount) },
+      { type: 'html', html: '<div class="small muted">Es lo que se reserva de tu presupuesto. Al pagar ponés lo que salió de verdad.</div>' },
+    ],
+    onSubmit: (v) => {
+      if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      if (Number(s.minAmount) >= v.amount) s.minAmount = null;
+      s.amount = v.amount;
+      save(); render();
+      toast(`${s.name}: ${fmtIn(v.amount, s.currency)}`);
     },
   });
 }
@@ -1149,12 +1201,13 @@ function schedRowHTML(s) {
   const late = !tx && s.date < todayISO();
   const soon = !tx && !late && Math.round((Date.parse(s.date) - Date.parse(todayISO())) / 864e5) <= 3;
   const status = tx ? `<span class="status good">${icon('check', 14)} Pagado el ${fmtDate(tx.date).slice(0, 5)}</span>`
-    : `<button class="btn sm ${late || soon ? 'primary' : ''}" data-action="paySched" data-id="${s.id}">Ya pagué</button>`;
+    : `<button class="btn sm primary" data-action="paySched" data-id="${s.id}">Ya pagué</button>`;
   return `<div class="list-row act rec-row ${tx ? 'off' : ''}">
     <span class="acc-ico sm">${icon('calendar', 16)}</span>
     <div class="grow"><div class="name">${esc(s.name)}</div>
       <div class="meta">${fmtDay(s.date)}${tx ? '' : ` · <b class="${late || soon ? 'warn-text' : ''}">${daysUntil(s.date)}</b>`} · ${esc(acc?.name || 'sin cuenta')}</div></div>
-    <div class="val"><div class="money">−${fmtIn(tx ? tx.amount : s.amount, tx ? (S.accounts.find((a) => a.id === tx.accountId)?.currency || s.currency) : s.currency)}</div></div>
+    <div class="val">${tx ? `<div class="money">−${fmtIn(tx.amount, S.accounts.find((a) => a.id === tx.accountId)?.currency || s.currency)}</div>`
+      : `<button class="amt-btn money" data-action="schedAmount" data-id="${s.id}" title="Cambiar monto">−${schedAmountLabel(s)} ${icon('edit', 13)}</button>`}</div>
     ${status}
     <button class="btn sm ghost icon-only" data-action="editSched" data-id="${s.id}" title="Editar">${icon('settings', 16)}</button>
   </div>`;
@@ -1286,7 +1339,7 @@ function viewMovimientos() {
   </details>
 
   <details class="more-box" id="programados" ${schedPending().length ? 'open' : ''}>
-    <summary>Gastos programados${schedPending().length ? ` <span class="tag">${schedPending().length}</span>` : ''}</summary>
+    <summary>Gastos programados${schedPending().length ? ` <span class="tag warn">${schedPending().length} pendiente${schedPending().length > 1 ? 's' : ''}</span>` : ''}</summary>
     <div class="more-inner"><section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: turnos, matrícula, cumpleaños…</span><button class="btn sm" data-action="addSched">+ Programar</button></div>
       ${schedHTML()}</section></div>
   </details>
@@ -3065,10 +3118,10 @@ function upcomingHTML() {
   return `<section class="card"><div class="card-head" style="margin-bottom:6px"><h2>Próximos 30 días</h2><span class="muted small">pagos y cobros</span></div>
     <div class="list">${items.slice(0, 8).map((it) => {
       const soon = !it.undated && (it.overdue || Math.round((Date.parse(it.date) - Date.parse(todayISO())) / 864e5) <= 3);
-      const btn = it.recId ? `<button class="btn sm" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
-        : it.accId ? `<button class="btn sm" data-action="payCard" data-id="${it.accId}">Pagar</button>`
-        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>`
-        : it.schedId ? `<button class="btn sm" data-action="paySched" data-id="${it.schedId}">Ya pagué</button>` : '';
+      const btn = it.recId ? `<button class="btn sm primary" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
+        : it.accId ? `<button class="btn sm primary" data-action="payCard" data-id="${it.accId}">Pagar</button>`
+        : it.loanId ? `<button class="btn sm primary" data-action="loanPay" data-id="${it.loanId}">Registrar</button>`
+        : it.schedId ? `<button class="btn sm primary" data-action="paySched" data-id="${it.schedId}">Ya pagué</button>` : '';
       return `<div class="list-row act ${soon && it.type === 'gasto' ? 'soon' : ''}">
         <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
         <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Fijo · pendiente este mes' : `${it.kind} · ` + `${fmtDate(it.date)} · <b class="${soon ? 'warn-text' : ''}">${daysUntil(it.date)}</b>`}</div></div>
@@ -4497,6 +4550,7 @@ const ACTIONS = {
   addSched: () => scheduledForm(),
   editSched: (id) => scheduledForm(byId(S.scheduled, id)),
   paySched: (id) => paySchedForm(byId(S.scheduled, id)),
+  schedAmount: (id) => schedAmountForm(byId(S.scheduled, id)),
   addGoal: () => goalForm(),
   editGoal: (id) => goalForm(byId(S.goals, id)),
   syncPush: () => syncPush(),
