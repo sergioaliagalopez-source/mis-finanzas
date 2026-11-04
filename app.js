@@ -225,15 +225,44 @@ function migrate(s) {
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) { S = migrate(JSON.parse(raw)); return true; }
+    if (raw) { S = migrate(JSON.parse(raw)); stampEdits(null); return true; }
   } catch (e) { console.warn(e); }
   S = migrate(defaultState());
+  stampEdits(null);
   return false;
+}
+
+/* Cada cuenta, movimiento, fijo, etc. guarda cuándo lo editaste por última vez (campo u).
+   Así, al unir dos dispositivos, gana la edición más nueva de cada cosa (antes siempre ganaba este dispositivo).
+   Se detecta comparando con cómo estaba en el último guardado: no hace falta marcarlo en cada formulario.
+   No cuentan los campos que cambian solos (saldo por los movimientos, precios, cantidades por las compras). */
+const STAMPED = ['accounts', 'holdings', 'recurring', 'scheduled', 'goals', 'loans', 'transactions'];
+const STAMP_SKIP = {
+  accounts: ['balance', 'apyLastAccrual'],
+  holdings: ['quantity', 'avgCost', 'trades', 'price', 'change24h', 'priceUpdated', 'priceSource'],
+  loans: ['payments', 'closed'],
+  recurring: ['skip'],
+};
+let lastSeen = new Map();
+function itemKey(k, x) {
+  const skip = STAMP_SKIP[k] || [];
+  return JSON.stringify(x, (f, v) => (f === 'u' || skip.includes(f) ? undefined : v));
+}
+function stampEdits(now) {
+  const seen = new Map();
+  for (const k of STAMPED) for (const x of S[k] || []) {
+    if (!x?.id) continue;
+    const j = itemKey(k, x);
+    if (now && lastSeen.get(x.id) !== j) x.u = now;
+    seen.set(x.id, j);
+  }
+  lastSeen = seen;
 }
 
 // edit=false para cambios que no son datos tuyos (precios, vista, filtros): no cuentan como "última edición"
 function save(edit = true) {
   if (edit) S.editedAt = new Date().toISOString();
+  stampEdits(edit ? S.editedAt : null);
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
   catch (e) { toast('⚠ No se pudo guardar en el navegador. Exportá un respaldo en Ajustes.'); }
   FileSync.schedule();
@@ -2632,12 +2661,38 @@ const closeDialogs = () => $$('dialog[open]').forEach((d) => d.close());
    - movimientos nuevos del otro se agregan y se aplican a los saldos
    - cuentas, inversiones, fijos, metas y préstamos nuevos se agregan
    Si los dos editaron el MISMO elemento, queda la versión de este dispositivo. */
+// Corregiste el saldo a mano en el otro dispositivo: se toma ese saldo y se le suman los movimientos que sólo están acá
+function balanceFromRemote(acc, rAcc, R, dead) {
+  const eff = (t) => txEffects(t).filter(([a]) => a.id === acc.id).reduce((s, [, d]) => s + d, 0);
+  const remoteTx = new Map((R.transactions || []).map((t) => [t.id, t]));
+  const remoteDead = new Set(R.deleted || []);
+  let bal = Number(rAcc.balance) || 0;
+  for (const t of S.transactions) {
+    const rt = remoteTx.get(t.id);
+    if (!rt) bal += eff(t); // registrado acá y no allá
+    else if ((t.u || '') > (rt.u || '')) bal += eff(t) - eff(rt); // corregido acá después
+  }
+  for (const t of R.transactions || []) if (dead.has(t.id) && !remoteDead.has(t.id)) bal -= eff(t); // borrado acá
+  return round2(bal);
+}
+
 function mergeRemote(R) {
   const dead = new Set([...(S.deleted || []), ...(R.deleted || [])]);
   const remoteDead = new Set(R.deleted || []);
   for (const t of S.transactions) if (remoteDead.has(t.id)) applyTx(t, -1);
   S.transactions = S.transactions.filter((t) => !dead.has(t.id));
   const have = new Set(S.transactions.map((t) => t.id));
+  const newer = (r, l) => (r?.u || '') > (l?.u || '');
+  const remoteTx = new Map((R.transactions || []).map((t) => [t.id, t]));
+  // Movimientos corregidos en el otro dispositivo (ej. 50 → 45): se revierte el viejo y se aplica el nuevo
+  for (const t of S.transactions) {
+    const rt = remoteTx.get(t.id);
+    if (!rt || !newer(rt, t)) continue;
+    applyTx(t, -1);
+    for (const f of Object.keys(t)) delete t[f];
+    Object.assign(t, JSON.parse(JSON.stringify(rt)));
+    applyTx(t, 1);
+  }
   for (const t of R.transactions || []) {
     if (have.has(t.id) || dead.has(t.id)) continue;
     // El mismo fijo registrado solo en los dos dispositivos: queda uno
@@ -2657,8 +2712,32 @@ function mergeRemote(R) {
   }
   for (const k of ['accounts', 'holdings', 'recurring', 'scheduled', 'goals', 'loans']) {
     S[k] = (S[k] || []).filter((x) => !dead.has(x.id));
+    for (const x of S[k]) {
+      const rx = (R[k] || []).find((y) => y.id === x.id);
+      if (!rx) continue;
+      // Saldo corregido a mano allá después que acá: gana ese saldo (más lo que registraste sólo acá)
+      if (k === 'accounts' && (rx.balanceSetAt || '') > (x.balanceSetAt || '')) {
+        x.balance = balanceFromRemote(x, rx, R, dead);
+        x.balanceSetAt = rx.balanceSetAt;
+      }
+      if (!newer(rx, x)) continue;
+      const keep = Object.fromEntries((STAMP_SKIP[k] || []).filter((f) => f in x).map((f) => [f, x[f]]));
+      if (k === 'accounts') keep.balanceSetAt = x.balanceSetAt;
+      for (const f of Object.keys(x)) delete x[f];
+      Object.assign(x, JSON.parse(JSON.stringify(rx)), keep);
+    }
     const ids = new Set(S[k].map((x) => x.id));
     for (const x of R[k] || []) if (!ids.has(x.id) && !dead.has(x.id)) S[k].push(x);
+  }
+  for (const h of S.holdings) {
+    const rh = (R.holdings || []).find((x) => x.id === h.id);
+    for (const tr of rh?.trades || []) {
+      if ((h.trades || []).some((x) => x.id === tr.id)) continue;
+      const q = Number(h.quantity) || 0;
+      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price) / (q + tr.qty); h.quantity = q + tr.qty; }
+      else h.quantity = Math.max(0, q - tr.qty);
+      (h.trades = h.trades || []).push(tr);
+    }
   }
   // Devoluciones de préstamos registradas en el otro dispositivo
   for (const l of S.loans) {
@@ -3917,7 +3996,8 @@ function balanceForm(a) {
       { name: 'balance', label: `${isCredit ? 'Deuda actual' : 'Saldo actual'} (${a.currency})`, type: 'number', value: a.balance, full: true,
         hint: 'Usalo para corregir el saldo y que coincida con tu banco/app.' },
     ],
-    onSubmit: (v) => { a.balance = v.balance || 0; snapshot(); save(); render(); },
+    // balanceSetAt: si corregís el saldo a mano en un dispositivo, el otro lo respeta al sincronizar
+    onSubmit: (v) => { a.balance = v.balance || 0; a.balanceSetAt = new Date().toISOString(); snapshot(); save(); render(); },
   });
 }
 
