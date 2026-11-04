@@ -171,6 +171,7 @@ function defaultState() {
     },
     // Instalación nueva: vacía (sin datos de nadie). Cada uno agrega sus cuentas, inversiones y fijos
     accounts: [acc('Efectivo', 'efectivo', '', 'BOB')],
+    scheduled: [], // gastos programados de una sola vez: { id, name, date, amount, currency, accountId, category }
     recurring: [], // ingresos y gastos fijos: { id, type, name, amount, currency, accountId, category, day|null, startMonth }
     goals: [],     // metas: { id, name, target, currency, date, source }
     loans: [],     // préstamos: { id, dir: preste|debo, person, amount, currency, date, dueDate, payments }
@@ -189,7 +190,7 @@ function migrate(s) {
   const d = defaultState();
   s.settings = { ...d.settings, ...(s.settings || {}) };
   s.settings.rates = { USD: 1, ...(s.settings.rates || {}) };
-  for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'goals', 'loans', 'checkins', 'rateLog', 'deleted']) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'scheduled', 'goals', 'loans', 'checkins', 'rateLog', 'deleted']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
@@ -753,7 +754,8 @@ function viewResumen() {
       <span class="money ${it.type === 'ingreso' ? 'up' : ''}">${it.type === 'ingreso' ? '+' : '−'}${fmtIn(it.amount, it.currency)}</span>
       ${it.recId ? `<button class="btn sm" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
         : it.accId ? `<button class="btn sm" data-action="payCard" data-id="${it.accId}">Pagar</button>`
-        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>` : ''}
+        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>`
+        : it.schedId ? `<button class="btn sm" data-action="paySched" data-id="${it.schedId}">Ya pagué</button>` : ''}
     </div>`).join('')}</div></section>` : ''}
 
   <section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Últimos movimientos</h2><a href="#" data-action="go" data-id="movimientos" class="small">Ver todos</a></div>
@@ -1068,6 +1070,107 @@ function payRecurringForm(r) {
   });
 }
 
+
+/* ---------------- Gastos programados (de una sola vez, con fecha) ---------------- */
+// ej. la cuota de la fraternidad el jueves que te toca: se descuenta de "Hoy podés gastar" el mes en que cae.
+// Queda pagado cuando hay un movimiento con su scheduledId (así funciona igual al sincronizar o al borrar el movimiento)
+const schedTx = (s) => S.transactions.find((t) => t.scheduledId === s.id);
+const isFixedTx = (t) => !!(t.recurringId || t.scheduledId);
+const monthEndISO = (m) => `${m}-${String(daysInMonth(m)).padStart(2, '0')}`;
+const schedPending = () => (S.scheduled || []).filter((s) => !schedTx(s)).sort((a, b) => a.date.localeCompare(b.date));
+// Sin pagar que caen este mes o ya vencieron: se reservan en el presupuesto de este mes
+const schedDueThisMonth = () => schedPending().filter((s) => s.date <= monthEndISO(currentMonth()));
+const fmtDay = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit' }).replace(',', '').replace('-', '/');
+
+function scheduledForm(s, preset = null) {
+  const isNew = !s;
+  s = s || { name: '', amount: '', currency: S.settings.localCurrency, date: '', category: 'Otros gastos',
+    accountId: S.settings.defaultAccountId || S.accounts.find((a) => a.type !== 'credito')?.id, ...(preset || {}) };
+  openForm({
+    title: isNew ? 'Programar un gasto' : `Editar: ${s.name}`,
+    fields: [
+      ...(isNew ? [{ type: 'html', html: '<div class="small muted">Un gasto de una sola vez con fecha (tu turno en la fraternidad, una matrícula, un cumpleaños…). El mes en que cae se descuenta de "Hoy podés gastar", así te lo vas guardando.</div>' }] : []),
+      { name: 'name', label: 'Qué es', value: s.name, required: true, placeholder: 'ej. Turno fraternidad', full: true },
+      { name: 'date', label: 'Fecha', type: 'date', value: s.date, required: true },
+      { name: 'amount', label: 'Monto', type: 'number', value: s.amount, required: true, hint: 'Si varía (ej. 280 a 300), poné el más alto.' },
+      { name: 'currency', label: 'Moneda', type: 'select', value: s.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
+      { name: 'accountId', label: 'Lo pagás desde', type: 'select', value: s.accountId, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
+      { name: 'category', label: 'Categoría', type: 'select', value: s.category, options: CAT_GASTO.map((c) => [c, c]), full: true },
+      ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar (si ya lo pagaste, el movimiento queda)', type: 'checkbox', full: true }]),
+    ],
+    submitLabel: isNew ? 'Programar' : 'Guardar',
+    onSubmit: (v) => {
+      if (v.remove) { S.scheduled = S.scheduled.filter((x) => x !== s); tombstone(s.id); save(); render(); return; }
+      if (!v.date) return 'Elegí la fecha.';
+      if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      const next = { name: v.name, date: v.date, amount: v.amount, currency: v.currency, accountId: v.accountId, category: v.category };
+      if (isNew) S.scheduled.push({ id: uid(), ...next }); else Object.assign(s, next);
+      save(); render();
+      if (isNew) toast(`Programado: ${v.name} el ${fmtDay(v.date)}`);
+    },
+  });
+}
+
+// "Ya pagué": se registra con el monto real (ej. Bs 285 aunque programaste 300)
+function paySchedForm(s) {
+  const acc = S.accounts.find((a) => a.id === s.accountId) || S.accounts.find((a) => a.type !== 'credito');
+  const amountIn = (a) => (a ? convert(s.amount, s.currency, a.currency) : null);
+  openForm({
+    title: `Pago de ${s.name}`,
+    fields: [
+      { name: 'accountId', label: 'Cuenta', type: 'select', value: acc?.id, full: true, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
+      { name: 'amount', label: 'Cuánto pagaste (en la moneda de la cuenta)', type: 'number', value: amountIn(acc) ?? '', required: true },
+      { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
+      { name: 'time', label: 'Hora', type: 'time', value: nowTime() },
+    ],
+    submitLabel: 'Registrar pago',
+    onInput: (form, v, changed) => {
+      if (changed !== 'accountId') return;
+      const a = S.accounts.find((x) => x.id === v.accountId);
+      const amt = amountIn(a);
+      if (amt != null) form.elements.amount.value = numInput(amt);
+    },
+    onSubmit: (v) => {
+      if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      const tx = { id: uid(), created: new Date().toISOString(), type: 'gasto', date: v.date || todayISO(), time: v.time || nowTime(),
+        accountId: v.accountId, amount: v.amount, category: s.category, note: s.name, scheduledId: s.id };
+      S.transactions.push(tx);
+      applyTx(tx, 1);
+      snapshot(); save(); render();
+      // Para la fraternidad: cuando sepas tu próximo turno, lo cargás con el mismo nombre y monto
+      toast(`${s.name}: pagado ✓`, 7000, { label: 'Programar el próximo', fn: () => scheduledForm(null, { name: s.name, amount: s.amount, currency: s.currency, accountId: s.accountId, category: s.category }) });
+    },
+  });
+}
+
+function schedRowHTML(s) {
+  const tx = schedTx(s);
+  const acc = S.accounts.find((a) => a.id === s.accountId);
+  const late = !tx && s.date < todayISO();
+  const soon = !tx && !late && Math.round((Date.parse(s.date) - Date.parse(todayISO())) / 864e5) <= 3;
+  const status = tx ? `<span class="status good">${icon('check', 14)} Pagado el ${fmtDate(tx.date).slice(0, 5)}</span>`
+    : `<button class="btn sm ${late || soon ? 'primary' : ''}" data-action="paySched" data-id="${s.id}">Ya pagué</button>`;
+  return `<div class="list-row act rec-row ${tx ? 'off' : ''}">
+    <span class="acc-ico sm">${icon('calendar', 16)}</span>
+    <div class="grow"><div class="name">${esc(s.name)}</div>
+      <div class="meta">${fmtDay(s.date)}${tx ? '' : ` · <b class="${late || soon ? 'warn-text' : ''}">${daysUntil(s.date)}</b>`} · ${esc(acc?.name || 'sin cuenta')}</div></div>
+    <div class="val"><div class="money">−${fmtIn(tx ? tx.amount : s.amount, tx ? (S.accounts.find((a) => a.id === tx.accountId)?.currency || s.currency) : s.currency)}</div></div>
+    ${status}
+    <button class="btn sm ghost icon-only" data-action="editSched" data-id="${s.id}" title="Editar">${icon('settings', 16)}</button>
+  </div>`;
+}
+
+function schedHTML() {
+  const pend = schedPending();
+  const paid = (S.scheduled || []).filter(schedTx).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
+  if (!pend.length && !paid.length) {
+    return '<div class="empty" style="padding:8px 0 4px">Cargá gastos de una sola vez que ya sabés que vienen (ej. tu turno en la fraternidad el jueves 19). La app los descuenta de "Hoy podés gastar" el mes en que caen.</div>';
+  }
+  const due = schedDueThisMonth().reduce((t, s) => t + toUSD(s.amount, s.currency), 0);
+  return `<div class="list">${pend.map(schedRowHTML).join('') || '<div class="empty">No tenés gastos programados pendientes.</div>'}</div>
+    ${due > 0 ? `<div class="small muted" style="margin-top:10px">Este mes se reservan <b class="money">${fmtIn(fromUSD(due, S.settings.localCurrency), S.settings.localCurrency)}</b> de tu presupuesto para estos pagos.</div>` : ''}
+    ${paid.length ? `<div class="rec-sub">Ya pagados</div><div class="list">${paid.map(schedRowHTML).join('')}</div>` : ''}`;
+}
 /* ---------------- Movimientos ---------------- */
 
 let lastMonthly = null;
@@ -1165,6 +1268,7 @@ function viewMovimientos() {
     ${quickActionsHTML()}
     <div class="sub-actions">
       <button class="link-btn" data-action="addTx" data-id="transferencia">${icon('swap', 14)} Pasar plata entre cuentas</button>
+      <button class="link-btn" data-action="addSched">${icon('calendar', 14)} Programar un gasto</button>
       ${month < currentMonth() ? `<button class="link-btn" data-action="monthClose" data-id="${month}">${icon('calendar', 14)} Cierre del mes</button>` : ''}
     </div>
   </section>
@@ -1179,6 +1283,12 @@ function viewMovimientos() {
     <summary>Ingresos y gastos fijos${pendN ? ` <span class="tag warn">${pendN} pendiente${pendN > 1 ? 's' : ''}</span>` : ''}</summary>
     <div class="more-inner"><section class="card"><div class="card-head"><span class="muted small">Sueldo, mesada, gym…: se tienen en cuenta todos los meses</span><button class="btn sm" data-action="addRecurring">+ Fijo</button></div>
       ${recurringHTML(month)}</section></div>
+  </details>
+
+  <details class="more-box" id="programados" ${schedPending().length ? 'open' : ''}>
+    <summary>Gastos programados${schedPending().length ? ` <span class="tag">${schedPending().length}</span>` : ''}</summary>
+    <div class="more-inner"><section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: turnos, matrícula, cumpleaños…</span><button class="btn sm" data-action="addSched">+ Programar</button></div>
+      ${schedHTML()}</section></div>
   </details>
 
   <details class="more-box" ${S.settings.movChartsOpen ? 'open' : ''} data-pref="movChartsOpen">
@@ -1706,7 +1816,7 @@ function goalCurrent(g) {
   return a ? toUSD(a.balance, a.currency) : 0;
 }
 
-const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId;
+const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId && !t.scheduledId;
 
 // Números base del plan, todo en USD por mes
 function planNumbers() {
@@ -1785,7 +1895,7 @@ function savingsTable(P) {
     const m = addMonths(cur, k);
     if (k <= 0) {
       const ms = monthStats(m);
-      const fixed = S.transactions.filter((t) => t.date?.startsWith(m) && t.type === 'gasto' && t.recurringId).reduce((s, t) => s + txUSD(t), 0);
+      const fixed = S.transactions.filter((t) => t.date?.startsWith(m) && t.type === 'gasto' && isFixedTx(t)).reduce((s, t) => s + txUSD(t), 0);
       if (!ms.income && !ms.expense) continue;
       const real = ms.income - ms.expense;
       acc += real;
@@ -2478,6 +2588,7 @@ function mergeRemote(R) {
     if (have.has(t.id) || dead.has(t.id)) continue;
     // El mismo fijo registrado solo en los dos dispositivos: queda uno
     if (t.recurringId && S.transactions.some((x) => x.recurringId === t.recurringId && x.date?.slice(0, 7) === t.date?.slice(0, 7))) { dead.add(t.id); continue; }
+    if (t.scheduledId && S.transactions.some((x) => x.scheduledId === t.scheduledId)) { dead.add(t.id); continue; }
     S.transactions.push(t);
     applyTx(t, 1); // sólo afecta cuentas que ya existían acá; las cuentas nuevas traen su saldo
     // Compras/ventas hechas en el otro dispositivo también mueven la cantidad
@@ -2490,7 +2601,7 @@ function mergeRemote(R) {
       (h.trades = h.trades || []).push(tr);
     }
   }
-  for (const k of ['accounts', 'holdings', 'recurring', 'goals', 'loans']) {
+  for (const k of ['accounts', 'holdings', 'recurring', 'scheduled', 'goals', 'loans']) {
     S[k] = (S[k] || []).filter((x) => !dead.has(x.id));
     const ids = new Set(S[k].map((x) => x.id));
     for (const x of R[k] || []) if (!ids.has(x.id) && !dead.has(x.id)) S[k].push(x);
@@ -2928,6 +3039,7 @@ function upcomingItems(days = 30) {
     }
   }
   for (const r of pendingRecurring()) out.push({ date: `${currentMonth()}-${String(daysInMonth(currentMonth())).padStart(2, '0')}`, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo sin día', undated: true, recId: r.id });
+  for (const s of schedPending()) if (s.date <= end) out.push({ date: s.date, name: s.name, amount: s.amount, currency: s.currency, type: 'gasto', kind: 'Programado', schedId: s.id, overdue: s.date < today });
   for (const a of S.accounts) {
     if (a.type === 'credito' && Number(a.balance) > 0 && Number(a.dueDay)) {
       const d = nextMonthlyDate(Number(a.dueDay), today);
@@ -2955,7 +3067,8 @@ function upcomingHTML() {
       const soon = !it.undated && (it.overdue || Math.round((Date.parse(it.date) - Date.parse(todayISO())) / 864e5) <= 3);
       const btn = it.recId ? `<button class="btn sm" data-action="payRecurring" data-id="${it.recId}">${it.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`
         : it.accId ? `<button class="btn sm" data-action="payCard" data-id="${it.accId}">Pagar</button>`
-        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>` : '';
+        : it.loanId ? `<button class="btn sm" data-action="loanPay" data-id="${it.loanId}">Registrar</button>`
+        : it.schedId ? `<button class="btn sm" data-action="paySched" data-id="${it.schedId}">Ya pagué</button>` : '';
       return `<div class="list-row act ${soon && it.type === 'gasto' ? 'soon' : ''}">
         <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
         <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Fijo · pendiente este mes' : `${it.kind} · ` + `${fmtDate(it.date)} · <b class="${soon ? 'warn-text' : ''}">${daysUntil(it.date)}</b>`}</div></div>
@@ -3311,7 +3424,7 @@ function txRowHTML(t) {
     : `${esc(shortCat(t.category || ''))} · ${esc(acc?.name || 'cuenta eliminada')}`;
   return `<button class="tx-row" data-action="editTx" data-id="${t.id}">
     <span class="tx-ico ${t.type}">${ico}</span>
-    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ' <span class="tag">fijo</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
+    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ' <span class="tag">fijo</span>' : t.scheduledId ? ' <span class="tag">programado</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
     <span class="tx-amt money ${t.type}">${sign}${fmtIn(t.amount, cur)}${t.type === 'transferencia' && t.toAmount && to ? `<small class="tx-to">→ ${fmtIn(t.toAmount, to.currency)}</small>` : ''}</span>
   </button>`;
 }
@@ -3365,18 +3478,20 @@ function spendPlan() {
   const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  // Gastos programados: los de este mes (pagados o no) y los vencidos sin pagar
+  const sched = sum(txs.filter((t) => t.type === 'gasto' && t.scheduledId)) + schedDueThisMonth().reduce((s, x) => s + toUSD(x.amount, x.currency), 0);
   const g = S.goals[0];
   const M = g ? goalMath(g, P) : null;
   const rate = Number(S.settings.saveRate ?? 10);
   const save = M?.needed != null ? M.needed : Math.max(0, income * rate / 100);
-  const budget = income - fixed - save;
+  const budget = income - fixed - sched - save;
   const spentBefore = sum(txs.filter((t) => isVariable(t) && t.date < today));
   const spentToday = sum(txs.filter((t) => isVariable(t) && t.date === today));
   const daysLeft = daysInMonth(month) - new Date().getDate() + 1;
   const perDay = (budget - spentBefore) / daysLeft;
   const spent = spentBefore + spentToday;
   // monthLeft < 0 = ya gastaste más de lo que tenías para todo el mes
-  return { income, fixed, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
+  return { income, fixed, sched, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
 }
 
 function spendCardHTML() {
@@ -3430,6 +3545,7 @@ function spendInfo() {
       { type: 'html', html: `<div class="calc">
         ${row('Ingresos del mes (lo que entró + los fijos que contás)', L(p.income))}
         ${row('− Gastos fijos (gym, alquiler…)', L(p.fixed))}
+        ${p.sched > 0 ? row(`− Gastos programados (${esc(schedDueThisMonth().map((s) => s.name).join(', ') || 'ya pagados')})`, L(p.sched)) : ''}
         ${row(p.goal ? `− Ahorro para tu meta "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}% de tus ingresos)`, L(p.save))}
         ${row('= Para el día a día este mes', L(p.budget), 'total')}
         ${p.monthLeft < 0 || p.perDay < 0 ? `
@@ -3465,7 +3581,7 @@ function favorites(type, n = 6) {
   const since = isoOf(Date.now() - 90 * 864e5);
   const groups = new Map();
   for (const t of S.transactions) {
-    if (t.date < since || (type && t.type !== type) || !['gasto', 'ingreso'].includes(t.type) || nonFlow(t) || t.recurringId) continue;
+    if (t.date < since || (type && t.type !== type) || !['gasto', 'ingreso'].includes(t.type) || nonFlow(t) || isFixedTx(t)) continue;
     if (!S.accounts.some((a) => a.id === t.accountId)) continue;
     const key = [t.type, norm(t.note || ''), t.category, t.amount, t.accountId].join('|');
     const g = groups.get(key) || { t, n: 0, last: '' };
@@ -4378,6 +4494,9 @@ const ACTIONS = {
   addRecurringPreset: (i) => recurringForm(null, { ...RECURRING_PRESETS[Number(i)] }),
   editRecurring: (id) => recurringForm(byId(S.recurring, id)),
   payRecurring: (id) => payRecurringForm(byId(S.recurring, id)),
+  addSched: () => scheduledForm(),
+  editSched: (id) => scheduledForm(byId(S.scheduled, id)),
+  paySched: (id) => paySchedForm(byId(S.scheduled, id)),
   addGoal: () => goalForm(),
   editGoal: (id) => goalForm(byId(S.goals, id)),
   syncPush: () => syncPush(),
