@@ -57,6 +57,11 @@ html, body { margin: 0; }
 /* App de tamaño fijo: sin zoom por doble toque (iOS) */
 html, body, button, a, input, select, textarea, label, .nav-btn, .fab { touch-action: manipulation; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Sin "rebote" de toda la app al llegar arriba o abajo (iPhone) */
+html, body { overscroll-behavior-y: none; }
+/* Con una ventana abierta el fondo queda quieto: deslizar dentro de la ventana no arrastra la app */
+html:has(dialog[open]), html:has(dialog[open]) body, html.dlg-open, html.dlg-open body { overflow: hidden; }
+#dlgForm, .quick, .chat-log { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 /* Los elementos con el atributo hidden se ocultan siempre, aunque tengan display propio */
 [hidden] { display: none !important; }
 body {
@@ -253,7 +258,7 @@ dialog {
   background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.25);
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
-#dlgForm { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 40px); overflow-y: auto; }
+#dlgForm { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; }
 #dlgForm h2 { font-size: 18px; }
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
@@ -478,12 +483,16 @@ details summary { cursor: pointer; padding: 4px 0; }
 .more-box > summary::-webkit-details-marker { display: none; }
 .more-box > summary::after { content: "\203A"; margin-left: auto; font-size: 20px; color: var(--muted); transition: transform .15s; }
 .more-box[open] > summary::after { transform: rotate(90deg); }
+/* Al abrir una sección, el contenido aparece suave en vez de saltar */
+.more-box[open] > :not(summary) { animation: reveal .2s ease-out; }
+@keyframes reveal { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .more-box[open] > :not(summary) { animation: none; } }
 .more-inner { display: flex; flex-direction: column; gap: 16px; margin-top: 14px; }
 .tag.warn { color: var(--warn-ink); background: color-mix(in srgb, #fab219 22%, transparent); }
 
 /* Hoja de registro rápido */
 .quick-dlg { width: min(480px, calc(100vw - 24px)); padding: 0; border-radius: 22px; }
-.quick { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 20px; max-height: calc(100vh - 40px); overflow-y: auto; }
+.quick { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 20px; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; }
 .q-top { display: flex; align-items: center; gap: 8px; }
 .q-seg { flex: 1; display: grid; grid-template-columns: 1fr 1fr; background: var(--surface-2); border-radius: 12px; padding: 3px; }
 .q-seg button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 38px; border: 0; border-radius: 10px; background: none; font-weight: 600; color: var(--text-2); cursor: pointer; }
@@ -591,11 +600,13 @@ details summary { cursor: pointer; padding: 4px 0; }
 @media (min-width: 761px) { .more-menu { display: none !important; } }
 @media (max-width: 760px) {
   .quick-dlg { width: 100vw; max-width: 100vw; margin: auto 0 0; border-radius: 22px 22px 0 0; border: 0; }
+  .quick-dlg::before { content: ""; display: block; width: 38px; height: 5px; border-radius: 3px; background: var(--border); margin: 8px auto -6px; }
+  .quick-dlg[open] { animation: sheet-up .22s ease-out; }
   .quick { padding-bottom: calc(20px + env(safe-area-inset-bottom)); max-height: 92dvh; }
   .month-sum { gap: 6px; }
   .month-sum > div { padding: 8px 9px; }
   .month-sum b { font-size: 14px; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
-  .filter select { font-size: 14px !important; }
+  .filter select { font-size: 16px !important; }
 }
 
 /* Aviso "Escuchando…" del micrófono */
@@ -614,3 +625,7 @@ details summary { cursor: pointer; padding: 4px 0; }
 .spend-main { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
 .spend-main .spend-value { margin-bottom: 6px; }
 .over-note { font-size: 13px; color: var(--bad); margin: -2px 0 10px; }
+
+/* La hoja de abajo sube suave al abrirse */
+@keyframes sheet-up { from { transform: translateY(30%); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .quick-dlg[open] { animation: none; } }

@@ -217,18 +217,8 @@ function migrate(s) {
     const meru = s.accounts.find((a) => /meru/i.test(a.name + ' ' + a.institution));
     if (meru && !Number(meru.apy)) Object.assign(meru, { apy: 5.05, apySource: 'blend', apyOffset: 0.78, apyAccrue: true });
   }
-  // Tus fijos de siempre (se cargan una sola vez; después los editás en Movimientos)
-  if (!s.settings.seededRecurring) {
-    s.settings.seededRecurring = true;
-    const accFor = (cur) => (s.accounts.find((a) => a.currency === cur && a.type === 'efectivo')
-      || s.accounts.find((a) => a.type !== 'credito'))?.id || '';
-    const month = currentMonth();
-    s.recurring.push(
-      { id: uid(), type: 'ingreso', name: 'Sueldo de pasantía', amount: 500, currency: 'BOB', accountId: accFor('BOB'), category: 'Sueldo', day: 12, startMonth: month },
-      { id: uid(), type: 'ingreso', name: 'Mesada de papá', amount: 100, currency: 'USD', accountId: accFor('USD'), category: 'Mesada / familia', day: null, startMonth: month },
-      { id: uid(), type: 'gasto', name: 'Gimnasio', amount: 300, currency: 'BOB', accountId: accFor('BOB'), category: 'Gimnasio / deporte', day: null, startMonth: month },
-    );
-  }
+  // (Antes acá se cargaban fijos de ejemplo; ya no: al restaurar un respaldo viejo se registraban solos)
+  s.settings.seededRecurring = true;
   return s;
 }
 
@@ -416,8 +406,15 @@ async function getJSON(url, ms = 12000) {
 }
 
 let refreshing = false;
-async function refreshAll({ silent = false } = {}) {
+// Si algo falla a mitad de camino, el botón Actualizar no queda trabado
+async function refreshAll(opts) {
   if (refreshing) return;
+  try { await refreshAllInner(opts); }
+  catch (e) { console.warn(e); toast(`No se pudo actualizar todo: ${e.message}`, 4000); }
+  finally { refreshing = false; const b = $('#refreshBtn'); if (b) b.disabled = false; }
+}
+
+async function refreshAllInner({ silent = false } = {}) {
   refreshing = true;
   const btn = $('#refreshBtn');
   btn.disabled = true;
@@ -442,7 +439,7 @@ async function refreshAll({ silent = false } = {}) {
   // Acciones y ETF: Finnhub (requiere clave gratuita)
   const stocks = S.holdings.filter((h) => !h.coingeckoId && h.symbol && h.assetType !== 'otro');
   if (stocks.length) {
-    const key = S.settings.finnhubKey.trim();
+    const key = String(S.settings.finnhubKey || '').trim();
     if (!key) notes.push('acciones/ETF sin precio automático (falta clave de Finnhub)');
     else {
       await Promise.all(stocks.map(async (h) => {
@@ -1048,7 +1045,7 @@ function recurringForm(r, preset = null) {
     onSubmit: (v) => {
       if (v.remove) { S.recurring = S.recurring.filter((x) => x !== r); tombstone(r.id); save(); render(); return; }
       const day = v.day ? Number(v.day) : null;
-      if (day != null && !(day >= 1 && day <= 31)) return 'El día tiene que ser un número del 1 al 31.';
+      if (day != null && !(Number.isInteger(day) && day >= 1 && day <= 31)) return 'El día tiene que ser un número entero del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
         category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true, active: !!v.active };
@@ -1227,6 +1224,7 @@ function schedHTML() {
 /* ---------------- Movimientos ---------------- */
 
 let lastMonthly = null;
+let dayOpened = ''; // día en que se calcularon intereses y fijos (para actualizar si la app queda abierta hasta el otro día)
 
 // Gastos de los últimos 6 meses (para comparar el mes elegido con los anteriores)
 function monthlySeries(month, n = 6) {
@@ -2580,10 +2578,13 @@ async function deriveKey(pass, salt) {
 async function encryptState(pass) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  // Se copia el estado ANTES de cifrar (tarda): si cambiás algo mientras tanto, queda para la próxima subida
+  const json = JSON.stringify(S), edited = S.editedAt || '';
   const key = await deriveKey(pass, salt);
-  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(S)));
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(json));
   // editedAt va sin cifrar: sólo una fecha, para saber qué versión es más nueva sin descifrar
-  return JSON.stringify({ app: 'mis-finanzas', v: 1, editedAt: S.editedAt || '', kdf: 'PBKDF2-SHA256-250000', salt: bufToB64(salt), iv: bufToB64(iv), data: bufToB64(data) });
+  const content = JSON.stringify({ app: 'mis-finanzas', v: 1, editedAt: edited, kdf: 'PBKDF2-SHA256-250000', salt: bufToB64(salt), iv: bufToB64(iv), data: bufToB64(data) });
+  return { content, edited };
 }
 
 async function decryptPayload(p, pass) {
@@ -2705,9 +2706,11 @@ const CloudSync = {
 
   async upload() {
     const c = cloudCfg();
-    const content = await encryptState(c.pass);
+    const { content, edited } = await encryptState(c.pass);
     await gh(`/gists/${c.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [CLOUD_FILE]: { content } } }) });
-    setCloudCfg({ ...cloudCfg(), base: S.editedAt || '' });
+    setCloudCfg({ ...cloudCfg(), base: edited });
+    // Si registraste algo mientras se subía, se vuelve a subir
+    if ((S.editedAt || '') > edited) this.schedule();
   },
 
   /* Compara las dos versiones contra la última que ambos vieron ("base"):
@@ -2721,11 +2724,12 @@ const CloudSync = {
         this.setStatus('syncing');
         const remote = await readGist(c.gistId);
         const base = c.base || '';
-        const localChanged = (S.editedAt || '') > base;
         const remoteChanged = remote && (remote.editedAt || '') > base;
+        const data = remoteChanged ? await decryptPayload(remote, c.pass) : null;
+        // Se vuelve a mirar después de descifrar (tarda): si registraste algo mientras tanto, se unen en vez de reemplazar
+        const replace = remoteChanged && (!hasData() || (S.editedAt || '') <= base);
         if (!remote) await this.upload();
-        else if (remoteChanged && (!localChanged || !hasData())) {
-          const data = await decryptPayload(remote, c.pass);
+        else if (replace) {
           closeDialogs();
           S = migrate(data);
           S.editedAt = remote.editedAt || S.editedAt;
@@ -2733,8 +2737,7 @@ const CloudSync = {
           save(false);
           render();
           toast('Datos actualizados desde tu otro dispositivo ✓');
-        } else if (remoteChanged && localChanged) {
-          const data = await decryptPayload(remote, c.pass);
+        } else if (remoteChanged) {
           closeDialogs();
           mergeRemote(migrate(data));
           S.editedAt = new Date().toISOString();
@@ -2743,7 +2746,7 @@ const CloudSync = {
           await this.upload();
           render();
           toast('Uní los cambios de tus dos dispositivos ✓');
-        } else if (localChanged) await this.upload();
+        } else if ((S.editedAt || '') > base) await this.upload();
         this.lastSync = new Date().toISOString();
         this.setStatus('ok');
         if (!quiet) toast('Sincronizado ✓');
@@ -2785,7 +2788,7 @@ const CloudSync = {
         }
       } else {
         S.editedAt = S.editedAt || new Date().toISOString();
-        const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'MyFinance — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: await encryptState(pass) } } }) }, token);
+        const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'MyFinance — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: (await encryptState(pass)).content } } }) }, token);
         id = g.id;
         setCloudCfg({ token, pass, gistId: id, base: S.editedAt });
       }
@@ -2917,10 +2920,11 @@ const Lock = {
     openForm({
       title: '¿Olvidaste el PIN?',
       fields: [{ type: 'html', html: `<p style="margin:0">Por seguridad no se puede ver el PIN. Podés <b>borrar los datos de este dispositivo</b> y quitar el bloqueo.
-        ${CloudSync.enabled() ? 'Tus datos siguen guardados en GitHub y vuelven cuando reactives la sincronización.' : 'Si no tenés respaldo ni sincronización, se pierden.'}</p>` }],
+        ${CloudSync.enabled() ? 'Tus datos siguen guardados en GitHub y vuelven solos al abrir la app.' : 'Si no tenés respaldo ni sincronización, se pierden.'}</p>` }],
       submitLabel: 'Borrar datos de este dispositivo', danger: true,
       onSubmit: () => {
         try { localStorage.removeItem(STORE_KEY); } catch (e) { /* nada */ }
+        if (cloudCfg()) setCloudCfg({ ...cloudCfg(), base: '' }); // al abrir, trae tus datos de GitHub
         setLockCfg(null);
         location.reload();
       },
@@ -3387,7 +3391,7 @@ function quickEntry(type = 'gasto', t = null) {
         <input id="qAmount" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(st.amount === '' ? '' : numInput(st.amount))}"></label>
       <div class="q-cats">${catsByUse(st.type).map((c) => `<button type="button" class="q-cat ${c === st.category ? 'on' : ''}" data-q-cat="${esc(c)}">
         <span class="q-cat-ico">${catIcon(c, 20)}</span><span class="q-cat-name">${esc(shortCat(c))}</span></button>`).join('')}</div>
-      <input id="qNote" class="q-note" placeholder="Detalle (opcional): ej. almuerzo con amigos" value="${esc(st.note)}" autocomplete="off">
+      <input type="text" id="qNote" class="q-note" placeholder="Detalle (opcional): ej. almuerzo con amigos" value="${esc(st.note)}" autocomplete="off">
       <div class="q-chips">
         <button type="button" class="q-chip" data-q="acc">${accIcon(acc)}<span>${out ? 'Sale de' : 'Entra a'} <b>${esc(acc?.name || '—')}</b></span>${icon('chevron', 14)}</button>
         <button type="button" class="q-chip" data-q="when">${icon('calendar', 16)}<span>${whenLabel(st.date, st.time)}</span>${icon('chevron', 14)}</button>
@@ -3458,7 +3462,7 @@ function quickEntry(type = 'gasto', t = null) {
     }
     dlg.close();
     snapshot(); save(); render();
-    toast(t ? 'Cambios guardados ✓' : `${st.type === 'gasto' ? 'Gasto' : 'Ingreso'} guardado ✓ · ${esc(acc.name)}: ${fmtIn(acc.balance, acc.currency)}`);
+    toast(t ? 'Cambios guardados ✓' : `${st.type === 'gasto' ? 'Gasto' : 'Ingreso'} guardado ✓ · ${acc.name}: ${fmtIn(acc.balance, acc.currency)}`);
   };
   paint(true);
   dlg.showModal();
@@ -3527,7 +3531,7 @@ function spendPlan() {
   const month = currentMonth(), today = todayISO();
   const txs = S.transactions.filter((t) => t.date?.startsWith(month) && !nonFlow(t));
   const sum = (list) => list.reduce((s, t) => s + txUSD(t), 0);
-  const pendingRules = (type) => S.recurring.filter((r) => repeats(r) && r.type === type && !recurringTx(r, month) && !(r.skip || []).includes(month));
+  const pendingRules = (type) => S.recurring.filter((r) => repeats(r) && r.type === type && (!r.startMonth || r.startMonth <= month) && !recurringTx(r, month) && !(r.day && (r.skip || []).includes(month)));
   const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
@@ -3709,6 +3713,7 @@ function drawCharts() {
 
 function go(view, anchor) {
   $('#moreMenu').hidden = true;
+  $('#content').style.minHeight = '';
   S.settings.view = VIEW_ALIAS[view] || view;
   save(false);
   render();
@@ -3880,6 +3885,9 @@ function accountForm(a) {
     ],
     onSubmit: (v) => {
       if (v.last4 && !/^\d{4}$/.test(v.last4)) return 'Los últimos dígitos tienen que ser exactamente 4 números.';
+      // Cambiar la moneda reinterpretaría todos sus movimientos (100 dólares pasarían a ser Bs 100)
+      if (a.id && v.currency !== a.currency && S.transactions.some((t) => t.accountId === a.id || t.toAccountId === a.id))
+        return `Esta cuenta ya tiene movimientos en ${curLabel(a.currency)}. Para otra moneda, creá una cuenta nueva y pasá la plata con "Pasar plata entre cuentas".`;
       const apySource = v.type === 'credito' || v.apySource === 'none' ? 'manual' : v.apySource;
       let apy = v.type === 'credito' || v.apySource === 'none' ? 0 : Number(v.apy) || 0;
       let apyOffset = Number(a.apyOffset) || 0;
@@ -4026,7 +4034,8 @@ function transferForm(fromId, t = null) {
       if (c1 === c2) { $('#fxHint').innerHTML = ''; return; }
       // Escribiste lo que te llegó → calculo el tipo de cambio; si no, calculo lo que llega
       if (changed === 'got' && v.amount > 0 && v.got > 0) { v.rate = P.rate(v.amount, v.got); form.elements.rate.value = numInput(round2(v.rate)); }
-      else if (v.amount > 0 && v.rate > 0) { v.got = round2(P.out(v.amount, v.rate)); form.elements.got.value = numInput(v.got); }
+      // (sólo si cambiaste el monto, el tipo de cambio o las cuentas: escribir el detalle o la fecha no toca lo que te llegó)
+      else if (['amount', 'rate', 'from', 'to'].includes(changed) && v.amount > 0 && v.rate > 0) { v.got = round2(P.out(v.amount, v.rate)); form.elements.got.value = numInput(v.got); }
       const market = convert(v.amount, c1, c2);
       const mr = marketFx(c1, c2);
       if (!(v.amount > 0) || !(v.got > 0) || market == null) { $('#fxHint').innerHTML = mr ? `Tipo de cambio de referencia hoy: <b>${fmtNum(mr, 2)}</b>` : ''; return; }
@@ -4051,12 +4060,12 @@ function transferForm(fromId, t = null) {
       }
       S.settings.lastTransfer = { from: v.from, to: v.to };
       const next = { type: 'transferencia', date: v.date || todayISO(), time: v.time || '', accountId: v.from, toAccountId: v.to, amount: v.amount,
-        toAmount: same ? '' : got, fxRate: same ? null : round2(rate), category: '', note: v.note };
+        toAmount: same ? '' : got, fxRate: same ? null : rate, category: '', note: v.note };
       if (t) { applyTx(t, -1); Object.assign(t, next); applyTx(t, 1); }
       else { const tx = { id: uid(), created: new Date().toISOString(), ...next }; S.transactions.push(tx); applyTx(tx, 1); }
       snapshot(); save(); render();
       const to = S.accounts.find((a) => a.id === v.to);
-      toast(`Listo ✓ ${esc(to.name)}: ${fmtIn(to.balance, to.currency)}`);
+      toast(`Listo ✓ ${to.name}: ${fmtIn(to.balance, to.currency)}`);
     },
   });
   // Calcula "lo que llega" y la comparación con el oficial apenas se abre
@@ -4489,12 +4498,13 @@ const ACTIONS = {
     const t = byId(S.transactions, id);
     if (t.loanId) return toast('Este movimiento es de un préstamo: corregilo desde Cuentas → Préstamos.', 4500);
     const h = t.holdingId && S.holdings.find((x) => x.id === t.holdingId);
-    if (t.investment && !h) return toast('Es una compra/venta de inversión: corregí la cantidad desde Inversiones → Editar.', 4500);
+    // Si el activo ya se eliminó, se puede borrar igual (sólo se revierte el saldo de la cuenta)
+    if (t.investment && !h && !t.holdingId) return toast('Es una compra/venta de inversión: corregí la cantidad desde Inversiones → Editar.', 4500);
     if (await confirmDlg('Eliminar movimiento', `Se va a revertir su efecto en el saldo de la cuenta${h ? ` y en tu cantidad de ${esc(h.symbol)}` : ''}.`)) {
       if (h) undoTrade(h, t.tradeId);
       // Un fijo borrado no se vuelve a registrar solo ese mes
       const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
-      if (r) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
+      if (r && r.day) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
       applyTx(t, -1); S.transactions = S.transactions.filter((x) => x !== t); tombstone(t.id); snapshot(); save(); render();
     }
   },
@@ -4562,8 +4572,10 @@ const ACTIONS = {
     if (await confirmDlg('Desvincular archivo', 'La app deja de escribir en el archivo (el archivo no se borra). Tus datos siguen en este navegador.', 'Desvincular')) FileSync.unlink();
   },
   resetAll: async () => {
-    if (await confirmDlg('Borrar todo', 'Se van a borrar <b>todas</b> tus cuentas, inversiones y movimientos de este navegador. Si tenés un archivo vinculado, se desvincula pero <b>no se borra</b>.', 'Borrar todo')) {
+    if (await confirmDlg('Borrar todo', `Se van a borrar <b>todas</b> tus cuentas, inversiones y movimientos de este dispositivo. Si tenés un archivo vinculado, se desvincula pero <b>no se borra</b>.${CloudSync.enabled() ? ' La sincronización con GitHub se desconecta (tu copia en GitHub no se borra).' : ''}`, 'Borrar todo')) {
       await FileSync.unlink();
+      // Si no, la próxima sincronización subiría la app vacía y borraría tus datos en el otro dispositivo
+      setCloudCfg(null);
       try { localStorage.removeItem(STORE_KEY); } catch (e) { /* nada */ }
       S = migrate(defaultState()); save(false); render(); welcome();
     }
@@ -4589,6 +4601,66 @@ function bindEvents() {
     if (d.dataset?.pref) { S.settings[d.dataset.pref] = d.open; save(false); }
     if (d.open) drawCharts();
   }, true);
+  // Al abrir o cerrar una sección, su título se queda donde lo tocaste (antes la página "saltaba" al cerrar)
+  document.addEventListener('click', (e) => {
+    const sum = e.target.closest('details > summary');
+    if (!sum || sum.closest('dialog')) return;
+    const d = sum.parentElement, content = $('#content');
+    if (d.open) {
+      // Cerrar: la página se achica de golpe y todo baja. Se mantiene la altura un momento y se desliza suave
+      // El título queda donde lo tocaste: el espacio de abajo se va achicando a medida que subís
+      e.preventDefault();
+      const openH = d.offsetHeight, fullH = content.offsetHeight;
+      content.style.minHeight = `${fullH}px`;
+      d.open = false;
+      const natural = fullH - (openH - d.offsetHeight);
+      const topY = content.getBoundingClientRect().top + window.scrollY;
+      const shrink = () => {
+        const need = Math.max(natural, window.scrollY + window.innerHeight - topY);
+        if (need <= natural + 1 || !content.style.minHeight) { content.style.minHeight = ''; window.removeEventListener('scroll', shrink); return; }
+        content.style.minHeight = `${need}px`;
+      };
+      window.addEventListener('scroll', shrink, { passive: true });
+      shrink();
+      return;
+    }
+    const before = sum.getBoundingClientRect().top;
+    requestAnimationFrame(() => {
+      const diff = sum.getBoundingClientRect().top - before;
+      if (Math.abs(diff) > 1) window.scrollBy(0, diff);
+    });
+  });
+  // Con una ventana abierta, el fondo no se desliza (respaldo para iPhone sin :has)
+  new MutationObserver(() => document.documentElement.classList.toggle('dlg-open', $$('dialog').some((d) => d.open)))
+    .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] });
+  // La hoja de registro rápido se cierra deslizándola hacia abajo, como en las apps del iPhone
+  (() => {
+    const dlg = $('#quickDlg');
+    let y0 = null, dy = 0;
+    dlg.addEventListener('touchstart', (e) => {
+      const sc = e.target.closest('.quick');
+      y0 = (sc && sc.scrollTop > 0) || e.target.closest('input, textarea, select') ? null : e.touches[0].clientY;
+      dy = 0; dlg.style.transition = 'none';
+    }, { passive: true });
+    dlg.addEventListener('touchmove', (e) => {
+      if (y0 == null) return;
+      dy = e.touches[0].clientY - y0;
+      if (dy <= 0) { dlg.style.transform = ''; return; }
+      e.preventDefault();
+      dlg.style.transform = `translateY(${dy}px)`;
+    }, { passive: false });
+    const end = () => {
+      if (y0 == null) return;
+      y0 = null;
+      dlg.style.transition = 'transform .2s ease';
+      if (dy > 110) {
+        dlg.style.transform = 'translateY(100%)';
+        setTimeout(() => { dlg.close(); dlg.style.transform = ''; dlg.style.transition = ''; }, 200);
+      } else dlg.style.transform = '';
+    };
+    dlg.addEventListener('touchend', end);
+    dlg.addEventListener('touchcancel', end);
+  })();
   // iOS ignora user-scalable=no en Safari: se bloquea el pellizco a mano
   ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
   $$('.seg button').forEach((b) => b.addEventListener('click', () => { S.settings.displayCurrency = b.dataset.cur; save(false); render(); }));
@@ -4668,7 +4740,20 @@ function bindEvents() {
     else if (!Lock.locked) document.body.classList.remove('veiled');
     // Al volver: traer lo que hayas cargado en el otro dispositivo
     // (no mientras tengas un formulario abierto: se sincroniza al cerrarlo, con el próximo cambio)
-    if (CloudSync.enabled() && !document.querySelector('dialog[open]') && Date.now() - CloudSync.lastPull > 30000) CloudSync.sync().then(() => { processRecurring(); });
+    const formOpen = !!document.querySelector('dialog[open]');
+    const newDay = dayOpened !== todayISO();
+    // Si la app quedó abierta de un día para otro: intereses, fijos del día (ej. el sueldo del 12) y "Hoy podés gastar" se actualizan
+    const daily = () => {
+      if (dayOpened === todayISO() || document.querySelector('dialog[open]')) return;
+      dayOpened = todayISO();
+      if (accrueInterest()) save(false);
+      processRecurring();
+      render();
+      maybeMonthClose();
+    };
+    if (CloudSync.enabled() && !formOpen && Date.now() - CloudSync.lastPull > 30000) CloudSync.sync().then(() => { processRecurring(); daily(); });
+    else if (newDay) daily();
+    if (newDay && Date.now() - (Date.parse(S.settings.lastRefresh || 0) || 0) > 10 * 60 * 1000) refreshAll({ silent: true });
   });
 }
 
@@ -4708,6 +4793,7 @@ function welcome() {
   // Primero se compara con el archivo vinculado y con GitHub, así nunca se pisa una versión más nueva
   try { await FileSync.init(); } catch (e) { console.warn(e); }
   if (CloudSync.enabled()) await CloudSync.sync();
+  dayOpened = todayISO();
   // Intereses del día y fijos que ya vencieron (ej. el sueldo del 12)
   if (accrueInterest()) save(false);
   processRecurring();
