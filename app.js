@@ -1712,23 +1712,32 @@ function drawBars(el, per) {
 
 function goalSlider() {
   const pct = Number(S.settings.savingsGoal) || 5;
-  return `<div class="goal-row"><label for="goalRange">Quiero ahorrar <b id="goalVal">${pct}%</b> más de mis ingresos</label>
+  return `<div class="goal-row"><label for="goalRange">Quiero ahorrar el <b id="goalVal">${pct}%</b> de lo que me entra</label>
     <input type="range" id="goalRange" min="1" max="20" step="1" value="${pct}"></div>`;
 }
 
+// Plan para ahorrar más, en palabras simples y montos redondos
 function planHTML(a) {
-  const p = planFor(a, Number(S.settings.savingsGoal) || 5);
-  if (!p) return '<div class="empty">Registrá tus ingresos para armar el plan.</div>';
-  if (!p.rows.length) return '<div class="empty">No encontré gastos recortables en el período.</div>';
-  return `<p style="margin:6px 0 10px">Para ahorrar <b class="money">${fmtMoney(p.target)}</b> más por mes, gastá menos en:</p>
+  const pct = Number(S.settings.savingsGoal) || 5;
+  const p = planFor(a, pct);
+  const cur = dispCur();
+  const R = (usd) => fmtIn(Math.round(fromUSD(usd, cur)), cur, { decimals: 0 });
+  const one = (Number(S.settings.anPeriod) || 3) === 1;
+  if (!p) return `<div class="empty">Todavía no te entró plata ${one ? 'este mes' : 'en estos meses'}.</div>`;
+  const head = `<div class="plan-goal"><span class="muted small">${one ? 'Este mes te entró' : 'Por mes te entra'} ${R(a.income)}. El ${pct}% es:</span>
+    <b class="plan-goal-val money">${R(p.target)} por mes</b></div>`;
+  if (!p.rows.length) return `${head}<div class="empty">No encontré gastos para recortar. Elegí bien la categoría al registrar (Comida, Transporte, Compras…).</div>`;
+  const ok = p.remaining <= 0.5 / (rate(cur) || 1);
+  return `${head}
+    <div class="calc-sub" style="margin-top:12px"><b>Para lograrlo, gastá menos en:</b></div>
     <div class="list">${p.rows.map((r) => `<div class="plan-row">
-      <div class="plan-top"><b>${esc(r.c)}</b>
-        <span class="plan-nums"><span class="money muted">${fmtMoney(r.v)}</span> → <b class="money">${fmtMoney(r.newV)}</b></span></div>
-      <div class="plan-cut up small money">Ahorrás ${fmtMoney(r.cut)} por mes (−${fmtNum(r.pct, 0)}%)</div>
-      <div class="small" style="color:var(--text-2)">${esc(r.tip)}</div></div>`).join('')}</div>
-    ${p.remaining > 0.01 ? `<div class="banner" style="margin-top:12px">Recortando llegás a ${fmtMoney(p.achieved)} por mes. El resto tendría que salir de ganar más.</div>` : ''}
-    <p class="muted small" style="margin:12px 0">En un año: <b class="money">${fmtMoney(p.achieved * 12)}</b> extra.</p>
-    <button class="btn primary wide" data-action="applyPlan">Usar estos montos como topes del mes</button>`;
+      <div class="plan-top"><b>${esc(r.c)}</b><b class="money up">−${R(r.cut)}</b></div>
+      <div class="small muted money">Gastaste ${R(r.v)} → que sean ${R(r.newV)}</div>
+      ${r.tip ? `<div class="small" style="color:var(--text-2)">💡 ${esc(r.tip)}</div>` : ''}</div>`).join('')}</div>
+    ${ok ? `<div class="safe-line ok">${icon('check', 16)}<span>Con esto ahorrás los ${R(p.target)}.</span></div>`
+      : `<div class="banner" style="margin-top:10px">Con esto ahorrás <b class="money">${R(p.achieved)}</b> de los ${R(p.target)}. Para los <b class="money">${R(p.remaining)}</b> que faltan, bajá un poco el % o buscá ganar algo más.</div>`}
+    <button class="btn primary wide" style="margin-top:12px" data-action="applyPlan">Poner estos límites</button>
+    <p class="muted small" style="margin:6px 0 0;text-align:center">Se agregan arriba como topes, para que veas si te pasás.</p>`;
 }
 
 function budgetHTML(txs) {
@@ -1778,7 +1787,7 @@ const noAnalysisHTML = () => `<section class="card" style="text-align:center;pad
 function periodBarHTML(a, n) {
   return `<div class="period-bar">
     <select id="anPeriod" aria-label="Período">${[[1, 'Este mes'], [3, 'Últimos 3 meses'], [6, 'Últimos 6 meses'], [12, 'Últimos 12 meses']].map(([v, l]) => `<option value="${v}" ${v === n ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <span class="muted small">Promedio por mes</span>
+    <span class="muted small">${n === 1 ? 'Mira lo que pasó en este mes' : `Mira el promedio de ${n} meses`}</span>
   </div>`;
 }
 
@@ -1832,8 +1841,9 @@ function viewPresupuesto() {
   <section class="card"><div class="card-head"><h2>Topes de ${monthLabel(currentMonth(), 'long')}</h2>
     <button class="btn sm primary" data-action="addBudget">+ Tope</button></div>
     ${budgetHTML(S.transactions)}</section>
-  ${D ? `${periodBarHTML(D.a, D.n)}
-  <section class="card"><div class="card-head"><h2>Plan para ahorrar más</h2></div>${goalSlider()}<div id="planBox">${planHTML(D.a)}</div></section>
+  ${D ? `<section class="card"><div class="card-head" style="margin-bottom:10px"><h2>¿Querés ahorrar más?</h2></div>
+    ${periodBarHTML(D.a, D.n)}
+    ${goalSlider()}<div id="planBox">${planHTML(D.a)}</div></section>
   ${DISCLAIMER}` : noAnalysisHTML()}`;
 }
 
