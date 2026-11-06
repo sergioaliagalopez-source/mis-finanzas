@@ -564,8 +564,14 @@ async function refreshAllInner({ silent = false } = {}) {
 
 let toastTimer;
 // action = { label, fn }: agrega un botón (ej. "Deshacer") al aviso
+// Una ventana abierta (formulario u hoja) tapa todo lo demás: el aviso se muestra adentro de la de más arriba
+const topHost = () => $$('dialog[open]').filter((d) => !d.classList.contains('closing')).pop() || document.body;
+const toTop = (el) => { const h = topHost(); if (el.parentNode !== h) h.append(el); };
+
 function toast(msg, ms = 2600, action) {
   const el = $('#toast');
+  toTop(el);
+  setTimeout(() => toTop(el), 0); // por si el formulario que lo llamó se cierra justo después
   el.textContent = msg;
   if (action) {
     const b = document.createElement('button');
@@ -592,6 +598,7 @@ document.addEventListener('mousemove', (e) => {
 });
 function placeTip(x, y) {
   const tip = $('#tip');
+  toTop(tip);
   const w = tip.offsetWidth, h = tip.offsetHeight;
   tip.style.left = Math.min(x + 14, window.innerWidth - w - 8) + 'px';
   tip.style.top = (y + h + 20 > window.innerHeight ? y - h - 12 : y + 16) + 'px';
@@ -1712,7 +1719,7 @@ function drawBars(el, per) {
 
 function goalSlider() {
   const pct = Number(S.settings.savingsGoal) || 5;
-  return `<div class="goal-row"><label for="goalRange">Quiero ahorrar el <b id="goalVal">${pct}%</b> de lo que me entra</label>
+  return `<div class="goal-row"><label for="goalRange">Quiero ahorrar un <b id="goalVal">${pct}%</b> más de lo que me entra</label>
     <input type="range" id="goalRange" min="1" max="20" step="1" value="${pct}"></div>`;
 }
 
@@ -1724,8 +1731,8 @@ function planHTML(a) {
   const R = (usd) => fmtIn(Math.round(fromUSD(usd, cur)), cur, { decimals: 0 });
   const one = (Number(S.settings.anPeriod) || 3) === 1;
   if (!p) return `<div class="empty">Todavía no te entró plata ${one ? 'este mes' : 'en estos meses'}.</div>`;
-  const head = `<div class="plan-goal"><span class="muted small">${one ? 'Este mes te entró' : 'Por mes te entra'} ${R(a.income)}. El ${pct}% es:</span>
-    <b class="plan-goal-val money">${R(p.target)} por mes</b></div>`;
+  const head = `<div class="plan-goal"><span class="muted small">${one ? 'Este mes te entró' : 'Por mes te entra'} ${R(a.income)}. Un ${pct}% más es:</span>
+    <b class="plan-goal-val money">${R(p.target)} extra por mes</b></div>`;
   if (!p.rows.length) return `${head}<div class="empty">No encontré gastos para recortar. Elegí bien la categoría al registrar (Comida, Transporte, Compras…).</div>`;
   const ok = p.remaining <= 0.5 / (rate(cur) || 1);
   return `${head}
@@ -4053,19 +4060,55 @@ function moreMenuHTML() {
         <span class="mi-ico">${icon(ico, 22)}${badge[id] ? `<i class="mi-badge">${badge[id]}</i>` : ''}</span><span class="mi-label">${label}</span></button>`).join('')}
     </div></div>`).join('')}`;
 }
+const REDUCED = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+let moreTimer = null;
 function openMore() {
-  const m = $('#moreMenu');
+  clearTimeout(moreTimer);
+  const m = $('#moreMenu'), bd = $('#moreBackdrop');
+  m.classList.remove('closing'); bd.classList.remove('closing');
   m.innerHTML = moreMenuHTML();
   m.hidden = false;
-  $('#moreBackdrop').hidden = false;
+  bd.hidden = false;
   document.documentElement.classList.add('more-open');
   $('#moreBtn').classList.add('open');
 }
+// El menú "Más" baja suave al cerrarse (no desaparece de golpe)
 function closeMore() {
-  $('#moreMenu').hidden = true;
-  $('#moreBackdrop').hidden = true;
+  const m = $('#moreMenu'), bd = $('#moreBackdrop');
+  if (m.hidden || m.classList.contains('closing')) return;
   document.documentElement.classList.remove('more-open');
   $('#moreBtn')?.classList.remove('open');
+  const done = () => { m.hidden = true; bd.hidden = true; m.classList.remove('closing'); bd.classList.remove('closing'); };
+  if (REDUCED()) return done();
+  m.classList.add('closing'); bd.classList.add('closing');
+  moreTimer = setTimeout(done, 200);
+}
+
+// Las hojas de abajo (registro rápido, secciones) bajan suave al cerrarse.
+// Si se vuelven a abrir mientras bajan, se cancela el cierre.
+function smoothClose(dlg) {
+  const close = dlg.close.bind(dlg), show = dlg.showModal.bind(dlg);
+  let t = null;
+  dlg.close = (v) => {
+    if (!dlg.open || t) return;
+    if (REDUCED() || dlg.style.transform) return close(v); // al deslizarla ya bajó
+    dlg.classList.add('closing');
+    t = setTimeout(() => { t = null; dlg.classList.remove('closing'); close(v); }, 200);
+  };
+  dlg.showModal = () => {
+    if (t) { clearTimeout(t); t = null; dlg.classList.remove('closing'); return; }
+    if (!dlg.open) show();
+  };
+}
+
+// Al cambiar de pantalla o abrir una hoja, el contenido aparece suave y en cascada
+function animateIn(el) {
+  if (!el || REDUCED()) return;
+  el.classList.remove('view-in');
+  void el.offsetWidth;
+  el.classList.add('view-in');
+  clearTimeout(el._viewIn);
+  el._viewIn = setTimeout(() => el.classList.remove('view-in'), 700);
 }
 
 // En la computadora, todas las secciones van en la barra de la izquierda
@@ -4109,9 +4152,10 @@ function openSheet(view) {
   closeMore();
   sheetView = view;
   const d = $('#sheetDlg');
-  if (!d.open) d.showModal();
+  d.showModal();
   fillSheet();
   $('#sheet').scrollTop = 0;
+  animateIn($('#sheet'));
 }
 function fillSheet() {
   const d = $('#sheetDlg');
@@ -4131,6 +4175,7 @@ function go(view, anchor) {
   save(false);
   render();
   window.scrollTo(0, 0);
+  animateIn($('#content'));
   if (anchor) $('#' + anchor)?.scrollIntoView({ block: 'start' });
 }
 
@@ -4726,7 +4771,6 @@ function footHTML() {
   const file = f.status === 'ok' ? `✓ Guardado en ${esc(f.handle.name)}${f.lastSaved ? ' · ' + fmtDateTime(f.lastSaved).split(', ').pop() : ''}`
     : f.status === 'paused' ? '⏸ Guardado en archivo en pausa'
     : f.status === 'error' ? '⚠ Error al guardar en archivo'
-    : f.status === 'unsupported' ? `OneDrive: ${S.settings.lastSync ? 'sincronizado ' + fmtDateTime(S.settings.lastSync) : 'sin sincronizar'}`
     : 'Guardado sólo en este navegador';
   const cloud = CloudSync.enabled() ? `<br>${CloudSync.status === 'error' ? '⚠ Error al sincronizar' : `✓ Sincronizado ${CloudSync.lastSync ? fmtDateTime(CloudSync.lastSync).split(', ').pop() : ''}`}` : '';
   return `Precios: ${fmtDateTime(S.settings.lastRefresh)}<br>${file}${cloud}`;
@@ -4808,7 +4852,7 @@ const ACTIONS = {
     // Una meta de 0 (ej. intereses) no es un presupuesto: es "no pagar más"
     for (const r of p.rows) if (r.newV > 0.5) S.budgets[r.c] = { amount: roundNice(fromUSD(r.newV, cur)), currency: cur };
     save(); render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    ($('#sheetDlg').open && sheetView ? $('#sheet') : window).scrollTo({ top: 0, behavior: 'smooth' });
     toast('Listo: esos montos quedaron como topes del mes.');
   },
   openChat: () => openChat({ listen: true }),
@@ -4879,7 +4923,8 @@ function bindEvents() {
   // En el celular, todo lo que no es Inicio / Movimientos / Plan va dentro de "Más"
   $('#moreBtn').addEventListener('click', (e) => {
     e.stopPropagation();
-    if ($('#moreMenu').hidden) openMore(); else closeMore();
+    const m = $('#moreMenu');
+    if (m.hidden || m.classList.contains('closing')) openMore(); else closeMore();
   });
   $('#moreMenu').addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]');
@@ -4928,6 +4973,8 @@ function bindEvents() {
   new MutationObserver(() => document.documentElement.classList.toggle('dlg-open', $$('dialog').some((d) => d.open)))
     .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] });
   // Las hojas de abajo (registro rápido y secciones) se cierran deslizándolas hacia abajo, como en las apps del iPhone
+  smoothClose($('#quickDlg'));
+  smoothClose($('#sheetDlg'));
   for (const dlg of [$('#quickDlg'), $('#sheetDlg')]) {
     let y0 = null, dy = 0;
     dlg.addEventListener('touchstart', (e) => {
@@ -5019,6 +5066,7 @@ function bindEvents() {
   let rz;
   window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => {
     drawCharts();
+    if (sheetView && $('#sheetDlg').open) drawCharts(sheetView);
   }, 150); });
   window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { load(); render(); } });
   // Si cerrás o cambiás de pestaña con un guardado pendiente, se escribe ya
@@ -5036,11 +5084,11 @@ function bindEvents() {
     else if (!Lock.locked) document.body.classList.remove('veiled');
     // Al volver: traer lo que hayas cargado en el otro dispositivo
     // (no mientras tengas un formulario abierto: se sincroniza al cerrarlo, con el próximo cambio)
-    const formOpen = !!document.querySelector('dialog[open]');
+    const formOpen = !!document.querySelector('dialog[open]:not(#sheetDlg)');
     const newDay = dayOpened !== todayISO();
     // Si la app quedó abierta de un día para otro: intereses, fijos del día (ej. el sueldo del 12) y "Hoy podés gastar" se actualizan
     const daily = () => {
-      if (dayOpened === todayISO() || document.querySelector('dialog[open]')) return;
+      if (dayOpened === todayISO() || document.querySelector('dialog[open]:not(#sheetDlg)')) return;
       dayOpened = todayISO();
       if (accrueInterest()) save(false);
       processRecurring();

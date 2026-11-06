@@ -761,3 +761,58 @@ html.more-open, html.more-open body { overflow: hidden; }
 .plan-goal { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
 .plan-goal-val { font-size: 22px; font-weight: 700; }
 .card .period-bar + .goal-row { margin-top: 14px; }
+
+/* ---------- Movimiento suave: al abrir, al cambiar de pantalla y al tocar ----------
+   Curvas tipo iPhone: arrancan rápido y frenan suave. Si el teléfono tiene
+   "Reducir movimiento" activado, no se anima nada. */
+:root { --ease-out: cubic-bezier(.2, .8, .2, 1); --ease-spring: cubic-bezier(.2, .9, .25, 1.1); }
+@media (prefers-reduced-motion: no-preference) {
+  /* Pantallas y hojas: las tarjetas aparecen subiendo, una detrás de otra */
+  .view-in > * { animation: rise-in .42s var(--ease-out) both; }
+  .view-in > :nth-child(2) { animation-delay: .04s; }
+  .view-in > :nth-child(3) { animation-delay: .08s; }
+  .view-in > :nth-child(4) { animation-delay: .12s; }
+  .view-in > :nth-child(5) { animation-delay: .16s; }
+  .view-in > :nth-child(n+6) { animation-delay: .2s; }
+  .view-in .meter > div, .view-in .stack > div { animation: grow .8s var(--ease-out) .15s both; }
+  @keyframes rise-in { from { opacity: 0; transform: translateY(14px); } }
+  @keyframes grow { from { width: 0; flex-grow: 0; } }
+
+  /* Ventanas del centro (formularios): aparecen con un pequeño "pop" */
+  dialog[open] { animation: pop-in .28s var(--ease-spring); }
+  dialog[open]::backdrop { animation: fade-in .25s ease-out; }
+  @keyframes pop-in { from { opacity: 0; transform: translateY(12px) scale(.96); } }
+
+  /* Hojas de abajo: suben y bajan deslizándose */
+  .quick-dlg.closing { animation: pop-out .2s ease-in forwards; }
+  .quick-dlg.closing::backdrop, .more-backdrop.closing { animation: fade-out .2s ease-in forwards; }
+  .more-menu { animation: sheet-in .4s var(--ease-out); }
+  .more-menu.closing { animation: sheet-out .2s ease-in forwards; }
+  @keyframes sheet-in { from { transform: translateY(100%); } }
+  @keyframes sheet-out { to { transform: translateY(100%); } }
+  @keyframes pop-out { to { opacity: 0; transform: translateY(12px) scale(.97); } }
+  @keyframes fade-out { to { opacity: 0; } }
+
+  /* Al tocar: todo responde con un pequeño "hundido" */
+  .btn, .qa, .shortcut, .more-item, .q-cat, .q-chip, .q-acc, .fav, .chip, .nav-btn, .link-row, .step-btn, .q-icon, .fab, .amt-btn, .spend-main, .q-seg button, .q-save {
+    transition: transform .18s var(--ease-out), background-color .2s, border-color .2s, color .2s, box-shadow .2s, opacity .2s;
+  }
+  .btn:active, .shortcut:active, .q-chip:active, .q-acc:active, .chip:active, .link-row:active, .q-icon:active, .nav-btn:active, .step-btn:active, .q-save:active { transform: scale(.96); }
+  .qa:active, .q-cat:active, .more-item:active { transform: scale(.93); }
+  .fab:active { transform: scale(.9); }
+  .spend-main:active { transform: scale(.98); }
+  .tx-row, .list-row { transition: background-color .2s; }
+
+  /* Pestaña elegida: el ícono "salta" un poquito */
+  .nav-ico { transition: transform .3s var(--ease-spring); }
+  .nav-btn.active .nav-ico { transform: translateY(-2px) scale(1.12); }
+
+  /* Casillas, interruptores y avisos */
+  input[type="checkbox"]:checked::after { transition: transform .22s var(--ease-spring); }
+  .toast { transition: opacity .25s, transform .35s var(--ease-spring); }
+  .more-box > summary::after { transition: transform .25s var(--ease-out); }
+}
+@media (prefers-reduced-motion: no-preference) and (max-width: 760px) {
+  .quick-dlg[open], .chat-dlg[open] { animation: sheet-in .42s var(--ease-out); }
+  .quick-dlg.closing { animation: sheet-out .22s ease-in forwards; }
+}
