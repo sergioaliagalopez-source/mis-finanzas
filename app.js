@@ -908,8 +908,7 @@ function viewInversiones() {
   </div>
   <section class="card">
     <div class="card-head"><h2>Mis posiciones</h2>
-      <div class="toolbar"><button class="btn" data-action="go" data-id="ajustes" data-anchor="importar">Importar desde mi chat</button>
-      <button class="btn primary" data-action="addHolding">+ Agregar activo</button></div></div>
+      <button class="btn primary" data-action="addHolding">+ Agregar activo</button></div>
     <div class="list show-sm">${[...S.holdings].sort((a, b) => holdingValue(b) - holdingValue(a)).map((h) => {
       const v = holdingValue(h), c = holdingCost(h), g = v - c, hasCost = Number(h.avgCost) > 0;
       return `<div class="hold-row">
@@ -1089,9 +1088,9 @@ function recurringHTML(month) {
   const on = byType(S.recurring.filter(repeats)), off = byType(S.recurring.filter((r) => !repeats(r)));
   const inc = on.filter((r) => r.type === 'ingreso').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const out = on.filter((r) => r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
-  return `<div class="small muted" style="margin-bottom:6px">Marcá la casilla de los que se repiten todos los meses. Los desmarcados quedan guardados acá para registrarlos cuando pasen.</div>
+  return `<div class="small muted" style="margin-bottom:6px">La casilla marcada = se repite todos los meses.</div>
     <div class="list">${on.map((r) => recurringRowHTML(r, month)).join('') || '<div class="empty">Ninguno marcado para repetirse.</div>'}</div>
-    ${on.length ? `<div class="small muted" style="margin-top:10px">Cada mes: entran <b class="money">${fmtMoney(inc)}</b>, salen <b class="money">${fmtMoney(out)}</b> → quedan <b class="money">${fmtMoney(inc - out)}</b> para el día a día y el ahorro.</div>` : ''}
+    ${on.length ? `<div class="small muted" style="margin-top:10px">Cada mes: entran <b class="money">${fmtMoney(inc)}</b>, salen <b class="money">${fmtMoney(out)}</b> → te quedan <b class="money">${fmtMoney(inc - out)}</b>.</div>` : ''}
     ${off.length ? `<div class="rec-sub">Guardados (no se repiten)</div><div class="list">${off.map((r) => recurringRowHTML(r, month)).join('')}</div>` : ''}
     ${presets}`;
 }
@@ -1424,9 +1423,8 @@ function shortcutHTML(view, sub, warn = false) {
 /* ---------------- Secciones de "Más" ---------------- */
 
 function viewFijos() {
-  return `<section class="card"><div class="card-head"><span class="muted small">Sueldo, mesada, gym…: lo que entra o sale todos los meses</span><button class="btn sm primary" data-action="addRecurring">+ Fijo</button></div>
-    ${recurringHTML(currentMonth())}</section>
-    <p class="muted small" style="margin:0">Tocá el engranaje de un ingreso para marcar si es <b>seguro</b> (llega sí o sí) o "a veces". En <a href="#" data-action="go" data-id="plan">Plan</a> ves qué pasa si se corta uno.</p>`;
+  return `<section class="card"><div class="card-head"><span class="muted small">Lo que entra o sale todos los meses</span><button class="btn sm primary" data-action="addRecurring">+ Fijo</button></div>
+    ${recurringHTML(currentMonth())}</section>`;
 }
 
 function viewProgramados() {
@@ -1441,18 +1439,6 @@ function loanCountLabel() {
   return `<span class="muted small">${n ? `${n} abierto${n > 1 ? 's' : ''}` : 'Ninguno'}</span>`;
 }
 
-const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devolveme SOLO un bloque JSON (sin texto extra) con este formato exacto:
-[
-  {"symbol": "VOO", "quantity": 0, "avgCost": 0, "platform": "broker"},
-  {"symbol": "PAXG", "quantity": 0, "avgCost": 0, "platform": "Binance"}
-]
-- symbol: ticker (VOO, PAXG, BTC, ETH, NVDA, GOOGL, etc.)
-- quantity: cantidad de unidades/acciones/monedas que tengo
-- avgCost: precio promedio de compra por unidad en USD (0 si no lo sabés)
-- platform: dónde lo tengo (Binance, broker, etc.)`;
-
-const HR = '<hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">';
-
 function viewRespaldo() {
   const s = S.settings;
   return `
@@ -1463,16 +1449,16 @@ function viewRespaldo() {
     </section>
     <section class="card">
       <h2 style="margin-bottom:8px">Copia de seguridad</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">Un archivo con todos tus datos, por si acaso. Última copia: <b>${fmtDateTime(s.lastBackup)}</b></p>
+      <p class="small" style="color:var(--text-2);margin-top:0">Un archivo con todos tus datos. Última copia: <b>${fmtDateTime(s.lastBackup)}</b></p>
       <div class="toolbar">
         <button class="btn" data-action="backup">Descargar copia</button>
         <label class="btn">Restaurar copia<input type="file" id="restoreFile" accept=".json,application/json" hidden></label>
       </div>
     </section>
-    <section class="card">
-      <h2 style="margin-bottom:8px">Guardado en OneDrive</h2>
+    ${FileSync.handle ? `<section class="card">
+      <h2 style="margin-bottom:8px">Archivo vinculado (OneDrive)</h2>
       <div id="fileSync">${fileSyncHTML()}</div>
-    </section>
+    </section>` : ''}
   </div>`;
 }
 
@@ -1517,15 +1503,6 @@ function viewAjustes() {
     </section>
 
     <section class="card">
-      <h2 style="margin-bottom:8px">${icon('flame', 18)} Recordatorio diario (con el iPhone)</h2>
-      <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0">
-        <li>App <b>Atajos</b> → <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
-        <li><b>21:00</b>, <b>Diariamente</b>, <b>Ejecutar inmediatamente</b>.</li>
-        <li>Acción <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>
-      <p class="small" style="color:var(--text-2);margin-bottom:0">Con la voz: <i>"Oye Siri, abrir MyFinance"</i>.</p>
-    </section>
-
-    <section class="card">
       <h2 style="margin-bottom:8px">Precios de acciones y ETF</h2>
       <p class="small" style="color:var(--text-2);margin-top:0">BTC, ETH y PAXG se actualizan solos. Para VOO, NVDA y GOOGL hace falta una clave gratis de
         <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub</a>.</p>
@@ -1533,20 +1510,12 @@ function viewAjustes() {
       <button class="btn" data-action="saveKey">Guardar clave</button>
     </section>
 
-    <section class="card" id="importar">
-      <h2 style="margin-bottom:8px">Importar mi portafolio desde mi chat</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">Copiá este pedido, pegalo en tu chat de Claude y pegá abajo lo que te devuelva.</p>
-      <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
-      <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
-      <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
-      <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
-    </section>
-
     <section class="card">
       <h2 style="margin-bottom:8px">Zona peligrosa</h2>
       <button class="btn danger" data-action="resetAll">Borrar todos los datos</button>
     </section>
-  </div>`;
+  </div>
+  <button class="link-btn" style="margin:0" data-action="reminderHelp">${icon('flame', 14)} ¿Cómo activo un recordatorio diario?</button>`;
 }
 /* ---------------- Análisis ---------------- */
 
@@ -1569,7 +1538,6 @@ const CUT_GUIDE = {
   'Servicios': [0.1, 'Revisá tu plan de celular e internet y el consumo de luz y gas.'],
 };
 
-let analysisDemo = false;
 let lastAnalysis = null;
 
 function addMonths(ym, k) {
@@ -1673,7 +1641,7 @@ function insightsFor(a) {
   const interest = a.byCat.find(([c]) => c === INTEREST)?.[1] || 0;
   if (interest > 0) out.push(['💳', 'Estás pagando intereses de tarjeta', `${fm(interest)} por mes (${fm(interest * 12)} al año). Pagar el total del resumen es el ahorro más fácil de todos.`]);
   if (a.small.count >= 8) out.push(['🐜', `Hacés unos ${Math.round(a.small.count)} gastos chicos por mes`, `Compras de hasta ${fmtIn(antLimitLocal(), S.settings.localCurrency)} que suman ${fm(a.small.total)} por mes (${fm(a.small.total * 12)} al año). Los "gastos hormiga" son los más fáciles de recortar.`]);
-  if (!analysisDemo && a.expense > 0) {
+  if (a.expense > 0) {
     const t = totals();
     const cover = t.liquid / a.expense;
     if (cover < 3) out.push(['🛟', 'Tu fondo de emergencia es corto', `Tu liquidez cubre ${fmtNum(cover, 1)} meses de gastos. Lo ideal son 3 a 6 meses: entre ${fm(a.expense * 3)} y ${fm(a.expense * 6)}.`]);
@@ -1695,33 +1663,6 @@ function incomeIdeas(a) {
     ideas.push(['🧾', 'Registrá tus dividendos', `${payers.map((h) => esc(h.symbol)).join(', ')} pagan dividendos: cargalos como ingreso "Dividendos" para verlos acá.`]);
   }
   return ideas;
-}
-
-// Datos de muestra para ver el análisis antes de tener movimientos propios (no se guardan)
-function demoTxs() {
-  let seed = 11;
-  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const out = [];
-  const end = currentMonth();
-  for (let i = 11; i >= 0; i--) {
-    const m = addMonths(end, -i);
-    const last = i === 0 ? new Date().getDate() : 28;
-    const add = (type, category, amount, d) => {
-      if (d <= last && amount > 0) out.push({ id: 'demo' + out.length, type, category, amount: round2(amount), date: `${m}-${String(d).padStart(2, '0')}`, currency: 'USD', accountId: '', note: category });
-    };
-    add('ingreso', 'Sueldo', 1800, 1);
-    if (rnd() > 0.55) add('ingreso', 'Freelance', 150 + rnd() * 250, 15);
-    add('gasto', 'Vivienda / alquiler', 450, 2);
-    add('gasto', 'Servicios', 70 + rnd() * 30, 8);
-    add('gasto', 'Suscripciones', 38, 5);
-    add('gasto', INTEREST, 15 + rnd() * 25, 10);
-    for (let w = 0; w < 4; w++) { add('gasto', 'Supermercado', 60 + rnd() * 40, 3 + w * 7); add('gasto', 'Transporte', 18 + rnd() * 10, 4 + w * 7); }
-    for (let j = 0; j < 14; j++) add('gasto', 'Comida y salidas', 5 + rnd() * 20, 1 + Math.floor(rnd() * 27));
-    add('gasto', 'Ocio', 40 + rnd() * 60, 20);
-    add('gasto', 'Compras', (60 + rnd() * 120) * (1 + (11 - i) * 0.06), 18);
-    if (rnd() > 0.6) add('gasto', 'Salud', 60, 12);
-  }
-  return out;
 }
 
 function roundedBar(x, y, w, h) {
@@ -1780,16 +1721,15 @@ function planHTML(a) {
   const p = planFor(a, Number(S.settings.savingsGoal) || 5);
   if (!p) return '<div class="empty">Registrá tus ingresos para armar el plan.</div>';
   if (!p.rows.length) return '<div class="empty">No encontré gastos recortables en el período.</div>';
-  return `<p style="margin:6px 0 14px">Para ahorrar <b class="money">${fmtMoney(p.target)}</b> más por mes, tu tasa de ahorro pasaría de
-      <b>${a.rate != null ? fmtPct(a.rate, false) : '—'}</b> a <b class="up">${fmtPct(p.newRate, false)}</b>. Así:</p>
+  return `<p style="margin:6px 0 10px">Para ahorrar <b class="money">${fmtMoney(p.target)}</b> más por mes, gastá menos en:</p>
     <div class="list">${p.rows.map((r) => `<div class="plan-row">
       <div class="plan-top"><b>${esc(r.c)}</b>
         <span class="plan-nums"><span class="money muted">${fmtMoney(r.v)}</span> → <b class="money">${fmtMoney(r.newV)}</b></span></div>
       <div class="plan-cut up small money">Ahorrás ${fmtMoney(r.cut)} por mes (−${fmtNum(r.pct, 0)}%)</div>
       <div class="small" style="color:var(--text-2)">${esc(r.tip)}</div></div>`).join('')}</div>
-    ${p.remaining > 0.01 ? `<div class="banner" style="margin-top:12px">Con recortes razonables llegás a ${fmtMoney(p.achieved)} por mes. Los ${fmtMoney(p.remaining)} restantes tendrían que salir de aumentar tus ingresos (mirá <a href="#" data-action="go" data-id="consejos">Consejos</a>).</div>` : ''}
-    <p class="muted small" style="margin:12px 0">En 12 meses serían <b class="money">${fmtMoney(p.achieved * 12)}</b> extra.</p>
-    ${analysisDemo ? '' : `<button class="btn primary wide" data-action="applyPlan">Usar estos montos como topes del mes</button>`}`;
+    ${p.remaining > 0.01 ? `<div class="banner" style="margin-top:12px">Recortando llegás a ${fmtMoney(p.achieved)} por mes. El resto tendría que salir de ganar más.</div>` : ''}
+    <p class="muted small" style="margin:12px 0">En un año: <b class="money">${fmtMoney(p.achieved * 12)}</b> extra.</p>
+    <button class="btn primary wide" data-action="applyPlan">Usar estos montos como topes del mes</button>`;
 }
 
 function budgetHTML(txs) {
@@ -1799,7 +1739,7 @@ function budgetHTML(txs) {
   const day = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const entries = Object.entries(S.budgets).filter(([, b]) => Number(b.amount) > 0);
   if (!entries.length) {
-    return `<div class="empty">Todavía no tenés presupuestos. Ponele un tope mensual a una categoría o usá el plan de ahorro de arriba.</div>`;
+    return `<div class="empty">Todavía no tenés topes. Tocá <b>+ Tope</b> para ponerle un máximo por mes a una categoría.</div>`;
   }
   return `<div class="list">${entries.map(([c, b]) => {
     const lim = toUSD(b.amount, b.currency);
@@ -1814,29 +1754,8 @@ function budgetHTML(txs) {
         <button class="btn sm ghost icon-only" data-action="editBudget" data-id="${esc(c)}" title="Editar tope" aria-label="Editar tope">${icon('settings', 16)}</button></div>
       <div class="small"><b class="money">${fmtIn(fromUSD(spent, b.currency), b.currency)}</b> <span class="muted">de <span class="money">${fmtIn(b.amount, b.currency)}</span></span></div>
       <div class="meter"><div class="${st.tone}" style="width:${used}%"></div></div>
-      <div class="muted small money">${spent >= lim ? `Te pasaste ${fmtIn(fromUSD(spent - lim, b.currency), b.currency)}.` : `Te quedan ${fmtIn(fromUSD(lim - spent, b.currency), b.currency)}.`}
-        ${FIXED.has(c) ? '' : `A este ritmo terminás el mes en ${fmtIn(fromUSD(proj, b.currency), b.currency)}.`}</div>
+      <div class="muted small money">${spent >= lim ? `Te pasaste ${fmtIn(fromUSD(spent - lim, b.currency), b.currency)}` : `Te quedan ${fmtIn(fromUSD(lim - spent, b.currency), b.currency)}`}${FIXED.has(c) || spent >= lim ? '' : ` · a este ritmo llegás a ${fmtIn(fromUSD(proj, b.currency), b.currency)}`}</div>
     </div>`;
-  }).join('')}</div>`;
-}
-
-function rule503020(a) {
-  if (!(a.income > 0)) return '<div class="empty">Registrá tus ingresos para comparar con la regla 50/30/20.</div>';
-  const needs = a.byCat.filter(([c]) => NEEDS.has(c)).reduce((s, [, v]) => s + v, 0);
-  const wants = a.expense - needs;
-  const rows = [
-    ['Necesidades', needs, 50, 'máx.', 'Vivienda, súper, transporte, servicios, salud…'],
-    ['Gustos', wants, 30, 'máx.', 'Salidas, compras, ocio, suscripciones, viajes…'],
-    ['Ahorro', Math.max(0, a.saving), 20, 'mín.', 'Lo que te queda después de gastar'],
-  ];
-  return `<div class="rule">${rows.map(([label, v, target, kind, hint]) => {
-    const pct = (v / a.income) * 100;
-    const ok = kind === 'máx.' ? pct <= target : pct >= target;
-    const st = ok ? { tone: 'good', icon: '✓', label: 'OK' } : { tone: 'warning', icon: '⚠', label: kind === 'máx.' ? 'Alto' : 'Bajo' };
-    return `<div class="rule-row">
-      <div class="budget-top"><b>${label}</b> ${statusPill(st)}<span class="spacer"></span><b>${fmtPct(pct, false)}</b><span class="muted small">&nbsp;· meta ${kind} ${target}%</span></div>
-      <div class="rule-track"><div class="rule-bar" style="width:${Math.min(100, pct)}%"></div><div class="rule-mark" style="left:${target}%"></div></div>
-      <div class="muted small">${hint} · <span class="money">${fmtMoney(v)}</span> por mes</div></div>`;
   }).join('')}</div>`;
 }
 
@@ -1844,8 +1763,8 @@ function rule503020(a) {
 function analysisData() {
   const n = Number(S.settings.anPeriod) || 3;
   const hasReal = S.transactions.some((t) => !nonFlow(t) && t.type !== 'transferencia');
-  if (!analysisDemo && !hasReal) { lastAnalysis = null; return null; }
-  const txs = analysisDemo ? demoTxs() : S.transactions;
+  if (!hasReal) { lastAnalysis = null; return null; }
+  const txs = S.transactions;
   const a = analyze(n, txs);
   lastAnalysis = a;
   return { a, n, txs };
@@ -1853,23 +1772,19 @@ function analysisData() {
 
 const noAnalysisHTML = () => `<section class="card" style="text-align:center;padding:36px 20px">
   <h2 style="font-size:18px;margin-bottom:8px">Todavía no hay movimientos para analizar</h2>
-  <p style="color:var(--text-2);max-width:520px;margin:0 auto 18px">Cargá tus ingresos y gastos en <b>Movimientos</b> y acá vas a ver en qué gastás más, cuánto ahorrás,
-  un plan para ahorrar más y sugerencias. ¿Querés ver cómo queda con datos de ejemplo?</p>
-  <div class="toolbar" style="justify-content:center"><button class="btn primary" data-action="demoOn">Ver con datos de ejemplo</button>
-  <button class="btn" data-action="go" data-id="movimientos">Cargar movimientos</button></div></section>`;
+  <p style="color:var(--text-2);max-width:420px;margin:0 auto 18px">Cuando registres tus gastos, acá vas a ver en qué gastás más.</p>
+  <button class="btn primary" data-action="go" data-id="movimientos">Ir a Movimientos</button></section>`;
 
 // Elegir el período (este mes, 3, 6 o 12 meses)
 function periodBarHTML(a, n) {
-  const periodTxt = n === 1 ? 'este mes' : `los últimos ${n} meses`;
-  return `${analysisDemo ? `<div class="banner">Estás viendo <b>datos de EJEMPLO</b>, no los tuyos. <a href="#" data-action="demoOff">Volver a mis datos</a></div>` : ''}
-  <div class="period-bar">
+  return `<div class="period-bar">
     <select id="anPeriod" aria-label="Período">${[[1, 'Este mes'], [3, 'Últimos 3 meses'], [6, 'Últimos 6 meses'], [12, 'Últimos 12 meses']].map(([v, l]) => `<option value="${v}" ${v === n ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <span class="muted small">Promedios por mes de ${periodTxt}${a.k < n ? ` (${a.k} mes${a.k > 1 ? 'es' : ''} con datos)` : ''}.</span>
+    <span class="muted small">Promedio por mes</span>
   </div>`;
 }
 
 const insightList = (items) => `<div class="insights">${items.map(([ico, title, text]) => `<div class="insight"><span class="ins-ico">${ico}</span><div><b>${title}</b><div class="small" style="color:var(--text-2)">${text}</div></div></div>`).join('')}</div>`;
-const DISCLAIMER = '<p class="muted small" style="margin:0">Son sugerencias generales calculadas con tus datos, no asesoramiento financiero profesional. Los montos en otras monedas se convierten con el tipo de cambio actual.</p>';
+const DISCLAIMER = '<p class="muted small" style="margin:0">Son sugerencias generales, no asesoramiento financiero profesional.</p>';
 
 // Análisis: cuánto entra, cuánto sale y en qué
 function viewAnalisis() {
@@ -1903,24 +1818,23 @@ function viewAnalisis() {
       <div class="legend"><span><i class="swatch" style="background:var(--c1)"></i>Ingresos</span><span><i class="swatch" style="background:var(--c2)"></i>Gastos</span></div></div>
       <div id="barsChart" class="line-chart"></div></section>
   </div>
-  ${analysisDemo ? '' : `<div class="grid-2">
+  <div class="grid-2">
     <section class="card"><div class="card-head"><h2>Este mes vs. tu promedio</h2><span class="muted small">por categoría</span></div>${categoryCompareHTML(month)}</section>
     <section class="card"><div class="card-head"><h2>Gastos por mes</h2></div><div id="monthlyChart" class="line-chart" style="height:200px"></div></section>
   </div>
-  <button class="btn wide" data-action="monthClose" data-id="${prevM}">${icon('calendar', 16)} Ver el cierre de ${monthLabel(prevM, 'long')}</button>`}
+  <button class="btn wide" data-action="monthClose" data-id="${prevM}">${icon('calendar', 16)} Ver el cierre de ${monthLabel(prevM, 'long')}</button>
   ${DISCLAIMER}`;
 }
 
-// Presupuesto: topes por categoría, plan para ahorrar más y la regla 50/30/20
+// Presupuesto: topes por categoría y plan para ahorrar más
 function viewPresupuesto() {
   const D = analysisData();
   return `
   <section class="card"><div class="card-head"><h2>Topes de ${monthLabel(currentMonth(), 'long')}</h2>
-    ${analysisDemo ? '' : '<button class="btn sm primary" data-action="addBudget">+ Tope</button>'}</div>
-    ${analysisDemo ? '<div class="empty">Disponible con tus datos reales.</div>' : budgetHTML(S.transactions)}</section>
+    <button class="btn sm primary" data-action="addBudget">+ Tope</button></div>
+    ${budgetHTML(S.transactions)}</section>
   ${D ? `${periodBarHTML(D.a, D.n)}
   <section class="card"><div class="card-head"><h2>Plan para ahorrar más</h2></div>${goalSlider()}<div id="planBox">${planHTML(D.a)}</div></section>
-  <section class="card"><div class="card-head"><h2>Regla 50/30/20</h2><span class="muted small">% de tus ingresos</span></div>${rule503020(D.a)}</section>
   ${DISCLAIMER}` : noAnalysisHTML()}`;
 }
 
@@ -1931,7 +1845,7 @@ function viewConsejos() {
   return `
   ${periodBarHTML(D.a, D.n)}
   <section class="card"><div class="card-head"><h2>Lo que veo en tus números</h2></div>${insightList(insightsFor(D.a))}</section>
-  <section class="card"><div class="card-head"><h2>Ideas para aumentar tus ingresos</h2></div>${insightList(incomeIdeas(D.a))}</section>
+  ${D.a.rate == null || D.a.rate < 10 ? `<section class="card"><div class="card-head"><h2>Ideas para ganar más</h2><span class="muted small">tu ahorro está bajo</span></div>${insightList(incomeIdeas(D.a))}</section>` : ''}
   <div class="shortcuts">${shortcutHTML('presupuesto', 'Plan para ahorrar más')}${shortcutHTML('metas', S.goals.length ? `${S.goals.length} meta${S.goals.length > 1 ? 's' : ''}` : 'Crear una meta')}</div>
   ${DISCLAIMER}`;
 }
@@ -2065,10 +1979,9 @@ function goalCardHTML(g, P) {
     <div class="goal-facts">
       <div><span class="muted small">Te falta</span><b class="money">${fmtMoney(M.remaining)}</b></div>
       ${M.needed != null ? `<div><span class="muted small">Necesitás ahorrar</span><b class="money">${fmtMoney(M.needed)}/mes</b></div>` : ''}
-      <div><span class="muted small">A tu ritmo (${fmtMoney(P.projectedSaving)}/mes) llegás en</span><b>${etaLabel(M.etaMonths)}</b></div>
+      <div><span class="muted small">A tu ritmo llegás</span><b>${M.remaining <= 0 ? '¡Ya llegaste!' : M.etaMonths == null ? 'No llegás' : etaLabel(M.etaMonths)}</b></div>
     </div>
-    ${M.needed != null ? `<div class="small ${onTrack ? 'up' : 'down'}" style="margin:8px 0">${onTrack ? '✓ A tu ritmo actual llegás a tiempo.' : `⚠ A tu ritmo actual no llegás: necesitás ${fmtMoney(M.needed - P.projectedSaving)} más por mes.`}</div>` : ''}
-    <div class="small muted">Lo que podés gastar por día ya tiene en cuenta esta meta (arriba, en "Hoy podés gastar").</div>
+    ${M.needed != null ? `<div class="small ${onTrack ? 'up' : 'down'}" style="margin:8px 0">${onTrack ? '✓ Llegás a tiempo.' : `⚠ Te faltan ${fmtMoney(M.needed - P.projectedSaving)} por mes para llegar a tiempo.`}</div>` : ''}
   </section>`;
 }
 
@@ -2150,32 +2063,18 @@ function viewMetas() {
   return `
   ${S.goals.length ? S.goals.map((g) => goalCardHTML(g, P)).join('') : `<section class="card" style="text-align:center;padding:28px 20px">
     <h2 style="font-size:18px;margin-bottom:6px">¿A qué querés llegar?</h2>
-    <p class="muted" style="margin:0 auto 14px;max-width:460px">Poné una meta (un monto y, si querés, una fecha) y te digo cuánto ahorrar por mes y cuánto podés gastar como máximo para llegar.</p>
+    <p class="muted" style="margin:0 auto 14px;max-width:420px">Poné cuánto querés juntar y te digo cuánto ahorrar por mes.</p>
     <button class="btn primary" data-action="addGoal">${icon('target', 16)} Crear mi meta</button></section>`}
   ${S.goals.length ? '<div class="toolbar"><span class="spacer"></span><button class="btn" data-action="addGoal">+ Otra meta</button></div>' : ''}
-  <h3 class="section-label">Proyección y récord de ahorro</h3>
   <div class="tiles">
-    ${tile('Ahorro máximo posible', fmtMoney(P.maxSaving) + '<span class="t-unit">/mes</span>', 'Ingresos fijos + intereses − gastos fijos')}
+    ${tile('Podés ahorrar hasta', fmtMoney(P.maxSaving) + '<span class="t-unit">/mes</span>', 'Si sólo pagás tus fijos')}
     ${tile('Ahorro de este mes', `<span class="${cls(thisMonth.income - thisMonth.expense)}">${fmtMoney(thisMonth.income - thisMonth.expense, { sign: true })}</span>`, 'Lo que va del mes')}
-    ${tile('Tu récord mensual', T.best ? fmtMoney(T.best.real) : '—', T.best ? `${monthLabel(T.best.m, 'long')} ${T.best.m.slice(0, 4)}` : 'Todavía sin meses completos')}
-    ${tile('Proyección a 12 meses', `<span class="${cls(P.projectedSaving)}">${fmtMoney(P.projectedSaving * 12, { sign: true })}</span>`, `A tu ritmo: ${fmtMoney(P.projectedSaving)}/mes`)}
+    ${tile('Tu mejor mes', T.best ? fmtMoney(T.best.real) : '—', T.best ? `${monthLabel(T.best.m, 'long')} ${T.best.m.slice(0, 4)}` : 'Todavía no hay')}
+    ${tile('En un año', `<span class="${cls(P.projectedSaving)}">${fmtMoney(P.projectedSaving * 12, { sign: true })}</span>`, `Ahorrando ${fmtMoney(P.projectedSaving)}/mes`)}
   </div>
-  <section class="card"><div class="card-head"><h2>Proyección${g0 ? `: ${esc(g0.name)}` : ' de tu ahorro'}</h2>
+  <section class="card"><div class="card-head"><h2>Cómo vas${g0 ? `: ${esc(g0.name)}` : ''}</h2>
     <div class="legend"><span><i class="swatch" style="background:var(--c1)"></i>A tu ritmo</span>${M0?.needed != null ? '<span><i class="swatch" style="background:var(--c2)"></i>Lo necesario</span>' : ''}</div></div>
-    <div id="projChart" class="line-chart" style="height:240px"></div>
-    <p class="small muted" style="margin:8px 0 0">"A tu ritmo" = ingresos fijos (${fmtMoney(P.recInc)}) + intereses (${fmtMoney(P.interest)}) + ingresos extra promedio (${fmtMoney(P.avgExtra)}) − gastos fijos (${fmtMoney(P.recOut)}) − gasto variable promedio (${fmtMoney(P.avgVariable)}), por mes.</p></section>
-  <section class="card"><div class="card-head"><h2>Ahorro máximo vs. ahorro real</h2><span class="muted small">por mes</span></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Mes</th><th class="num hide-sm">Ingresos</th><th class="num hide-sm">Gastos fijos</th><th class="num">Máximo</th><th class="num hide-sm">Gastos variables</th><th class="num">Real</th><th class="num hide-sm">% del máximo</th><th class="num">Acumulado</th></tr></thead>
-      <tbody>${T.rows.map((r) => `<tr class="${r.proj ? 'proj' : ''} ${T.best && r.m === T.best.m && !r.proj ? 'best' : ''}">
-        <td>${monthLabel(r.m)} ${r.m.slice(2, 4)}${r.proj ? ' <span class="tag">proy.</span>' : ''}${T.best && r.m === T.best.m && !r.proj ? ' <span class="tag good">récord</span>' : ''}</td>
-        <td class="num money hide-sm">${fmtMoney(r.inc)}</td><td class="num money hide-sm">${fmtMoney(r.fixed)}</td>
-        <td class="num money"><b>${fmtMoney(r.max)}</b></td><td class="num money hide-sm">${fmtMoney(r.variable)}</td>
-        <td class="num money ${cls(r.real)}"><b>${fmtMoney(r.real, { sign: true })}</b></td>
-        <td class="num hide-sm">${r.max > 0 ? fmtPct((r.real / r.max) * 100, false) : '—'}</td>
-        <td class="num money">${fmtMoney(r.acc)}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">Registrá movimientos para ver la tabla.</td></tr>'}</tbody>
-    </table></div>
-    <p class="small muted" style="margin:8px 0 0"><b>Máximo</b> = lo que te quedaría si sólo pagaras los gastos fijos. <b>Real</b> = lo que ahorraste de verdad.</p></section>`;
+    <div id="projChart" class="line-chart" style="height:240px"></div></section>`;
 }
 
 // Mini resumen de cada meta (Inicio y Plan)
@@ -2196,7 +2095,7 @@ function viewPlan() {
   ${S.goals.length ? `<section class="card"><div class="card-head" style="margin-bottom:6px"><h2>Tus metas</h2><a href="#" data-action="go" data-id="metas" class="small">Ver detalle</a></div>${goalsMiniHTML()}</section>`
     : `<section class="card" style="text-align:center;padding:24px 20px">
     <h2 style="font-size:17px;margin-bottom:6px">¿A qué querés llegar?</h2>
-    <p class="muted small" style="margin:0 auto 14px;max-width:420px">Poné una meta y te digo cuánto ahorrar por mes y cuánto podés gastar para llegar.</p>
+    <p class="muted small" style="margin:0 auto 14px;max-width:420px">Poné cuánto querés juntar y te digo cuánto ahorrar por mes.</p>
     <button class="btn primary" data-action="addGoal">${icon('target', 16)} Crear mi meta</button></section>`}
   ${incomeSafetyHTML()}
   <div class="shortcuts">
@@ -3268,9 +3167,8 @@ function fxCardHTML() {
     <div class="meter"><div style="width:${Math.min(100, pct)}%;background:var(--c2)"></div></div>
     <div class="small" style="margin-top:10px;color:var(--text-2)">
       ${ch != null ? `Desde el ${fmtDate(first.date)} el dólar pasó de ${curLabel(cur)} ${n2(first.rate)} a ${n2(r)} (<b class="${ch > 0 ? 'down' : 'up'}">${fmtPct(ch)}</b>):
-        tus ${fmtIn(local, cur)} ${lost > 0 ? `valen <b class="money down">US$ ${n2(lost)} menos</b>` : `valen <b class="money up">US$ ${n2(-lost)} más</b>`} que entonces.<br>` : 'La app va guardando el tipo de cambio cada día para mostrarte cómo cambia tu poder de compra.<br>'}
-    </div>
-    <p class="muted small" style="margin:8px 0 0">Sólo informativo: muestra cuánto de tu plata depende del tipo de cambio.</p></section>`;
+        tus ${fmtIn(local, cur)} ${lost > 0 ? `valen <b class="money down">US$ ${n2(lost)} menos</b>` : `valen <b class="money up">US$ ${n2(-lost)} más</b>`}.` : 'Con los días vas a ver acá cuánto cambia el valor de tu plata.'}
+    </div></section>`;
 }
 
 /* ---------------- Próximos pagos y cobros ---------------- */
@@ -3360,8 +3258,10 @@ function monthCloseHTML(m) {
   const days = [...activeDays()].filter((d) => d.startsWith(m)).length;
   const st = savingsStatus(rateM);
   const lines = [];
-  if (record != null) lines.push(saving > record ? ['★', `¡Nuevo récord! Superaste tu mejor mes (${fmtMoney(record)}).`] : ['🏁', `Tu récord sigue siendo ${fmtMoney(record)}: te faltaron ${fmtMoney(record - saving)}.`]);
-  if (prev.income || prev.expense) lines.push([saving >= prevSaving ? '📈' : '📉', `Ahorraste ${fmtMoney(Math.abs(saving - prevSaving))} ${saving >= prevSaving ? 'más' : 'menos'} que el mes anterior.`]);
+  if (record != null) lines.push(saving > record + 0.005 ? ['★', `¡Nuevo récord! Superaste tu mejor mes (${fmtMoney(record)}).`]
+    : Math.abs(saving - record) <= 0.005 ? ['★', '¡Igualaste tu mejor mes!']
+    : ['🏁', `Tu mejor mes sigue siendo ${fmtMoney(record)}: te faltaron ${fmtMoney(record - saving)}.`]);
+  if ((prev.income || prev.expense) && Math.abs(saving - prevSaving) > 0.005) lines.push([saving >= prevSaving ? '📈' : '📉', `Ahorraste ${fmtMoney(Math.abs(saving - prevSaving))} ${saving >= prevSaving ? 'más' : 'menos'} que el mes anterior.`]);
   if (cats.length) lines.push(['🥇', `Tu mayor gasto fue ${esc(cats[0][0])}: ${fmtMoney(cats[0][1])} (${fmtPct((cats[0][1] / ms.expense) * 100, false)}).`]);
   if (over.length) lines.push(['⚠', `Te pasaste del presupuesto en ${over.map(([c]) => esc(c)).join(', ')}.`]);
   lines.push(['🔥', `Registraste ${days} de ${daysInMonth(m)} días.`]);
@@ -3941,24 +3841,23 @@ function runway() {
   return { money, perMonth, days: Math.floor(money / (perMonth / 30)) };
 }
 
+// Si no entra nada más, ¿cuánto aguantás? (corto: el número y una línea)
 function runwayHTML() {
   const r = runway();
   if (!r) return '';
   const cur = S.settings.localCurrency;
   const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
   const tone = r.days < 30 ? 'critical' : r.days < 90 ? 'warning' : 'good';
-  const months = r.days / 30;
-  const big = r.days >= 730 ? 'más de 2 años' : r.days >= 60 ? `${fmtNum(months, 1)} meses` : `${r.days} día${r.days === 1 ? '' : 's'}`;
+  const big = r.days >= 730 ? 'más de 2 años' : r.days >= 60 ? `${fmtNum(r.days / 30, 1)} meses` : `${r.days} día${r.days === 1 ? '' : 's'}`;
   return `<section class="card runway">
-    <div class="runway-top"><span class="muted small">Si no entra nada más, aguantás</span>
+    <div class="runway-top"><span class="muted small">Si no te entra nada más, te alcanza para</span>
       <b class="runway-val ${tone}">${big}</b></div>
     <div class="meter"><div class="${tone}" style="width:${Math.min(100, (r.days / 180) * 100)}%"></div></div>
-    <div class="small muted" style="margin-top:6px">Con tu plata disponible (<span class="money">${L(r.money)}</span>) y lo que gastás por mes (<span class="money">${L(r.perMonth)}</span>).
-      ${r.days < 90 ? 'Lo ideal es tener para 3 a 6 meses.' : ''}</div>
+    <div class="small muted money" style="margin-top:6px">Tenés ${L(r.money)} · gastás ${L(r.perMonth)} por mes</div>
   </section>`;
 }
 
-// ¿Qué tan seguro es lo que te entra? ¿Tus fijos caben en el ingreso seguro? ¿Y si se corta uno?
+// ¿Qué tan seguro es lo que te entra? (corto: la barra, una conclusión y qué pasa si se corta cada ingreso)
 function incomeSafetyHTML() {
   const incomes = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso');
   if (!incomes.length) return '';
@@ -3968,30 +3867,22 @@ function incomeSafetyHTML() {
   const sure = incomes.filter(isSure).reduce((s, r) => s + v(r), 0);
   const maybe = incomes.filter((r) => !isSure(r)).reduce((s, r) => s + v(r), 0);
   const total = sure + maybe;
-  const fixed = planNumbers().recOut;
   const cost = monthlyCostUSD();
-  const rw = runway();
-  const line = (ok, text) => `<div class="safe-line ${ok ? 'ok' : 'bad'}">${icon(ok ? 'check' : 'alert', 16)}<span>${text}</span></div>`;
+  const ok = sure >= cost;
   const cut = incomes.length > 1 || maybe > 0 ? incomes.map((r) => {
     const left = total - v(r) - cost;
-    const months = left < 0 && rw ? rw.money / -left : null;
-    return `<div class="calc-row ${left < 0 ? 'over' : ''}"><span>Sin ${esc(r.name)}</span><b class="money">${left >= 0 ? `te sobran ${L(left)}` : `te faltan ${L(left)}`}/mes</b></div>
-      ${months != null ? `<div class="small muted" style="margin:-4px 0 6px">Con tu plata aguantarías ${months >= 24 ? 'más de 2 años' : `${fmtNum(months, 1)} meses`} así.</div>` : ''}`;
+    return `<div class="calc-row ${left < 0 ? 'over' : ''}"><span>Sin ${esc(r.name)}</span><b class="money ${left < 0 ? '' : 'up'}">${left < 0 ? '−' : '+'}${L(left)}/mes</b></div>`;
   }).join('') : '';
   return `<section class="card">
-    <div class="card-head"><h2>¿Qué tan seguro es lo que te entra?</h2></div>
+    <div class="card-head" style="margin-bottom:10px"><h2>Lo que te entra</h2><a href="#" data-action="go" data-id="fijos" class="small">Cambiar</a></div>
     <div class="stack">${sure > 0 ? `<div style="flex:${sure};background:var(--good)"></div>` : ''}${maybe > 0 ? `<div style="flex:${maybe};background:#fab219"></div>` : ''}</div>
     <div class="small" style="display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 10px">
       <span><span class="swatch" style="background:var(--good)"></span> Seguro <b class="money">${L(sure)}</b></span>
       <span><span class="swatch" style="background:#fab219"></span> A veces <b class="money">${L(maybe)}</b></span></div>
-    ${fixed > 0 ? line(sure >= fixed, sure >= fixed
-      ? `Tus gastos fijos (<b class="money">${L(fixed)}</b>) caben en tu ingreso seguro: te sobran <b class="money">${L(sure - fixed)}</b>.`
-      : `Tus gastos fijos (<b class="money">${L(fixed)}</b>) no caben en tu ingreso seguro: si lo variable no llega, te faltan <b class="money">${L(fixed - sure)}</b>.`) : ''}
-    ${cost > 0 ? line(sure >= cost, sure >= cost
-      ? `Sólo con lo seguro cubrís lo que gastás por mes (<b class="money">${L(cost)}</b>). Lo que entra "a veces" puede ir directo al ahorro.`
-      : `Lo que gastás por mes (<b class="money">${L(cost)}</b>) depende de lo que entra "a veces": sin eso te faltan <b class="money">${L(cost - sure)}</b>.`) : ''}
-    ${cut ? `<div class="calc-sub" style="margin-top:12px"><b>¿Y si se corta uno?</b></div><div class="calc">${cut}</div>` : ''}
-    <div class="small muted" style="margin-top:8px">Marcá cuáles son seguros en <a href="#" data-action="go" data-id="fijos">Fijos</a> (tocá el engranaje de cada ingreso).</div>
+    ${cost > 0 ? `<div class="safe-line ${ok ? 'ok' : 'bad'}">${icon(ok ? 'check' : 'alert', 16)}<span>${ok
+      ? 'Con lo seguro te alcanza para todo el mes.'
+      : `Sólo con lo seguro te faltan <b class="money">${L(cost - sure)}</b> por mes.`}</span></div>` : ''}
+    ${cut ? `<div class="calc-sub" style="margin-top:10px"><b>Si se corta uno:</b></div><div class="calc">${cut}</div>` : ''}
   </section>`;
 }
 
@@ -4001,35 +3892,35 @@ function spendCardHTML() {
   const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
   const n = streak(), doneToday = activeDays().has(todayISO());
   const pct = p.budget > 0 ? Math.min(100, (p.spent / p.budget) * 100) : 100;
-  const tone = p.budget <= 0 || p.todayLeft < 0 ? 'critical' : p.todayLeft < p.perDay * 0.3 ? 'warning' : 'good';
-  // El número grande siempre responde "¿cuánto puedo gastar hoy?": si te pasaste es Bs 0,
-  // y el detalle de cuánto te pasaste se ve al tocar la tarjeta
+  // Si te pasaste, el número grande muestra cuánto (en negativo y en rojo), no Bs 0
   const overMonth = p.monthLeft < 0, overToday = !overMonth && p.todayLeft < 0;
-  const why = overMonth ? 'Te pasaste del presupuesto del mes · tocá para ver' : overToday ? 'Hoy gastaste más de lo del día · tocá para ver' : '';
-  const big = p.budget <= 0 ? '' : `<button class="spend-main" data-action="spendInfo">
-      <div class="label">Hoy podés gastar</div>
-      <div class="spend-value money ${tone}">${L(Math.max(0, p.todayLeft))}</div>
-      ${why ? `<div class="over-note">${why}</div>` : ''}
-    </button>`;
-  const empty = p.budget <= 0 && p.income <= 0 && !S.recurring.length;
+  const val = overMonth ? p.monthLeft : p.todayLeft;
+  const tone = p.budget <= 0 || val < 0 ? 'critical' : p.todayLeft < p.perDay * 0.3 ? 'warning' : 'good';
+  const month = monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase());
+  const head = (showStreak) => `<div class="card-head" style="margin-bottom:4px"><span class="muted small">${month}</span>
+      ${showStreak ? `<span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span>` : ''}</div>`;
   // Sin fijos todavía: sólo la invitación a cargarlos (sin una barra roja de "Bs 0 de Bs 0")
-  if (empty) return `<section class="card spend-card">
-    <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
-      ${n ? `<span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span>` : ''}</div>
+  if (p.budget <= 0 && p.income <= 0 && !S.recurring.length) return `<section class="card spend-card">
+    ${head(n > 0)}
     <div class="label">¿Cuánto podés gastar por día?</div>
-    <div class="small muted" style="margin:4px 0 12px">Agregá lo que te entra y sale todos los meses (sueldo, alquiler, luz…) y la app te lo calcula.</div>
+    <div class="small muted" style="margin:4px 0 12px">Cargá tu sueldo y tus gastos de todos los meses y la app lo calcula.</div>
     <button class="btn primary" data-action="go" data-id="fijos">${icon('repeat', 16)} Agregar mis fijos</button>
   </section>`;
+  const notCounted = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && !countsInPlan(r));
   return `<section class="card spend-card">
-    <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
-      <span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span></div>
-    ${p.budget <= 0 ? `<div class="label">Este mes no queda para gastos del día a día</div>
-      <div class="small muted" style="margin:4px 0 8px">Tus ingresos (${L(p.income)}) no cubren tus fijos más el ahorro. Revisá tu meta o tus fijos.</div>` : big}
+    ${head(true)}
+    ${p.budget <= 0 ? `<div class="label">Este mes no queda para el día a día</div>
+      <div class="small muted" style="margin:4px 0 8px">Lo que te entra no alcanza para tus fijos y el ahorro.</div>`
+    : `<button class="spend-main" data-action="spendInfo">
+      <div class="label">Hoy podés gastar</div>
+      <div class="spend-value money ${tone}">${L(val)}</div>
+      ${overMonth ? '<div class="over-note">Te pasaste del mes</div>' : overToday ? '<div class="over-note">Te pasaste hoy · mañana se reparte lo que queda</div>' : ''}
+    </button>`}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
-    <div class="small muted money" style="margin-top:6px">Gastaste ${L(p.spent)} de ${L(Math.max(0, p.budget))} del mes · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}${p.budget > 0 && p.perDay > 0 ? ` (${L(p.perDay)}/día)` : ''}</div>
-    ${S.recurring.some((r) => repeats(r) && r.type === "ingreso" && !countsInPlan(r)) ? `<div class="small muted" style="margin-top:4px">Sin contar: ${S.recurring.filter((r) => repeats(r) && r.type === "ingreso" && !countsInPlan(r)).map((r) => esc(r.name)).join(", ")}</div>` : ""}
+    <div class="small muted money" style="margin-top:6px">Llevás ${L(p.spent)} de ${L(Math.max(0, p.budget))} · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}</div>
+    ${notCounted.length ? `<div class="small muted" style="margin-top:4px">Sin contar: ${notCounted.map((r) => esc(r.name)).join(', ')}</div>` : ''}
     <div class="spend-foot">
-      <button class="link-btn" data-action="spendInfo">Cómo se calcula · elegir ingresos</button>
+      <button class="link-btn" data-action="spendInfo">¿Cómo se calcula?</button>
       ${!doneToday && new Date().getHours() >= 19 ? `<button class="btn sm" data-action="checkin">Hoy no gasté</button>` : ''}
     </div>
   </section>`;
@@ -4041,34 +3932,30 @@ function spendInfo() {
   const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
   const row = (a, b, c = '') => `<div class="calc-row ${c}"><span>${a}</span><b class="money">${b}</b></div>`;
   const incomes = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso');
+  const overMonth = p.monthLeft < 0;
   openForm({
     title: '¿Cómo se calcula?',
     fields: [
-      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos fijos contás?</b><br><span class="muted small">Apagá los que no sabés si van a llegar. Lo que ya te entró siempre cuenta.</span></div>` }] : []),
+      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos contás?</b><br><span class="muted small">Apagá los que no sabés si van a llegar.</span></div>` }] : []),
       ...incomes.map((r) => ({
         name: `inc_${r.id}`, type: 'checkbox', full: true, value: countsInPlan(r),
-        label: `${r.name} · ${fmtIn(r.amount, r.currency)}${recurringTx(r, currentMonth()) ? ' (ya entró este mes)' : ''}`,
+        label: `${r.name} · ${fmtIn(r.amount, r.currency)}${recurringTx(r, currentMonth()) ? ' (ya entró)' : ''}`,
       })),
       { type: 'html', html: `<div class="calc">
-        ${row('Ingresos del mes (lo que entró + los fijos que contás)', L(p.income))}
-        ${row('− Gastos fijos (gym, alquiler…)', L(p.fixed))}
-        ${p.sched > 0 ? row(`− Gastos programados (${esc(schedDueThisMonth().map((s) => s.name).join(', ') || 'ya pagados')})`, L(p.sched)) : ''}
-        ${row(p.goal ? `− Ahorro para tu meta "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}% de tus ingresos)`, L(p.save))}
-        ${row('= Para el día a día este mes', L(p.budget), 'total')}
-        ${p.monthLeft < 0 || p.perDay < 0 ? `
-        ${row('− Ya gastaste este mes', L(p.spent))}
-        ${row('= Te pasaste del mes', L(-p.monthLeft), 'total over')}
-        ${row('Hoy podés gastar', L(0), 'total')}` : `
-        ${row('− Ya gastaste antes de hoy', L(p.spentBefore))}
+        ${row('Te entra este mes', L(p.income))}
+        ${row('− Fijos', L(p.fixed))}
+        ${p.sched > 0 ? row('− Programados', L(p.sched)) : ''}
+        ${row(p.goal ? `− Ahorro para "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}%)`, L(p.save))}
+        ${row('= Para gastar este mes', L(p.budget), 'total')}
+        ${overMonth ? `
+        ${row('− Ya gastaste', L(p.spent))}
+        ${row('= Hoy podés gastar', L(p.monthLeft), 'total over')}` : `
+        ${row('− Gastado antes de hoy', L(p.spentBefore))}
         ${row(`÷ ${p.daysLeft} días que quedan`, `${L(p.perDay)} por día`, 'total')}
-        ${row('− Gastaste hoy', L(p.spentToday))}
-        ${p.todayLeft < 0 ? `${row('= Te pasaste hoy', L(-p.todayLeft), 'total over')}
-        ${row('Hoy podés gastar', L(0), 'total')}
-        <div class="small muted">Mañana el monto por día se recalcula con lo que te queda del mes (${L(Math.max(0, p.monthLeft))}).</div>`
-        : row('= Hoy podés gastar', L(p.todayLeft), 'total')}`}
+        ${row('− Gastado hoy', L(p.spentToday))}
+        ${row('= Hoy podés gastar', L(p.todayLeft), p.todayLeft < 0 ? 'total over' : 'total')}`}
       </div>` },
-      ...(p.goal ? [{ type: 'html', html: '<p class="small muted" style="margin:0">El ahorro sale de tu meta (Plan). Si no tenés meta, se usa el porcentaje de abajo.</p>' }] : []),
-      { name: 'saveRate', label: 'Si no tenés meta, ¿qué % de tus ingresos querés ahorrar?', type: 'number', value: p.rate, full: true },
+      { name: 'saveRate', label: p.goal ? 'Si no tuvieras meta: % para ahorrar' : '% de lo que te entra para ahorrar', type: 'number', value: p.rate, full: true },
     ],
     submitLabel: 'Listo',
     onSubmit: (v) => {
@@ -4305,40 +4192,6 @@ function undoTrade(h, tradeId) {
   if (tr.side === 'compra') { h.quantity = r10(Math.max(0, q - tr.qty)); h.avgCost = tr.prevAvg ?? h.avgCost; }
   else h.quantity = r10(q + tr.qty);
   h.trades.splice(i, 1);
-}
-
-function importHoldings(text) {
-  let data;
-  const m = text.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
-  try { data = JSON.parse(m ? m[0] : text); } catch (e) { return toast('No pude leer el JSON. Revisá que esté completo.'); }
-  if (!Array.isArray(data)) data = data.holdings || data.portfolio || data.portafolio || [];
-  let added = 0, updated = 0;
-  for (const r of data) {
-    const symbol = String(r.symbol || r.ticker || '').toUpperCase().trim();
-    if (!symbol) continue;
-    const qty = parseNum(r.quantity ?? r.cantidad ?? 0) || 0;
-    const avg = parseNum(r.avgCost ?? r.precioPromedio ?? r.avg_cost ?? 0) || 0;
-    const platform = String(r.platform || r.plataforma || '').trim();
-    let h = S.holdings.find((x) => x.symbol === symbol && (!platform || !x.platform || x.platform === platform));
-    if (h) {
-      h.quantity = qty;
-      if (avg) h.avgCost = avg;
-      if (platform) h.platform = platform;
-      updated++;
-    } else {
-      const cg = CG_IDS[symbol] || '';
-      S.holdings.push({
-        id: uid(), symbol, name: r.name || r.nombre || '', assetType: cg ? (cg.includes('gold') ? 'oro' : 'cripto') : (r.type || 'accion'),
-        platform, quantity: qty, avgCost: avg, price: 0, change24h: null, priceUpdated: null, priceSource: '', coingeckoId: cg, trades: [],
-      });
-      added++;
-    }
-  }
-  if (!added && !updated) return toast('No encontré activos en el texto.');
-  save();
-  toast(`Importado: ${updated} actualizado(s), ${added} nuevo(s).`);
-  go('inversiones');
-  refreshAll({ silent: true });
 }
 
 /* ---------------- Acciones: cuentas ---------------- */
@@ -4605,98 +4458,6 @@ function backup() {
   toast('Respaldo descargado.');
 }
 
-/* ---------------- Sincronizar a mano (iPhone y navegadores sin acceso a archivos) ----------------
-   iOS no deja que una página escriba sola en OneDrive, así que son dos pasos:
-   "Traer" elige mis-finanzas.json desde Archivos > OneDrive; "Guardar" lo comparte a Archivos > OneDrive. */
-
-const SYNC_FILE = 'mis-finanzas.json';
-
-// Tiene que llamarse directo desde un toque: iOS sólo abre "Compartir" en respuesta a uno.
-function syncPush() {
-  S.settings.lastSync = new Date().toISOString();
-  save(false);
-  const json = JSON.stringify(S, null, 2);
-  const file = new File([json], SYNC_FILE, { type: 'application/json' });
-  const done = () => { render(); toast('Listo. Si OneDrive preguntó, elegí "Reemplazar".', 4000); };
-  if (navigator.canShare?.({ files: [file] })) {
-    navigator.share({ files: [file], title: 'MyFinance' }).then(done).catch((e) => {
-      if (e.name !== 'AbortError') { downloadJSON(SYNC_FILE, json); done(); }
-    });
-  } else { downloadJSON(SYNC_FILE, json); done(); }
-}
-
-function syncPull() {
-  const input = document.createElement('input');
-  input.type = 'file'; // sin filtro "accept": iOS a veces bloquea los .json si se filtra
-  input.onchange = () => { if (input.files[0]) pullFromFile(input.files[0]); };
-  input.click();
-}
-
-function pullFromFile(file) {
-  const r = new FileReader();
-  r.onload = () => {
-    let data;
-    try { data = JSON.parse(r.result); } catch (e) { return toast('Ese archivo no es de MyFinance.'); }
-    if (!isValidData(data)) return toast('Ese archivo no es de MyFinance.');
-    const fileTime = data.editedAt || '', localTime = S.editedAt || '';
-    if (!hasData() || fileTime > localTime) {
-      S = migrate(data);
-      S.settings.lastSync = new Date().toISOString();
-      save(false); render();
-      return toast(`Datos actualizados desde OneDrive (editados el ${fmtDateTime(data.editedAt)}).`, 4000);
-    }
-    if (fileTime === localTime) {
-      S.settings.lastSync = new Date().toISOString();
-      save(false); render();
-      return toast('Ya estabas al día ✓');
-    }
-    // Lo de este teléfono es más nuevo que el archivo
-    openForm({
-      title: 'Tus datos de acá son más nuevos',
-      fields: [
-        { type: 'html', html: `<p style="margin:0">Este dispositivo tiene cambios del <b>${fmtDateTime(S.editedAt)}</b> y el archivo es del <b>${fmtDateTime(data.editedAt)}</b>.<br><br>
-          Te conviene <b>guardar en OneDrive</b> lo de este dispositivo para que tu computadora también lo tenga.</p>` },
-        { name: 'choice', label: '¿Qué hacemos?', type: 'select', full: true, value: 'push',
-          options: [['push', 'Guardar lo de este dispositivo en OneDrive'], ['pull', 'Usar igual los datos del archivo (se pierden los cambios de acá)']] },
-      ],
-      submitLabel: 'Continuar',
-      onSubmit: (v) => {
-        if (v.choice === 'push') { syncPush(); return; }
-        S = migrate(data);
-        S.settings.lastSync = new Date().toISOString();
-        save(false); render();
-        toast('Datos reemplazados por los del archivo.');
-      },
-    });
-  };
-  r.readAsText(file);
-}
-
-function phoneSyncHTML() {
-  return `<p class="small" style="color:var(--text-2);margin-top:0">En el iPhone la sincronización con OneDrive es en dos pasos (iOS no deja que la app escriba sola en OneDrive).
-    Usá siempre el mismo archivo: <b>${SYNC_FILE}</b>.</p>
-    <div class="sync-steps">
-      <button class="btn" data-action="syncPull">⬇&nbsp; <span><b>Traer de OneDrive</b><small>Antes de usar la app: elegí ${SYNC_FILE} en Archivos → OneDrive</small></span></button>
-      <button class="btn primary" data-action="syncPush">⬆&nbsp; <span><b>Guardar en OneDrive</b><small>Después de cargar cosas: "Guardar en Archivos" → OneDrive → Reemplazar</small></span></button>
-    </div>
-    <p class="hint">Última sincronización: ${fmtDateTime(S.settings.lastSync)}</p>`;
-}
-
-function syncDialog() {
-  openForm({
-    title: 'Sincronizar con OneDrive',
-    fields: [{ type: 'html', html: phoneSyncHTML() }],
-    submitLabel: 'Cerrar',
-    onSubmit: () => {},
-  });
-  $('#dlgForm [data-close]').style.display = 'none';
-  $$('#dlgForm [data-action]').forEach((b) => b.addEventListener('click', (e) => {
-    e.preventDefault();
-    $('#dlg').close();
-    (b.dataset.action === 'syncPush' ? syncPush : syncPull)();
-  }));
-}
-
 function restore(file) {
   const r = new FileReader();
   r.onload = async () => {
@@ -4894,7 +4655,7 @@ function fileSyncHTML() {
   const name = f.handle ? `<b>${esc(f.handle.name)}</b>` : '';
   switch (f.status) {
     case 'unsupported':
-      return phoneSyncHTML();
+      return '';
     case 'ok':
       return `<p class="small" style="margin-top:0"><span class="up">✓</span> Guardando automáticamente en ${name}.<br>
         <span class="muted">Último guardado: ${f.lastSaved ? fmtDateTime(f.lastSaved) : 'pendiente'}</span></p>
@@ -4998,14 +4759,7 @@ const ACTIONS = {
     }
   },
   saveKey: () => { S.settings.finnhubKey = $('#setFinnhub').value.trim(); save(); toast('Clave guardada.'); refreshAll(); },
-  copyPrompt: async () => {
-    try { await navigator.clipboard.writeText(CHAT_PROMPT); toast('Pedido copiado. Pegalo en tu chat.'); }
-    catch (e) { const r = document.createRange(); r.selectNodeContents($('#chatPrompt')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Seleccionado: copialo con Ctrl+C.'); }
-  },
-  importHoldings: () => importHoldings($('#importText').value),
   backup: () => backup(),
-  demoOn: () => { analysisDemo = true; render(); },
-  demoOff: () => { analysisDemo = false; render(); },
   addBudget: () => budgetForm(),
   editBudget: (cat) => budgetForm(cat),
   applyPlan: () => {
@@ -5020,6 +4774,15 @@ const ACTIONS = {
   },
   openChat: () => openChat({ listen: true }),
   cloudConnect: () => cloudConnectForm(),
+  reminderHelp: () => openForm({
+    title: 'Recordatorio diario',
+    fields: [{ type: 'html', html: `<ol style="margin:0;padding-left:18px;color:var(--text-2)">
+      <li>Abrí la app <b>Atajos</b> → <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
+      <li>Elegí <b>21:00</b>, <b>Diariamente</b> y <b>Ejecutar inmediatamente</b>.</li>
+      <li>Agregá <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>` }],
+    submitLabel: 'Listo',
+    onSubmit: () => {},
+  }),
   cloudNow: () => CloudSync.sync({ quiet: false }),
   cloudOff: async () => { if (await confirmDlg('Desactivar sincronización', 'Este dispositivo deja de sincronizarse. Tus datos siguen acá y en GitHub.', 'Desactivar')) CloudSync.disconnect(); },
   lockOn: () => pinForm(() => { if (bioAvailable() && !lockCfg()?.credId) setTimeout(() => toast('Tip: también podés activar Face ID / huella acá abajo.', 4000), 600); }),
@@ -5053,8 +4816,6 @@ const ACTIONS = {
   schedAmount: (id) => schedAmountForm(byId(S.scheduled, id)),
   addGoal: () => goalForm(),
   editGoal: (id) => goalForm(byId(S.goals, id)),
-  syncPush: () => syncPush(),
-  syncPull: () => syncPull(),
   fileLink: () => FileSync.link(),
   fileOpen: () => FileSync.openExisting(),
   fileReconnect: () => FileSync.reconnect(),
@@ -5162,7 +4923,6 @@ function bindEvents() {
   $('#refreshBtn').addEventListener('click', () => refreshAll());
   $('#syncBtn').addEventListener('click', () => {
     if (CloudSync.enabled()) CloudSync.sync({ quiet: false }).then(() => toast(CloudSync.status === 'error' ? CloudSync.error : 'Sincronizado ✓'));
-    else if (FileSync.status === 'unsupported') syncDialog();
     else if (FileSync.status === 'paused') FileSync.reconnect();
     else go('respaldo');
   });
@@ -5259,7 +5019,7 @@ function welcome() {
       { name: 'localCurrency', label: '¿Cuál es tu moneda local?', type: 'select', value: 'BOB', full: true,
         options: CURRENCIES.filter(([c]) => !USD_PEGGED.has(c)).map(([c, n]) => [c, `${c} — ${n}`]) },
       { type: 'html', html: `<div class="small muted">¿Ya usás MyFinance en otro dispositivo?
-        <button type="button" class="btn sm" id="welcomeOpen" style="margin-left:6px">${FileSync.supported ? 'Abrir mi archivo' : 'Traer mis datos de OneDrive'}</button></div>` },
+        <button type="button" class="btn sm" id="welcomeOpen" style="margin-left:6px">Traer mis datos</button></div>` },
     ],
     submitLabel: 'Empezar',
     onSubmit: (v) => {
@@ -5271,7 +5031,7 @@ function welcome() {
       setTimeout(() => toast('Tip: tocá − Gasto o + Ingreso para registrar. En Más → Respaldo podés activar la sincronización automática.', 6000), 2800);
     },
   });
-  $('#welcomeOpen')?.addEventListener('click', () => { $('#dlg').close(); FileSync.supported ? FileSync.openExisting() : syncPull(); });
+  $('#welcomeOpen')?.addEventListener('click', () => { $('#dlg').close(); cloudConnectForm(); });
 }
 
 /* ---------------- Inicio ---------------- */
