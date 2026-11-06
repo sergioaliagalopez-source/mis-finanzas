@@ -1393,7 +1393,6 @@ function viewMovimientos() {
     <div class="sub-actions">
       <button class="link-btn" data-action="addTx" data-id="transferencia">${icon('swap', 14)} Pasar plata entre cuentas</button>
       <button class="link-btn" data-action="addSched">${icon('calendar', 14)} Programar un gasto</button>
-      <button class="link-btn" data-action="receipt">${icon('receipt', 14)} Leer un comprobante</button>
       ${month < currentMonth() ? `<button class="link-btn" data-action="monthClose" data-id="${month}">${icon('calendar', 14)} Cierre del mes</button>` : ''}
     </div>
   </section>
@@ -3661,7 +3660,7 @@ async function readReceipt(file) {
   }
 }
 
-const MONTH_ABBR = { ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6, jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12 };
+const MONTH_ABBR = { ene: 1, jan: 1, feb: 2, mar: 3, abr: 4, apr: 4, may: 5, jun: 6, jul: 7, ago: 8, aug: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12, dec: 12 };
 
 // Saca monto, fecha, hora y concepto del texto de un comprobante (BNB, BCP, Unión, Mercantil, Tigo Money, QR…)
 function parseReceipt(text) {
@@ -3707,6 +3706,8 @@ function parseReceipt(text) {
     let m;
     if (!date && (m = l.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/))) date = iso(+m[1], +m[2], +m[3]);
     if (!date && (m = l.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/))) date = iso(m[3].length === 2 ? 2000 + +m[3] : +m[3], +m[2], +m[1]);
+    // "04/Nov/2026" (Banco Económico) o "04-nov-26"
+    if (!date && (m = l.match(/\b(\d{1,2})[\/\-. ](ene|jan|feb|mar|abr|apr|may|jun|jul|ago|aug|sep|set|oct|nov|dic|dec)[a-z]*\.?[\/\-. ,]+(\d{4}|\d{2})\b/))) date = iso(m[3].length === 2 ? 2000 + +m[3] : +m[3], MONTH_ABBR[m[2]], +m[1]);
     if (!date && (m = l.match(/\b(\d{1,2})(?: de)? (ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)[a-z]*\.?,?(?: de| del)? (\d{4})\b/))) date = iso(+m[3], MONTH_ABBR[m[2]], +m[1]);
     if (!time && (m = l.match(/\b([01]?\d|2[0-3]):([0-5]\d)(?::\d\d)?\s*(a\.? ?m\.?|p\.? ?m\.?)?/))) {
       let h = +m[1];
@@ -3717,21 +3718,25 @@ function parseReceipt(text) {
   }
 
   // Concepto ("Glosa", "Concepto"…) y a quién se pagó
+  // Sin las rayas que algunos bancos ponen al lado del título ("Beneficiario ————")
+  const clean = (s) => s.replace(/[—–_=~<>|•·«»]+/g, ' ').replace(/-{2,}/g, ' ').replace(/^[\s:.\-]+/, '').replace(/\s+/g, ' ').trim();
   const field = (rx) => {
     for (let i = 0; i < low.length; i++) {
       const m = low[i].match(rx);
       if (!m) continue;
-      const rest = lines[i].slice(m.index + m[0].length).replace(/^[\s:.\-]+/, '').trim();
-      const val = rest || lines[i + 1] || '';
-      if (val && !/\d{5,}/.test(val)) return val.slice(0, 60);
+      const rest = clean(lines[i].slice(m.index + m[0].length));
+      const val = /[a-z]{2}/i.test(rest) ? rest : clean(lines[i + 1] || '');
+      if (val && /[a-z]{2}/i.test(val) && !/\d{5,}/.test(val)) return val.slice(0, 60);
     }
     return '';
   };
-  const concept = field(/\b(glosa|concepto|descripcion|motivo|detalle|referencia del pago)\b/);
+  const concept = field(/\b(glosa|concepto|nota|descripcion|motivo|detalle|referencia del pago)\b/);
   const dest = field(/\b(destinatario|beneficiario|nombre del destinatario|a nombre de|para|comercio|pagado a)\b/);
   const cap = (s) => s.toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
   const sentence = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-  const note = concept ? sentence(concept) : dest ? `Pago a ${cap(dest)}` : '';
+  // "Pagos a UPB" queda tal cual; sólo lo que viene TODO EN MAYÚSCULAS se pasa a minúsculas
+  const allCaps = (s) => s === s.toUpperCase();
+  const note = concept ? (allCaps(concept) ? sentence(concept) : concept.charAt(0).toUpperCase() + concept.slice(1)) : dest ? `Pago a ${allCaps(dest) ? cap(dest) : dest}` : '';
   const catText = norm(`${concept} ${dest}`);
   let category = 'Otros gastos';
   for (const [cat, list] of CAT_WORDS) if (list.split(' ').some((w) => w.length > 2 && new RegExp(`\\b${w}\\b`).test(catText))) { category = cat; break; }
@@ -3777,10 +3782,10 @@ function txListHTML(list) {
 const sortTx = (a, b) => `${b.date}${b.time || ''}${b.created || ''}`.localeCompare(`${a.date}${a.time || ''}${a.created || ''}`);
 
 const quickActionsHTML = () => `<div class="quick-actions">
-  <button class="qa out" data-action="quick" data-id="gasto">${icon('minus', 20)}<span>Gasto</span></button>
-  <button class="qa in" data-action="quick" data-id="ingreso">${icon('plus', 20)}<span>Ingreso</span></button>
-  <button class="qa mic" data-action="receipt" aria-label="Leer un comprobante">${icon('receipt', 20)}</button>
-  <button class="qa mic" data-action="openChat" aria-label="Registrar hablando">${icon('mic', 20)}</button>
+  <button class="qa out" data-action="quick" data-id="gasto">${icon('minus', 22)}<span>Gasto</span></button>
+  <button class="qa in" data-action="quick" data-id="ingreso">${icon('plus', 22)}<span>Ingreso</span></button>
+  <button class="qa mic" data-action="receipt" aria-label="Leer un comprobante">${icon('receipt', 22)}<span>Recibo</span></button>
+  <button class="qa mic" data-action="openChat" aria-label="Registrar hablando">${icon('mic', 22)}<span>Hablar</span></button>
 </div>`;
 
 function monthSummaryHTML(month) {
@@ -4075,19 +4080,42 @@ function render() {
   $('#moreBtn').classList.toggle('active', MORE_VIEWS.includes(v));
   $('#lastRefresh').innerHTML = footHTML();
   $('#tip').hidden = true;
+  fillSheet(); // si hay una hoja abierta (ej. Fijos), se actualiza también
 }
 
 // Los gráficos se dibujan después de insertar el HTML (necesitan el ancho real)
-function drawCharts() {
-  const v = S.settings.view;
+function drawCharts(v = S.settings.view) {
   if (v === 'resumen') drawLine($('#nwChart'), S.history);
   if (v === 'analisis' && lastAnalysis) drawBars($('#barsChart'), lastAnalysis.per);
   if (v === 'analisis' && lastMonthly) drawMonthly($('#monthlyChart'), lastMonthly);
   if (v === 'metas' && lastProjection) drawProjection($('#projChart'), lastProjection);
 }
 
+/* Hoja deslizable: una sección (Fijos, Programados, Metas…) se abre encima de donde estás,
+   sin irte a "Más". Se cierra deslizándola hacia abajo o con la X. */
+let sheetView = null;
+function openSheet(view) {
+  if (!VIEW_FN[view]) return;
+  closeMore();
+  sheetView = view;
+  const d = $('#sheetDlg');
+  if (!d.open) d.showModal();
+  fillSheet();
+  $('#sheet').scrollTop = 0;
+}
+function fillSheet() {
+  const d = $('#sheetDlg');
+  if (!sheetView || !d?.open) return;
+  const sh = $('#sheet'), y = sh.scrollTop;
+  sh.innerHTML = `<div class="sheet-head"><h2>${VIEWS[sheetView]}</h2>
+    <button type="button" class="q-icon" data-sheet-close aria-label="Cerrar">${icon('x', 18)}</button></div>${VIEW_FN[sheetView]()}`;
+  sh.scrollTop = y;
+  drawCharts(sheetView);
+}
+
 function go(view, anchor) {
   closeMore();
+  if ($('#sheetDlg')?.open) $('#sheetDlg').close();
   $('#content').style.minHeight = '';
   S.settings.view = VIEW_ALIAS[view] || view;
   save(false);
@@ -4705,7 +4733,8 @@ function updateFileStatusUI() {
 const byId = (arr, id) => arr.find((x) => x.id === id);
 
 const ACTIONS = {
-  go: (id, el) => go(id, el.dataset.anchor),
+  // Un enlace a una sección de "Más" (Fijos, Programados, Metas…) la abre en una hoja, sin cambiar de pestaña
+  go: (id, el) => (MORE_VIEWS.includes(id) && !el.dataset.anchor ? openSheet(id) : go(id, el.dataset.anchor)),
   addHolding: () => holdingForm(),
   editHolding: (id) => holdingForm(byId(S.holdings, id)),
   trade: (id) => tradeForm(byId(S.holdings, id)),
@@ -4888,12 +4917,11 @@ function bindEvents() {
   // Con una ventana abierta, el fondo no se desliza (respaldo para iPhone sin :has)
   new MutationObserver(() => document.documentElement.classList.toggle('dlg-open', $$('dialog').some((d) => d.open)))
     .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] });
-  // La hoja de registro rápido se cierra deslizándola hacia abajo, como en las apps del iPhone
-  (() => {
-    const dlg = $('#quickDlg');
+  // Las hojas de abajo (registro rápido y secciones) se cierran deslizándolas hacia abajo, como en las apps del iPhone
+  for (const dlg of [$('#quickDlg'), $('#sheetDlg')]) {
     let y0 = null, dy = 0;
     dlg.addEventListener('touchstart', (e) => {
-      const sc = e.target.closest('.quick');
+      const sc = e.target.closest('.quick, .sheet');
       y0 = (sc && sc.scrollTop > 0) || e.target.closest('input, textarea, select') ? null : e.touches[0].clientY;
       dy = 0; dlg.style.transition = 'none';
     }, { passive: true });
@@ -4915,7 +4943,8 @@ function bindEvents() {
     };
     dlg.addEventListener('touchend', end);
     dlg.addEventListener('touchcancel', end);
-  })();
+  }
+  $('#sheetDlg').addEventListener('close', () => { sheetView = null; });
   // iOS ignora user-scalable=no en Safari: se bloquea el pellizco a mano
   ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
   $$('.seg button').forEach((b) => b.addEventListener('click', () => { S.settings.displayCurrency = b.dataset.cur; save(false); render(); }));
@@ -4929,8 +4958,10 @@ function bindEvents() {
   // En pantallas táctiles el tooltip no tiene "mouseleave": se oculta al desplazar
   window.addEventListener('scroll', () => { const tip = $('#tip'); tip.dataset.owner = ''; tip.hidden = true; }, { passive: true });
 
-  const content = $('#content');
+  // Lo mismo para la pantalla y para la hoja de una sección
+  for (const content of [$('#content'), $('#sheet')]) {
   content.addEventListener('click', (e) => {
+    if (e.target.closest('[data-sheet-close]')) return $('#sheetDlg').close();
     const el = e.target.closest('[data-action]');
     if (!el) return;
     e.preventDefault();
@@ -4973,6 +5004,7 @@ function bindEvents() {
     }
     if (t.id === 'restoreFile' && t.files[0]) restore(t.files[0]);
   });
+  }
 
   let rz;
   window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => {
