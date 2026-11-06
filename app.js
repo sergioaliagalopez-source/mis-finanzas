@@ -64,6 +64,7 @@ const ICONS = {
   bus: '<rect x="4" y="3" width="16" height="15" rx="3"/><path d="M4 11h16M8 18v3M16 18v3"/><circle cx="8" cy="14.5" r=".8"/><circle cx="16" cy="14.5" r=".8"/>',
   bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
   heart: '<path d="M12 20s-7.5-4.6-9.3-9.2A5 5 0 0 1 12 6a5 5 0 0 1 9.3 4.8C19.5 15.4 12 20 12 20z"/>',
+  paw: '<circle cx="5.5" cy="10" r="2"/><circle cx="9.5" cy="5.5" r="2"/><circle cx="14.5" cy="5.5" r="2"/><circle cx="18.5" cy="10" r="2"/><path d="M12 11c-3 0-6 4.5-6 7 0 1.7 1.3 2.5 3 2.5 1.2 0 2-.6 3-.6s1.8.6 3 .6c1.7 0 3-.8 3-2.5 0-2.5-3-7-6-7z"/>',
   dumbbell: '<path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/>',
   book: '<path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H20v15H5.5A1.5 1.5 0 0 0 4 19.5z"/><path d="M4 19.5A1.5 1.5 0 0 0 5.5 21H20"/>',
   ticket: '<path d="M3 8.5V6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v2.5a2.5 2.5 0 0 0 0 5V18a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-2.5a2.5 2.5 0 0 0 0-5z"/><path d="M14 5v14" stroke-dasharray="2 2"/>',
@@ -116,7 +117,7 @@ const ACCOUNT_TYPES = {
   debito: { label: 'Tarjeta de débito', icon: 'card' },
   credito: { label: 'Tarjeta de crédito', icon: 'card' },
 };
-const accIcon = (a) => icon(ACCOUNT_TYPES[a?.type]?.icon || 'wallet', 18);
+const accIcon = (a) => icon(a?.id === 'family' ? 'users' : ACCOUNT_TYPES[a?.type]?.icon || 'wallet', 18);
 
 const ASSET_TYPES = { etf: 'ETF', accion: 'Acción', cripto: 'Cripto', oro: 'Oro', otro: 'Otro' };
 
@@ -139,7 +140,7 @@ const CG_IDS = {
 };
 
 const CAT_GASTO = ['Supermercado', 'Comida y salidas', 'Transporte', 'Vivienda / alquiler', 'Servicios', 'Salud', 'Gimnasio / deporte', 'Educación',
-  'Ocio', 'Compras', 'Suscripciones', 'Viajes', 'Impuestos', 'Pago de tarjeta (intereses)', 'Otros gastos'];
+  'Ocio', 'Compras', 'Suscripciones', 'Viajes', 'Impuestos', 'Pago de tarjeta (intereses)', 'Mascotas', 'Otros gastos'];
 const CAT_INGRESO = ['Sueldo', 'Mesada / familia', 'Freelance', 'Dividendos', 'Intereses', 'Venta de algo', 'Regalo', 'Otros ingresos'];
 
 const ARS_TYPES = [['oficial', 'Oficial'], ['bolsa', 'MEP'], ['blue', 'Blue'], ['contadoconliqui', 'CCL'], ['cripto', 'Cripto'], ['tarjeta', 'Tarjeta']];
@@ -362,7 +363,11 @@ function totals() {
 }
 
 // Compras/ventas de inversiones y préstamos mueven plata pero no son gasto ni ingreso
-const nonFlow = (t) => !!(t.investment || t.loan);
+const nonFlow = (t) => !!(t.investment || t.loan || t.familyPaid);
+// Gastos que pagó tu familia directamente por vos (ej. la U): no salen de tus cuentas
+const FAMILY_ID = 'family';
+const familyAcc = () => ({ id: FAMILY_ID, name: 'Lo pagó mi familia', type: 'familia', currency: S.settings.localCurrency, balance: 0 });
+const familyPaidIn = (month) => S.transactions.filter((t) => t.familyPaid && t.type === 'gasto' && t.date?.startsWith(month)).reduce((s, t) => s + txUSD(t), 0);
 
 // Lápidas: ids borrados, para que al unir los datos de dos dispositivos no "revivan"
 function tombstone(id) {
@@ -791,6 +796,7 @@ function viewResumen() {
   </section>
 
   ${spendCardHTML()}
+  ${runwayHTML()}
 
   ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="movimientos" data-anchor="programados" class="small">Ver todo</a></div>
     <div class="list">${pend.map((it) => `<div class="list-row act">
@@ -955,6 +961,8 @@ const daysInMonth = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDat
 const repeats = (r) => r.active !== false;
 // Ingresos fijos que elegiste no contar (ej. una mesada que no sabés si llega) quedan fuera de "Hoy podés gastar"
 const countsInPlan = (r) => r.countInPlan !== false;
+// Ingreso seguro (llega sí o sí, ej. el sueldo) o "a veces" (la mesada, trabajos sueltos). Si no lo elegiste: la familia cuenta como "a veces"
+const isSure = (r) => r.sure ?? !/mesada|familia|papa|mama/i.test(norm(`${r.category} ${r.name}`));
 const recurringTx = (r, month) => S.transactions.find((t) => t.recurringId === r.id && t.date?.startsWith(month));
 
 // Monto de la regla convertido a la moneda de la cuenta donde entra / sale
@@ -1025,7 +1033,7 @@ function recurringRowHTML(r, month) {
   return `<div class="list-row act rec-row ${on ? '' : 'off'}">
     <label class="rec-check" title="Se repite todos los meses"><input type="checkbox" data-repeat="${r.id}" ${on ? 'checked' : ''}><span></span></label>
     <div class="grow"><div class="name">${esc(r.name)}</div>
-      <div class="meta">${on ? (r.day ? `Todos los ${r.day}` : 'Cada mes, sin día fijo') : 'No se repite'}${r.type === 'ingreso' && on && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
+      <div class="meta">${on ? (r.day ? `Todos los ${r.day}` : 'Cada mes, sin día fijo') : 'No se repite'}${r.type === 'ingreso' ? (isSure(r) ? ' · seguro' : ' · a veces') : ''}${r.type === 'ingreso' && on && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
     <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}</div></div>
     ${status}
     <button class="btn sm ghost icon-only" data-action="editRecurring" data-id="${r.id}" title="Editar">${icon('settings', 16)}</button>
@@ -1069,6 +1077,7 @@ function recurringForm(r, preset = null) {
       { name: 'day', label: 'Día del mes', value: r.day || '', placeholder: 'Vacío = sin día fijo', hint: 'Con día: se registra solo. Sin día: te queda pendiente para marcar cuando pase.' },
       { name: 'active', label: 'Se repite todos los meses', type: 'checkbox', value: repeats(r), full: true, hint: 'Desmarcalo si no es todos los meses: queda guardado para registrarlo cuando pase.' },
       { name: 'countInPlan', label: 'Contarlo en "Hoy podés gastar" (apagalo si no sabés si va a llegar)', type: 'checkbox', value: r.countInPlan !== false, full: true, showIf: (v) => v.type === 'ingreso' },
+      { name: 'sure', label: 'Es seguro (llega sí o sí todos los meses, como un sueldo)', type: 'checkbox', value: isSure(r), full: true, showIf: (v) => v.type === 'ingreso' },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este fijo (los movimientos ya registrados quedan)', type: 'checkbox', full: true }]),
     ],
     onSubmit: (v) => {
@@ -1077,7 +1086,7 @@ function recurringForm(r, preset = null) {
       if (day != null && !(Number.isInteger(day) && day >= 1 && day <= 31)) return 'El día tiene que ser un número entero del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
-        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true, active: !!v.active };
+        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true, active: !!v.active, sure: v.type === 'ingreso' ? !!v.sure : undefined };
       // Al crear un fijo o cambiarle el día, sólo se registra solo desde el próximo vencimiento
       // (si el día de este mes ya pasó, ya lo tenés en tu saldo; marcalo a mano si hace falta)
       if (isNew || day !== r.day || (next.active && !repeats(r))) next.startMonth = day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
@@ -1349,6 +1358,7 @@ function viewMovimientos() {
     <div class="sub-actions">
       <button class="link-btn" data-action="addTx" data-id="transferencia">${icon('swap', 14)} Pasar plata entre cuentas</button>
       <button class="link-btn" data-action="addSched">${icon('calendar', 14)} Programar un gasto</button>
+      <button class="link-btn" data-action="receipt">${icon('receipt', 14)} Leer un comprobante</button>
       ${month < currentMonth() ? `<button class="link-btn" data-action="monthClose" data-id="${month}">${icon('calendar', 14)} Cierre del mes</button>` : ''}
     </div>
   </section>
@@ -1508,6 +1518,10 @@ function addMonths(ym, k) {
 }
 const monthLabel = (ym, month = 'short') => new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('es-AR', { month }).replace('.', '');
 
+// "Gasto hormiga": hasta Bs 20 (o unos US$ 3 en otras monedas)
+const antLimitLocal = () => (S.settings.localCurrency === 'BOB' ? 20 : Math.round(fromUSD(3, S.settings.localCurrency)));
+const antLimitUSD = () => toUSD(antLimitLocal(), S.settings.localCurrency) || 3;
+
 function analyze(n, txs) {
   const end = currentMonth();
   const months = Array.from({ length: n }, (_, i) => addMonths(end, i - n + 1));
@@ -1526,7 +1540,7 @@ function analyze(n, txs) {
   for (const t of txs) {
     if (t.type !== 'gasto' || nonFlow(t) || !months.some((m) => t.date?.startsWith(m))) continue;
     const usd = txUSD(t);
-    if (usd > 0 && usd <= 10) { small.count++; small.total += usd; }
+    if (usd > 0 && usd <= antLimitUSD()) { small.count++; small.total += usd; }
   }
   return {
     n, months, per, k, prevK, income, expense, saving: income - expense,
@@ -1598,7 +1612,7 @@ function insightsFor(a) {
   }
   const interest = a.byCat.find(([c]) => c === INTEREST)?.[1] || 0;
   if (interest > 0) out.push(['💳', 'Estás pagando intereses de tarjeta', `${fm(interest)} por mes (${fm(interest * 12)} al año). Pagar el total del resumen es el ahorro más fácil de todos.`]);
-  if (a.small.count >= 8) out.push(['🐜', `Hacés unos ${Math.round(a.small.count)} gastos chicos por mes`, `Compras de menos de US$ 10 que suman ${fm(a.small.total)} por mes (${fm(a.small.total * 12)} al año). Los "gastos hormiga" son los más fáciles de recortar.`]);
+  if (a.small.count >= 8) out.push(['🐜', `Hacés unos ${Math.round(a.small.count)} gastos chicos por mes`, `Compras de hasta ${fmtIn(antLimitLocal(), S.settings.localCurrency)} que suman ${fm(a.small.total)} por mes (${fm(a.small.total * 12)} al año). Los "gastos hormiga" son los más fáciles de recortar.`]);
   if (!analysisDemo && a.expense > 0) {
     const t = totals();
     const cover = t.liquid / a.expense;
@@ -2081,6 +2095,7 @@ function viewPlan() {
   return `
   ${spendCardHTML()}
   ${viewMetas()}
+  ${incomeSafetyHTML()}
   <details class="more-box" ${S.settings.planAnalysisOpen ? 'open' : ''} data-pref="planAnalysisOpen">
     <summary>En qué gastás y cómo ahorrar más</summary>
     <div class="more-inner">${viewAnalisis()}</div>
@@ -2118,13 +2133,15 @@ function goalForm(g) {
 const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
 const CAT_WORDS = [
+  // Mascotas primero: "comida del perro" es de la mascota, no tuya
+  ['Mascotas', 'perro perrito perrita gato gatito mascota mascotas veterinaria veterinario croquetas dog chow pedigree balanceado petshop'],
   ['Comida y salidas', 'almuerzo almorce cena cene desayuno desayune comida comi restaurante resto cafe cafecito pizza hamburguesa saltena saltenas tucumana pollo pollito delivery pedidosya snack helado bebida cerveza chela trago bar salchipapa api anticucho sandwich empanada gaseosa coca refresco jugo merienda'],
   ['Supermercado', 'super supermercado mercado hipermaxi fidalga ketal icnorte viveres verdura verduras fruta frutas abarrotes despensa'],
   ['Transporte', 'taxi uber yango indriver micro trufi minibus bus colectivo pasaje pasajes gasolina combustible nafta diesel teleferico parqueo estacionamiento peaje'],
   ['Servicios', 'luz agua internet wifi celular credito megas recarga telefono gas cable entel tigo viva'],
   ['Salud', 'farmacia medico doctor remedio medicamento pastillas dentista consulta clinica analisis'],
   ['Gimnasio / deporte', 'gym gimnasio deporte futbol cancha crossfit natacion piscina proteina'],
-  ['Educación', 'universidad uni facultad curso libro libros fotocopias fotocopia colegio matricula clase clases udemy'],
+  ['Educación', 'universidad uni facultad curso libro libros fotocopias fotocopia colegio matricula clase clases udemy mensualidad pension upb ucb umsa emi unifranz semestre'],
   ['Suscripciones', 'netflix spotify youtube premium icloud chatgpt claude suscripcion disney hbo prime apple music'],
   ['Ocio', 'cine juego juegos fiesta salida entrada concierto boliche videojuego steam playstation'],
   ['Compras', 'ropa zapatos zapatillas polera pantalon compre tienda amazon temu shein regalo audifonos'],
@@ -3396,7 +3413,7 @@ function loansHTML() {
 const CAT_ICON = {
   'Supermercado': 'cart', 'Comida y salidas': 'food', 'Transporte': 'bus', 'Vivienda / alquiler': 'home', 'Servicios': 'bolt',
   'Salud': 'heart', 'Gimnasio / deporte': 'dumbbell', 'Educación': 'book', 'Ocio': 'ticket', 'Compras': 'bag',
-  'Suscripciones': 'play', 'Viajes': 'plane', 'Impuestos': 'receipt', 'Pago de tarjeta (intereses)': 'card', 'Otros gastos': 'more',
+  'Suscripciones': 'play', 'Viajes': 'plane', 'Impuestos': 'receipt', 'Pago de tarjeta (intereses)': 'card', 'Mascotas': 'paw', 'Otros gastos': 'more',
   'Sueldo': 'briefcase', 'Mesada / familia': 'users', 'Freelance': 'laptop', 'Dividendos': 'trending', 'Intereses': 'percent',
   'Venta de algo': 'tag', 'Regalo': 'gift', 'Otros ingresos': 'plus',
   'Compra de inversión': 'trending', 'Venta de inversión': 'trending',
@@ -3439,11 +3456,12 @@ function whenLabel(date, time) {
   return `${d}${time ? `, ${time}` : ''}`;
 }
 
-function quickEntry(type = 'gasto', t = null) {
+function quickEntry(type = 'gasto', t = null, pre = null) {
   if (!S.accounts.length) return toast('Primero agregá una cuenta en Cuentas.');
   const st = {
     type: t?.type || type, amount: t ? t.amount : '', category: t?.category || '', note: t?.note && t.note !== t.category ? t.note : '',
-    accountId: t?.accountId || lastAccountFor(t?.type || type), date: t?.date || todayISO(), time: t?.time || nowTime(), showAcc: false, showWhen: false,
+    accountId: t?.familyPaid ? FAMILY_ID : t?.accountId || lastAccountFor(t?.type || type), date: t?.date || todayISO(), time: t?.time || nowTime(), showAcc: false, showWhen: false,
+    ...(pre || {}),
   };
   const dlg = $('#quickDlg');
   const read = () => {
@@ -3454,29 +3472,32 @@ function quickEntry(type = 'gasto', t = null) {
     if (h) st.time = h.value;
   };
   const paint = (focus) => {
-    const acc = S.accounts.find((a) => a.id === st.accountId);
+    const acc = st.accountId === FAMILY_ID ? familyAcc() : S.accounts.find((a) => a.id === st.accountId);
     const accs = S.accounts.filter((a) => st.type === 'gasto' || a.type !== 'credito');
     const out = st.type === 'gasto';
     dlg.innerHTML = `<form class="quick ${st.type}" novalidate>
       <div class="q-top">
         <div class="q-seg"><button type="button" data-q-type="gasto" class="${out ? 'on' : ''}">${icon('minus', 16)} Gasto</button>
           <button type="button" data-q-type="ingreso" class="${out ? '' : 'on'}">${icon('plus', 16)} Ingreso</button></div>
+        ${t ? '' : `<button type="button" class="q-icon" data-q="receipt" aria-label="Leer un comprobante">${icon('receipt', 20)}</button>`}
         <button type="button" class="q-icon" data-q="mic" aria-label="Dictar">${icon('mic', 20)}</button>
         <button type="button" class="q-icon" data-q="close" aria-label="Cerrar">${icon('x', 20)}</button>
       </div>
       
-      ${t ? '' : favChipsHTML(st.type, 'data-q-fav')}
+      ${st.receipt ? `<div class="q-receipt ${st.receipt.found ? '' : 'warn'}">${icon('receipt', 16)}<span>${st.receipt.found ? 'Leí el comprobante: revisá que el monto, la fecha y quién pagó estén bien.' : 'No encontré el monto en el comprobante: escribilo vos.'}</span></div>
+        <details class="q-ocr"><summary>Ver el texto que leí</summary><pre>${esc(st.receipt.text.slice(0, 1500) || '(nada)')}</pre></details>` : t ? '' : favChipsHTML(st.type, 'data-q-fav')}
       <label class="q-amount"><span class="q-sign">${out ? '−' : '+'}</span><span class="q-cur">${curLabel(acc?.currency || '')}</span>
         <input id="qAmount" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(st.amount === '' ? '' : numInput(st.amount))}"></label>
       <div class="q-cats">${catsByUse(st.type).map((c) => `<button type="button" class="q-cat ${c === st.category ? 'on' : ''}" data-q-cat="${esc(c)}">
         <span class="q-cat-ico">${catIcon(c, 20)}</span><span class="q-cat-name">${esc(shortCat(c))}</span></button>`).join('')}</div>
       <input type="text" id="qNote" class="q-note" placeholder="Detalle (opcional): ej. almuerzo con amigos" value="${esc(st.note)}" autocomplete="off">
       <div class="q-chips">
-        <button type="button" class="q-chip" data-q="acc">${accIcon(acc)}<span>${out ? 'Sale de' : 'Entra a'} <b>${esc(acc?.name || '—')}</b></span>${icon('chevron', 14)}</button>
+        <button type="button" class="q-chip" data-q="acc">${accIcon(acc)}<span>${acc?.id === FAMILY_ID ? 'Lo pagó <b>tu familia</b>' : `${out ? 'Sale de' : 'Entra a'} <b>${esc(acc?.name || '—')}</b>`}</span>${icon('chevron', 14)}</button>
         <button type="button" class="q-chip" data-q="when">${icon('calendar', 16)}<span>${whenLabel(st.date, st.time)}</span>${icon('chevron', 14)}</button>
       </div>
       <div class="q-accs" ${st.showAcc ? '' : 'hidden'}>${accs.map((a) => `<button type="button" class="q-acc ${a.id === st.accountId ? 'on' : ''}" data-q-acc="${a.id}">
-        ${accIcon(a)}<span>${esc(a.name)}<small>${fmtIn(a.balance, a.currency)}${a.type === 'credito' ? ' de deuda' : ''}</small></span></button>`).join('')}</div>
+        ${accIcon(a)}<span>${esc(a.name)}<small>${fmtIn(a.balance, a.currency)}${a.type === 'credito' ? ' de deuda' : ''}</small></span></button>`).join('')}
+        ${out ? `<button type="button" class="q-acc fam ${st.accountId === FAMILY_ID ? 'on' : ''}" data-q-acc="${FAMILY_ID}">${icon('users', 18)}<span>Lo pagó mi familia<small>No sale de tus cuentas (ej. la U, la comida del perro)</small></span></button>` : ''}</div>
       <div class="q-when" ${st.showWhen ? '' : 'hidden'}><input type="date" id="qDate" value="${st.date}"><input type="time" id="qTime" value="${st.time}"></div>
       <p class="form-error" hidden></p>
       <button type="submit" class="q-save">${t ? 'Guardar cambios' : out ? 'Guardar gasto' : 'Guardar ingreso'}</button>
@@ -3496,7 +3517,7 @@ function quickEntry(type = 'gasto', t = null) {
       st.type = b.dataset.qType;
       st.category = '';
       const acc = S.accounts.find((a) => a.id === st.accountId);
-      if (st.type === 'ingreso' && acc?.type === 'credito') st.accountId = lastAccountFor('ingreso');
+      if (st.type === 'ingreso' && (acc?.type === 'credito' || st.accountId === FAMILY_ID)) st.accountId = lastAccountFor('ingreso');
       return paint(true);
     }
     if (b.dataset.qCat) {
@@ -3514,6 +3535,7 @@ function quickEntry(type = 'gasto', t = null) {
     const q = b.dataset.q;
     if (q === 'close') dlg.close();
     if (q === 'mic') { dlg.close(); openChat({ listen: true }); }
+    if (q === 'receipt') { dlg.close(); pickReceipt(); }
     if (q === 'acc') { st.showAcc = !st.showAcc; st.showWhen = false; paint(false); }
     if (q === 'when') { st.showWhen = !st.showWhen; st.showAcc = false; paint(false); }
     if (q === 'del') { dlg.close(); ACTIONS.delTx(t.id); }
@@ -3523,11 +3545,14 @@ function quickEntry(type = 'gasto', t = null) {
     read();
     const amount = parseNum(st.amount);
     if (!(amount > 0)) return err('Escribí el monto.');
-    const acc = S.accounts.find((a) => a.id === st.accountId);
+    const fam = st.type === 'gasto' && st.accountId === FAMILY_ID;
+    const acc = fam ? familyAcc() : S.accounts.find((a) => a.id === st.accountId);
     if (!acc) return err('Elegí la cuenta.');
     const category = st.category || (st.type === 'ingreso' ? 'Otros ingresos' : 'Otros gastos');
-    const next = { type: st.type, amount: round2(amount), category, note: st.note || category, accountId: acc.id, date: st.date || todayISO(), time: st.time || '' };
-    S.settings.lastAccount = { ...(S.settings.lastAccount || {}), [st.type]: acc.id };
+    const next = { type: st.type, amount: round2(amount), category, note: st.note || category, accountId: fam ? '' : acc.id, date: st.date || todayISO(), time: st.time || '',
+      familyPaid: fam || undefined, currency: fam ? acc.currency : undefined };
+    if (st.receipt) S.settings.receiptPayer = st.accountId; // la próxima vez, el mismo "quién pagó"
+    if (!fam) S.settings.lastAccount = { ...(S.settings.lastAccount || {}), [st.type]: acc.id };
     if (t) {
       const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
       if (r && next.date.slice(0, 7) !== t.date.slice(0, 7)) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
@@ -3541,10 +3566,171 @@ function quickEntry(type = 'gasto', t = null) {
     }
     dlg.close();
     snapshot(); save(); render();
-    toast(t ? 'Cambios guardados ✓' : `${st.type === 'gasto' ? 'Gasto' : 'Ingreso'} guardado ✓ · ${acc.name}: ${fmtIn(acc.balance, acc.currency)}`);
+    toast(t ? 'Cambios guardados ✓' : fam ? 'Guardado ✓ · lo pagó tu familia (no sale de tus cuentas)' : `${st.type === 'gasto' ? 'Gasto' : 'Ingreso'} guardado ✓ · ${acc.name}: ${fmtIn(acc.balance, acc.currency)}`);
   };
   paint(true);
   dlg.showModal();
+}
+
+/* ---------------- Leer un comprobante desde una foto ----------------
+   Ej. el comprobante que te manda tu papá cuando paga la U. Se lee en el teléfono con Tesseract
+   (gratis, de código abierto): la imagen no se sube a ningún lado. La primera vez descarga el lector (~6 MB). */
+
+const OCR_LIB = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const OCR_LANG = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/spa@1.0.0/4.0.0_best_int';
+let ocrLoad = null;
+const loadOcr = () => ocrLoad || (ocrLoad = new Promise((res, rej) => {
+  const s = document.createElement('script');
+  s.src = OCR_LIB;
+  s.onload = () => res(window.Tesseract);
+  s.onerror = () => { ocrLoad = null; s.remove(); rej(new Error('No se pudo descargar el lector. Revisá tu conexión.')); };
+  document.head.append(s);
+}));
+
+function pickReceipt() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*'; inp.hidden = true;
+  inp.onchange = () => { const f = inp.files?.[0]; inp.remove(); if (f) readReceipt(f); };
+  document.body.append(inp);
+  inp.click();
+}
+
+// Fotos grandes (4000 px) tardan mucho: se achican a 2000 px
+async function shrinkImage(file, max = 2000) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return c;
+}
+
+const receiptPayer = () => (S.settings.receiptPayer === FAMILY_ID || S.accounts.some((a) => a.id === S.settings.receiptPayer) ? S.settings.receiptPayer : FAMILY_ID);
+
+async function readReceipt(file) {
+  const dlg = $('#dlg'), form = $('#dlgForm');
+  let cancelled = false, worker = null;
+  form.innerHTML = `<h2>Leyendo el comprobante…</h2>
+    <p class="small muted" id="ocrMsg" style="margin:0">Preparando…</p>
+    <div class="meter"><div id="ocrBar" class="good" style="width:3%"></div></div>
+    <p class="small muted" style="margin:0">${icon('lock', 13)} Se lee en tu teléfono: la imagen no se sube a ningún lado.</p>
+    <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Cancelar</button></div>`;
+  form.onsubmit = (e) => e.preventDefault();
+  form.oninput = null; form.onchange = null; form.onclick = null;
+  dlg.onclose = null;
+  form.querySelector('[data-close]').onclick = () => { cancelled = true; worker?.terminate(); dlg.close(); };
+  dlg.showModal();
+  const msg = (t, p) => {
+    const m = $('#ocrMsg'); if (m) m.textContent = t;
+    const b = $('#ocrBar'); if (b && p != null) b.style.width = `${Math.max(3, Math.round(p * 100))}%`;
+  };
+  try {
+    msg(S.settings.ocrReady ? 'Abriendo el lector…' : 'Descargando el lector (sólo la primera vez, unos 6 MB)…', 0.05);
+    const T = await loadOcr();
+    if (cancelled) return;
+    const img = await shrinkImage(file).catch(() => file);
+    worker = await T.createWorker('spa', 1, {
+      langPath: OCR_LANG,
+      logger: (m) => {
+        if (m.status === 'recognizing text') msg('Leyendo el texto…', 0.35 + (m.progress || 0) * 0.65);
+        else msg('Preparando el lector…', 0.08 + (m.progress || 0) * 0.25);
+      },
+    });
+    if (cancelled) return;
+    const { data } = await worker.recognize(img);
+    await worker.terminate(); worker = null;
+    if (cancelled) return;
+    if (!S.settings.ocrReady) { S.settings.ocrReady = true; save(false); }
+    const r = parseReceipt(data.text || '');
+    dlg.close();
+    quickEntry('gasto', null, {
+      amount: r.amount ?? '', date: r.date || todayISO(), time: r.time || nowTime(), note: r.note || '', category: r.category,
+      accountId: receiptPayer(), showAcc: true, receipt: { text: (data.text || '').trim(), found: r.amount != null },
+    });
+  } catch (e) {
+    console.warn(e);
+    worker?.terminate();
+    if (cancelled) return;
+    msg(`No pude leer el comprobante: ${e.message || e}`, null);
+    const b = $('#ocrBar'); if (b) b.className = 'critical';
+  }
+}
+
+const MONTH_ABBR = { ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6, jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12 };
+
+// Saca monto, fecha, hora y concepto del texto de un comprobante (BNB, BCP, Unión, Mercantil, Tigo Money, QR…)
+function parseReceipt(text) {
+  const lines = String(text).split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const low = lines.map((l) => norm(l));
+  // Monto: se puntúa cada número según lo que tiene alrededor ("Monto", "Bs", ",00") y se queda el mejor
+  const cands = [];
+  const numRx = /\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?/g;
+  lines.forEach((l, i) => {
+    const n = low[i];
+    const kw = /\b(monto|importe|total|valor|pagado|transferido|debitado|a pagar|pago de)\b/.test(n);
+    const kwPrev = i > 0 && /\b(monto|importe|total|valor)\b[^0-9]*$/.test(low[i - 1]);
+    const cur = /(\bbs\b\.?|\bbob\b|bs\.)/.test(n);
+    const bad = /\b(saldo|comision|cargo|itf|nro|numero|cuenta|codigo|transaccion|operacion|referencia|ci|nit|telefono|celular|tarjeta)\b|n[°º]/.test(n);
+    for (const m of l.matchAll(numRx)) {
+      const raw = m[0];
+      const before = l[m.index - 1] || '', after = l[m.index + raw.length] || '';
+      if (/[\/:\-]/.test(before) || /[\/:\-]/.test(after) || /\d/.test(after)) continue; // fechas, horas
+      if (raw.replace(/\D/g, '').length > 9) continue; // números de cuenta
+      const v = parseNum(raw);
+      if (!(v > 0) || v > 1e6) continue;
+      let score = 0;
+      if (kw) score += 4;
+      if (kwPrev) score += 3;
+      if (cur) score += 3;
+      if (/[.,]\d{2}$/.test(raw)) score += 2;
+      if (bad) score -= 5;
+      cands.push({ v, score });
+    }
+  });
+  cands.sort((a, b) => b.score - a.score || b.v - a.v);
+  const amount = cands[0] && cands[0].score >= 2 ? round2(cands[0].v) : null;
+
+  // Fecha y hora
+  const iso = (y, mo, d) => {
+    if (!(y > 2000 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+    const s = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const t = Date.parse(s + 'T12:00:00');
+    return t && t <= Date.now() + 864e5 && t >= Date.now() - 400 * 864e5 ? s : null;
+  };
+  let date = null, time = null;
+  for (const l of low) {
+    let m;
+    if (!date && (m = l.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/))) date = iso(+m[1], +m[2], +m[3]);
+    if (!date && (m = l.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/))) date = iso(m[3].length === 2 ? 2000 + +m[3] : +m[3], +m[2], +m[1]);
+    if (!date && (m = l.match(/\b(\d{1,2})(?: de)? (ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)[a-z]*\.?,?(?: de| del)? (\d{4})\b/))) date = iso(+m[3], MONTH_ABBR[m[2]], +m[1]);
+    if (!time && (m = l.match(/\b([01]?\d|2[0-3]):([0-5]\d)(?::\d\d)?\s*(a\.? ?m\.?|p\.? ?m\.?)?/))) {
+      let h = +m[1];
+      if (m[3] && /p/.test(m[3]) && h < 12) h += 12;
+      if (m[3] && /a/.test(m[3]) && h === 12) h = 0;
+      time = `${String(h).padStart(2, '0')}:${m[2]}`;
+    }
+  }
+
+  // Concepto ("Glosa", "Concepto"…) y a quién se pagó
+  const field = (rx) => {
+    for (let i = 0; i < low.length; i++) {
+      const m = low[i].match(rx);
+      if (!m) continue;
+      const rest = lines[i].slice(m.index + m[0].length).replace(/^[\s:.\-]+/, '').trim();
+      const val = rest || lines[i + 1] || '';
+      if (val && !/\d{5,}/.test(val)) return val.slice(0, 60);
+    }
+    return '';
+  };
+  const concept = field(/\b(glosa|concepto|descripcion|motivo|detalle|referencia del pago)\b/);
+  const dest = field(/\b(destinatario|beneficiario|nombre del destinatario|a nombre de|para|comercio|pagado a)\b/);
+  const cap = (s) => s.toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+  const sentence = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  const note = concept ? sentence(concept) : dest ? `Pago a ${cap(dest)}` : '';
+  const catText = norm(`${concept} ${dest}`);
+  let category = 'Otros gastos';
+  for (const [cat, list] of CAT_WORDS) if (list.split(' ').some((w) => w.length > 2 && new RegExp(`\\b${w}\\b`).test(catText))) { category = cat; break; }
+  return { amount, date, time, note, category };
 }
 
 /* --- Filas de movimientos (Resumen y Movimientos) --- */
@@ -3557,10 +3743,10 @@ function txRowHTML(t) {
   const ico = t.type === 'transferencia' ? icon('swap', 18) : t.loan ? icon('handshake', 18) : catIcon(t.category);
   const title = t.note || (t.type === 'transferencia' ? 'Transferencia' : t.category);
   const meta = t.type === 'transferencia' ? `${esc(acc?.name || '—')} → ${esc(to?.name || '—')}${t.fxRate ? ` · a ${Number(t.fxRate).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}`
-    : `${esc(shortCat(t.category || ''))} · ${esc(acc?.name || 'cuenta eliminada')}`;
+    : `${esc(shortCat(t.category || ''))} · ${t.familyPaid ? 'Lo pagó tu familia' : esc(acc?.name || 'cuenta eliminada')}`;
   return `<button class="tx-row" data-action="editTx" data-id="${t.id}">
     <span class="tx-ico ${t.type}">${ico}</span>
-    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ' <span class="tag">fijo</span>' : t.scheduledId ? ' <span class="tag">programado</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
+    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ' <span class="tag">fijo</span>' : t.scheduledId ? ' <span class="tag">programado</span>' : ''}${t.familyPaid ? ' <span class="tag fam">familia</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
     <span class="tx-amt money ${t.type}">${sign}${fmtIn(t.amount, cur)}${t.type === 'transferencia' && t.toAmount && to ? `<small class="tx-to">→ ${fmtIn(t.toAmount, to.currency)}</small>` : ''}</span>
   </button>`;
 }
@@ -3588,17 +3774,20 @@ const sortTx = (a, b) => `${b.date}${b.time || ''}${b.created || ''}`.localeComp
 const quickActionsHTML = () => `<div class="quick-actions">
   <button class="qa out" data-action="quick" data-id="gasto">${icon('minus', 20)}<span>Gasto</span></button>
   <button class="qa in" data-action="quick" data-id="ingreso">${icon('plus', 20)}<span>Ingreso</span></button>
+  <button class="qa mic" data-action="receipt" aria-label="Leer un comprobante">${icon('receipt', 20)}</button>
   <button class="qa mic" data-action="openChat" aria-label="Registrar hablando">${icon('mic', 20)}</button>
 </div>`;
 
 function monthSummaryHTML(month) {
   const ms = monthStats(month);
+  const fam = familyPaidIn(month);
   const left = ms.income - ms.expense;
   return `<div class="month-sum">
     <div><span>Gastaste</span><b class="money">${fmtMoney(ms.expense)}</b></div>
     <div><span>Entró</span><b class="money up">${fmtMoney(ms.income)}</b></div>
     <div><span>${left >= 0 ? 'Te queda' : 'Te pasaste'}</span><b class="money ${left >= 0 ? '' : 'down'}">${fmtMoney(Math.abs(left))}</b></div>
-  </div>`;
+  </div>
+  ${fam > 0 ? `<div class="small muted fam-note">Tu familia pagó <b class="money">${fmtMoney(fam)}</b> por vos: tu mes cuesta en realidad <b class="money">${fmtMoney(ms.expense + fam)}</b>.</div>` : ''}`;
 }
 
 /* ---------------- "Hoy podés gastar" ----------------
@@ -3628,6 +3817,77 @@ function spendPlan() {
   const spent = spentBefore + spentToday;
   // monthLeft < 0 = ya gastaste más de lo que tenías para todo el mes
   return { income, fixed, sched, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
+}
+
+/* ---------------- Colchón e ingreso seguro ---------------- */
+
+// Lo que te cuesta un mes "normal": tus gastos fijos + lo que gastás en promedio en el día a día (USD)
+function monthlyCostUSD() {
+  const P = planNumbers();
+  return P.recOut + P.avgVariable;
+}
+
+// "Si no entra nada más, aguantás X días": tu plata disponible (sin inversiones, menos lo que debés en tarjetas) ÷ lo que gastás por día
+function runway() {
+  const t = totals();
+  const money = Math.max(0, t.liquid - t.debt);
+  const perMonth = monthlyCostUSD();
+  if (!(perMonth > 0) || !hasData()) return null;
+  return { money, perMonth, days: Math.floor(money / (perMonth / 30)) };
+}
+
+function runwayHTML() {
+  const r = runway();
+  if (!r) return '';
+  const cur = S.settings.localCurrency;
+  const L = (usd) => fmtIn(fromUSD(usd, cur), cur);
+  const tone = r.days < 30 ? 'critical' : r.days < 90 ? 'warning' : 'good';
+  const months = r.days / 30;
+  const big = r.days >= 730 ? 'más de 2 años' : r.days >= 60 ? `${fmtNum(months, 1)} meses` : `${r.days} día${r.days === 1 ? '' : 's'}`;
+  return `<section class="card runway">
+    <div class="runway-top"><span class="muted small">Si no entra nada más, aguantás</span>
+      <b class="runway-val ${tone}">${big}</b></div>
+    <div class="meter"><div class="${tone}" style="width:${Math.min(100, (r.days / 180) * 100)}%"></div></div>
+    <div class="small muted" style="margin-top:6px">Con tu plata disponible (<span class="money">${L(r.money)}</span>) y lo que gastás por mes (<span class="money">${L(r.perMonth)}</span>).
+      ${r.days < 90 ? 'Lo ideal es tener para 3 a 6 meses.' : ''}</div>
+  </section>`;
+}
+
+// ¿Qué tan seguro es lo que te entra? ¿Tus fijos caben en el ingreso seguro? ¿Y si se corta uno?
+function incomeSafetyHTML() {
+  const incomes = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso');
+  if (!incomes.length) return '';
+  const cur = S.settings.localCurrency;
+  const L = (usd) => fmtIn(fromUSD(Math.abs(usd), cur), cur);
+  const v = (r) => toUSD(r.amount, r.currency);
+  const sure = incomes.filter(isSure).reduce((s, r) => s + v(r), 0);
+  const maybe = incomes.filter((r) => !isSure(r)).reduce((s, r) => s + v(r), 0);
+  const total = sure + maybe;
+  const fixed = planNumbers().recOut;
+  const cost = monthlyCostUSD();
+  const rw = runway();
+  const line = (ok, text) => `<div class="safe-line ${ok ? 'ok' : 'bad'}">${icon(ok ? 'check' : 'alert', 16)}<span>${text}</span></div>`;
+  const cut = incomes.length > 1 || maybe > 0 ? incomes.map((r) => {
+    const left = total - v(r) - cost;
+    const months = left < 0 && rw ? rw.money / -left : null;
+    return `<div class="calc-row ${left < 0 ? 'over' : ''}"><span>Sin ${esc(r.name)}</span><b class="money">${left >= 0 ? `te sobran ${L(left)}` : `te faltan ${L(left)}`}/mes</b></div>
+      ${months != null ? `<div class="small muted" style="margin:-4px 0 6px">Con tu plata aguantarías ${months >= 24 ? 'más de 2 años' : `${fmtNum(months, 1)} meses`} así.</div>` : ''}`;
+  }).join('') : '';
+  return `<section class="card">
+    <div class="card-head"><h2>¿Qué tan seguro es lo que te entra?</h2></div>
+    <div class="stack">${sure > 0 ? `<div style="flex:${sure};background:var(--good)"></div>` : ''}${maybe > 0 ? `<div style="flex:${maybe};background:#fab219"></div>` : ''}</div>
+    <div class="small" style="display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 10px">
+      <span><span class="swatch" style="background:var(--good)"></span> Seguro <b class="money">${L(sure)}</b></span>
+      <span><span class="swatch" style="background:#fab219"></span> A veces <b class="money">${L(maybe)}</b></span></div>
+    ${fixed > 0 ? line(sure >= fixed, sure >= fixed
+      ? `Tus gastos fijos (<b class="money">${L(fixed)}</b>) caben en tu ingreso seguro: te sobran <b class="money">${L(sure - fixed)}</b>.`
+      : `Tus gastos fijos (<b class="money">${L(fixed)}</b>) no caben en tu ingreso seguro: si lo variable no llega, te faltan <b class="money">${L(fixed - sure)}</b>.`) : ''}
+    ${cost > 0 ? line(sure >= cost, sure >= cost
+      ? `Sólo con lo seguro cubrís lo que gastás por mes (<b class="money">${L(cost)}</b>). Lo que entra "a veces" puede ir directo al ahorro.`
+      : `Lo que gastás por mes (<b class="money">${L(cost)}</b>) depende de lo que entra "a veces": sin eso te faltan <b class="money">${L(cost - sure)}</b>.`) : ''}
+    ${cut ? `<div class="calc-sub" style="margin-top:12px"><b>¿Y si se corta uno?</b></div><div class="calc">${cut}</div>` : ''}
+    <div class="small muted" style="margin-top:8px">Marcá cuáles son seguros en Movimientos → Ingresos y gastos fijos (tocá el engranaje).</div>
+  </section>`;
 }
 
 function spendCardHTML() {
@@ -4638,6 +4898,7 @@ const ACTIONS = {
   editRecurring: (id) => recurringForm(byId(S.recurring, id)),
   payRecurring: (id) => payRecurringForm(byId(S.recurring, id)),
   addSched: () => scheduledForm(),
+  receipt: () => pickReceipt(),
   editSched: (id) => scheduledForm(byId(S.scheduled, id)),
   paySched: (id) => paySchedForm(byId(S.scheduled, id)),
   schedAmount: (id) => schedAmountForm(byId(S.scheduled, id)),
