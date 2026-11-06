@@ -22,9 +22,6 @@
         <button class="nav-btn" data-view="resumen"><span class="nav-ico" data-icon="home"></span><span>Inicio</span></button>
         <button class="nav-btn" data-view="movimientos"><span class="nav-ico" data-icon="list"></span><span>Movimientos</span></button>
         <button class="nav-btn" data-view="plan"><span class="nav-ico" data-icon="target"></span><span>Plan</span></button>
-        <button class="nav-btn nav-secondary" data-view="inversiones"><span class="nav-ico" data-icon="trending"></span><span>Inversiones</span></button>
-        <button class="nav-btn nav-secondary" data-view="cuentas"><span class="nav-ico" data-icon="wallet"></span><span>Cuentas</span></button>
-        <button class="nav-btn nav-secondary" data-view="ajustes"><span class="nav-ico" data-icon="settings"></span><span>Ajustes</span></button>
         <button class="nav-btn nav-more" id="moreBtn"><span class="nav-ico" data-icon="more"></span><span>Más</span></button>
       </nav>
       <div class="sidebar-foot" id="lastRefresh"></div>
@@ -52,7 +49,8 @@
   <dialog id="dlg"><form id="dlgForm" novalidate></form></dialog>
   <dialog id="chatDlg" class="chat-dlg"></dialog>
   <dialog id="quickDlg" class="quick-dlg"></dialog>
-  <div id="moreMenu" class="more-menu" hidden></div>
+  <div id="moreBackdrop" class="more-backdrop" hidden></div>
+  <div id="moreMenu" class="more-menu" role="dialog" aria-label="Más secciones" hidden></div>
   <div id="lockScreen" class="lock" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="tip" class="tip" hidden></div>

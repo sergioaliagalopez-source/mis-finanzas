@@ -27,6 +27,8 @@ const ICONS = {
   list: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/>',
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
   pie: '<path d="M21 12A9 9 0 1 1 12 3"/><path d="M12 3a9 9 0 0 1 9 9h-9z"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
+  dollar: '<path d="M12 2.5v19"/><path d="M17 6.5c-.8-1.3-2.6-2-5-2-2.8 0-4.5 1.3-4.5 3.3 0 4.7 9.5 2.4 9.5 7.4 0 2-1.8 3.3-5 3.3-2.4 0-4.2-.8-5-2.2"/>',
   trending: '<path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
   wallet: '<path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v11a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2z"/><circle cx="16" cy="14.5" r="1.2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
@@ -149,9 +151,32 @@ const BOB_TYPES = [['oficial', 'Oficial del BCB (el que usan los bancos)'], ['bi
 // Blend: el protocolo DeFi (Stellar) donde Meru invierte tus USDC. Fuente: DefiLlama.
 const BLEND_USDC_POOL = 'ecf788e3-d2ef-4fdd-9ece-8a2d96226ddf';
 
-const VIEWS = { resumen: 'Inicio', movimientos: 'Movimientos', plan: 'Plan', inversiones: 'Inversiones', cuentas: 'Cuentas', ajustes: 'Ajustes' };
-// Metas y Análisis ahora viven dentro de Plan
-const VIEW_ALIAS = { metas: 'plan', analisis: 'plan' };
+// Abajo (en el celular) van Inicio, Movimientos y Plan; todo lo demás se abre desde "Más"
+const MORE_GROUPS = [
+  ['Organizar tu mes', [
+    ['fijos', 'Fijos', 'repeat', 'Sueldo, mesada, gym…'],
+    ['programados', 'Programados', 'calendar', 'Turnos, matrícula…'],
+    ['presupuesto', 'Presupuesto', 'pie', 'Topes por categoría'],
+    ['metas', 'Metas', 'target', 'A qué querés llegar'],
+  ]],
+  ['Tu plata', [
+    ['cuentas', 'Cuentas', 'wallet', 'Saldos y tarjetas'],
+    ['prestamos', 'Préstamos', 'handshake', 'Lo que prestás o debés'],
+    ['inversiones', 'Inversiones', 'trending', 'Cripto, oro, acciones'],
+    ['dolar', 'Dólar', 'dollar', 'Tipo de cambio'],
+  ]],
+  ['Entender tus números', [
+    ['analisis', 'Análisis', 'chart', 'En qué gastás'],
+    ['consejos', 'Consejos', 'sparkle', 'Ahorrar y ganar más'],
+  ]],
+  ['La app', [
+    ['respaldo', 'Respaldo', 'sync', 'iPhone, PC y copias'],
+    ['ajustes', 'Ajustes', 'settings', 'Bloqueo y más'],
+  ]],
+];
+const MORE_VIEWS = MORE_GROUPS.flatMap(([, list]) => list.map(([v]) => v));
+const VIEWS = { resumen: 'Inicio', movimientos: 'Movimientos', plan: 'Plan', ...Object.fromEntries(MORE_GROUPS.flatMap(([, list]) => list.map(([v, l]) => [v, l]))) };
+const VIEW_ALIAS = {};
 
 /* ---------------- Estado ---------------- */
 
@@ -265,7 +290,7 @@ function save(edit = true) {
   if (edit) S.editedAt = new Date().toISOString();
   stampEdits(edit ? S.editedAt : null);
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
-  catch (e) { toast('⚠ No se pudo guardar en el navegador. Exportá un respaldo en Ajustes.'); }
+  catch (e) { toast('⚠ No se pudo guardar en el navegador. Hacé una copia en Más → Respaldo.'); }
   FileSync.schedule();
   if (edit) CloudSync.schedule();
 }
@@ -597,7 +622,9 @@ function openForm({ title, fields, submitLabel = 'Guardar', onSubmit, onInput, o
         input = `<select id="${id}" name="${f.name}">${f.options.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
       case 'textarea': input = `<textarea id="${id}" name="${f.name}" placeholder="${esc(f.placeholder || '')}">${esc(val)}</textarea>`; break;
       case 'checkbox':
-        return `<div class="field check ${f.full ? 'full' : ''}" data-field="${f.name}"><input type="checkbox" id="${id}" name="${f.name}" ${val ? 'checked' : ''}><label for="${id}">${esc(f.label)}</label></div>`;
+        // Toda la fila se puede tocar; el texto largo se acomoda al lado de la casilla
+        return `<label class="field check full ${/^(remove|del)/.test(f.name) ? 'danger' : ''}" data-field="${f.name}"><input type="checkbox" id="${id}" name="${f.name}" ${val ? 'checked' : ''}>
+          <span class="check-txt">${esc(f.label)}${f.hint ? `<small>${f.hint}</small>` : ''}</span></label>`;
       case 'number':
         input = `<input type="text" inputmode="decimal" autocomplete="off" id="${id}" name="${f.name}" value="${esc(val === 0 && f.blankZero ? '' : numInput(val))}" placeholder="${esc(f.placeholder || '0')}">`; break;
       case 'stepper':
@@ -779,8 +806,8 @@ function viewResumen() {
   const accounts = [...S.accounts].sort((a, b) => Math.abs(toUSD(b.balance, b.currency)) - Math.abs(toUSD(a.balance, a.currency)));
 
   return `
-  ${missing.length ? `<div class="banner">Falta el tipo de cambio de ${missing.join(', ')}. Tocá <b>Actualizar</b> o cargalo en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>.</div>` : ''}
-  ${stale ? `<div class="banner">Tus datos viven sólo en este dispositivo. <a href="#" data-action="go" data-id="ajustes" data-anchor="respaldo">Activá la sincronización automática</a> para no perderlos.</div>` : ''}
+  ${missing.length ? `<div class="banner">Falta el tipo de cambio de ${missing.join(', ')}. Tocá <b>Actualizar</b> o cargalo en <a href="#" data-action="go" data-id="dolar">Dólar</a>.</div>` : ''}
+  ${stale ? `<div class="banner">Tus datos viven sólo en este dispositivo. <a href="#" data-action="go" data-id="respaldo">Activá la sincronización automática</a> para no perderlos.</div>` : ''}
   ${dueSoonBanner()}
   <section class="card hero">
     <div class="label">Patrimonio hoy${t.lent ? ' <span class="muted small">(sin lo prestado)</span>' : ''}</div>
@@ -798,7 +825,7 @@ function viewResumen() {
   ${spendCardHTML()}
   ${runwayHTML()}
 
-  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="movimientos" data-anchor="programados" class="small">Ver todo</a></div>
+  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="${pend.every((it) => it.schedId) ? 'programados' : 'fijos'}" class="small">Ver todo</a></div>
     <div class="list">${pend.map((it) => `<div class="list-row act">
       <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
       <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Este mes' : `${it.schedId ? `${fmtDay(it.date)} · ` : ''}${daysUntil(it.date)}`}</div></div>
@@ -812,9 +839,7 @@ function viewResumen() {
   <section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Últimos movimientos</h2><a href="#" data-action="go" data-id="movimientos" class="small">Ver todos</a></div>
     ${txListHTML(recent)}</section>
 
-  ${S.goals.length ? (() => { const P = planNumbers(); return `<section class="card"><div class="card-head" style="margin-bottom:8px"><h2>Metas</h2><a href="#" data-action="go" data-id="metas" class="small">Ver plan</a></div>
-    ${S.goals.map((g) => { const M = goalMath(g, P); return `<div class="goal-mini"><div class="budget-top"><b>${esc(g.name)}</b><span class="spacer"></span><b class="small">${fmtNum(M.pct, 0)}%</b></div>
-      <div class="meter"><div style="width:${M.pct}%"></div></div></div>`; }).join('')}</section>`; })() : ''}
+  ${S.goals.length ? `<section class="card"><div class="card-head" style="margin-bottom:6px"><h2>Metas</h2><a href="#" data-action="go" data-id="metas" class="small">Ver metas</a></div>${goalsMiniHTML()}</section>` : ''}
 
   <details class="more-box" ${S.settings.resumenMore ? 'open' : ''} data-pref="resumenMore">
     <summary>Ver más: cuentas, inversiones y gráficos</summary>
@@ -885,7 +910,18 @@ function viewInversiones() {
     <div class="card-head"><h2>Mis posiciones</h2>
       <div class="toolbar"><button class="btn" data-action="go" data-id="ajustes" data-anchor="importar">Importar desde mi chat</button>
       <button class="btn primary" data-action="addHolding">+ Agregar activo</button></div></div>
-    <div class="table-wrap"><table>
+    <div class="list show-sm">${[...S.holdings].sort((a, b) => holdingValue(b) - holdingValue(a)).map((h) => {
+      const v = holdingValue(h), c = holdingCost(h), g = v - c, hasCost = Number(h.avgCost) > 0;
+      return `<div class="hold-row">
+        <div class="hold-top"><div class="grow"><div class="name"><b>${esc(h.symbol)}</b> <span class="muted small">${esc(h.name)}</span></div>
+          <div class="meta">${fmtNum(h.quantity)} · ${esc(ASSET_TYPES[h.assetType] || h.assetType)}${h.platform ? ` · ${esc(h.platform)}` : ''}${h.change24h != null ? ` · <span class="${cls(h.change24h)}">${fmtPct(h.change24h)} hoy</span>` : ''}</div></div>
+          <div class="val"><div class="money"><b>${fmtMoney(v)}</b></div>${hasCost ? `<div class="meta money ${cls(g)}">${fmtMoney(g, { sign: true })} (${fmtPct((g / c) * 100)})</div>` : ''}</div></div>
+        <div class="row-actions" style="justify-content:flex-start">
+          <button class="btn sm" data-action="trade" data-id="${h.id}">Compra/Venta</button>
+          <button class="btn sm ghost" data-action="editHolding" data-id="${h.id}">Editar</button>
+          <button class="btn sm ghost danger" data-action="delHolding" data-id="${h.id}" title="Eliminar">✕</button></div></div>`;
+    }).join('') || '<div class="empty">Todavía no cargaste activos.</div>'}</div>
+    <div class="table-wrap hide-sm"><table>
       <thead><tr><th>Activo</th><th>Tipo</th><th class="num">Cantidad</th><th class="num">Precio (USD)</th><th class="num">24h</th>
       <th class="num">Valor</th><th class="num">Precio prom.</th><th class="num">G/P</th><th class="num">% cartera</th><th></th></tr></thead>
       <tbody>${rows || `<tr><td colspan="10" class="empty">Todavía no cargaste activos.</td></tr>`}
@@ -949,7 +985,7 @@ function viewCuentas() {
     <button class="btn primary" data-action="addAccount">+ Agregar cuenta o tarjeta</button></div>
   ${groups.map(([k, info, list]) => `<div class="acc-group"><h3>${info.label}</h3><div class="acc-grid">${list.map(card).join('')}</div></div>`).join('')
     || '<div class="empty">No tenés cuentas cargadas.</div>'}
-  ${loansHTML()}`;
+  <a href="#" class="link-row" data-action="go" data-id="prestamos">${icon('handshake', 18)}<span>Préstamos</span><span class="spacer"></span>${loanCountLabel()}${icon('right', 18)}</a>`;
 }
 
 /* ---------------- Ingresos y gastos fijos ----------------
@@ -999,7 +1035,7 @@ function processRecurring() {
   }
   if (done.length) {
     snapshot(); save();
-    setTimeout(() => toast(`Registré automáticamente: ${done.join(', ')}.`, 4500), 600);
+    setTimeout(() => toast(`Registré automáticamente: ${[...new Set(done)].map((x) => { const k = done.filter((y) => y === x).length; return k > 1 ? `${x} (×${k})` : x; }).join(', ')}.`, 4500), 600);
   }
 }
 
@@ -1369,25 +1405,40 @@ function viewMovimientos() {
     ${txListHTML(list)}
   </section>
 
-  <details class="more-box" id="fijos" ${pendN || !S.recurring.length ? 'open' : ''}>
-    <summary>Ingresos y gastos fijos${pendN ? ` <span class="tag warn">${pendN} pendiente${pendN > 1 ? 's' : ''}</span>` : ''}</summary>
-    <div class="more-inner"><section class="card"><div class="card-head"><span class="muted small">Sueldo, mesada, gym…: se tienen en cuenta todos los meses</span><button class="btn sm" data-action="addRecurring">+ Fijo</button></div>
-      ${recurringHTML(month)}</section></div>
-  </details>
+  <div class="shortcuts">
+    ${shortcutHTML('fijos', pendN ? `${pendN} pendiente${pendN > 1 ? 's' : ''}` : `${S.recurring.filter(repeats).length} activos`, pendN)}
+    ${shortcutHTML('programados', schedPending().length ? `${schedPending().length} pendiente${schedPending().length > 1 ? 's' : ''}` : 'Ninguno pendiente', schedPending().length)}
+    ${shortcutHTML('analisis', 'Gráficos del mes')}
+    ${shortcutHTML('presupuesto', Object.keys(S.budgets).length ? `${Object.keys(S.budgets).length} topes` : 'Sin topes')}
+  </div>`;
+}
 
-  <details class="more-box" id="programados" ${schedPending().length ? 'open' : ''}>
-    <summary>Gastos programados${schedPending().length ? ` <span class="tag warn">${schedPending().length} pendiente${schedPending().length > 1 ? 's' : ''}</span>` : ''}</summary>
-    <div class="more-inner"><section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: turnos, matrícula, cumpleaños…</span><button class="btn sm" data-action="addSched">+ Programar</button></div>
-      ${schedHTML()}</section></div>
-  </details>
+// Acceso directo a otra sección (ej. desde Movimientos o Plan)
+function shortcutHTML(view, sub, warn = false) {
+  const it = MORE_GROUPS.flatMap(([, l]) => l).find(([v]) => v === view);
+  return `<button class="shortcut" data-action="go" data-id="${view}">
+    <span class="sc-ico">${icon(it[2], 20)}</span>
+    <span class="sc-txt"><b>${it[1]}</b><small class="${warn ? 'warn-text' : ''}">${sub}</small></span></button>`;
+}
 
-  <details class="more-box" ${S.settings.movChartsOpen ? 'open' : ''} data-pref="movChartsOpen">
-    <summary>Gráficos: ${isCur ? 'este mes' : ml} vs. meses anteriores</summary>
-    <div class="more-inner"><div class="grid-2">
-      <section class="card"><div class="card-head"><h2>Gastos por mes</h2></div><div id="monthlyChart" class="line-chart" style="height:200px"></div></section>
-      <section class="card"><div class="card-head"><h2>Por categoría</h2><a href="#" data-action="go" data-id="analisis" class="small">Ver análisis</a></div>${categoryCompareHTML(month)}</section>
-    </div></div>
-  </details>`;
+/* ---------------- Secciones de "Más" ---------------- */
+
+function viewFijos() {
+  return `<section class="card"><div class="card-head"><span class="muted small">Sueldo, mesada, gym…: lo que entra o sale todos los meses</span><button class="btn sm primary" data-action="addRecurring">+ Fijo</button></div>
+    ${recurringHTML(currentMonth())}</section>
+    <p class="muted small" style="margin:0">Tocá el engranaje de un ingreso para marcar si es <b>seguro</b> (llega sí o sí) o "a veces". En <a href="#" data-action="go" data-id="plan">Plan</a> ves qué pasa si se corta uno.</p>`;
+}
+
+function viewProgramados() {
+  return `<section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: turnos, matrícula, cumpleaños…</span><button class="btn sm primary" data-action="addSched">+ Programar</button></div>
+    ${schedHTML()}</section>`;
+}
+
+function viewPrestamos() { return loansHTML(); }
+
+function loanCountLabel() {
+  const n = (S.loans || []).filter((l) => !l.closed && loanRemaining(l) > 0).length;
+  return `<span class="muted small">${n ? `${n} abierto${n > 1 ? 's' : ''}` : 'Ninguno'}</span>`;
 }
 
 const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devolveme SOLO un bloque JSON (sin texto extra) con este formato exacto:
@@ -1400,17 +1451,17 @@ const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devol
 - avgCost: precio promedio de compra por unidad en USD (0 si no lo sabés)
 - platform: dónde lo tengo (Binance, broker, etc.)`;
 
-function viewAjustes() {
+const HR = '<hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">';
+
+function viewRespaldo() {
   const s = S.settings;
-  const used = [...new Set([s.localCurrency, ...S.accounts.map((a) => a.currency)])].filter((c) => !USD_PEGGED.has(c));
-  const hr = '<hr style="border:0;border-top:1px solid var(--grid);margin:18px 0">';
-  const manualBOB = used.includes('BOB') && s.bobRateType === 'manual';
   return `
   <div class="settings-grid">
-    <section class="card" id="respaldo">
+    <section class="card" id="sincro">
       <h2 style="margin-bottom:8px">${icon('sync', 18)} Tus datos en iPhone y PC</h2>
       <div id="cloudSync">${cloudSyncHTML()}</div>
-      ${hr}
+    </section>
+    <section class="card">
       <h2 style="margin-bottom:8px">Copia de seguridad</h2>
       <p class="small" style="color:var(--text-2);margin-top:0">Un archivo con todos tus datos, por si acaso. Última copia: <b>${fmtDateTime(s.lastBackup)}</b></p>
       <div class="toolbar">
@@ -1418,12 +1469,21 @@ function viewAjustes() {
         <label class="btn">Restaurar copia<input type="file" id="restoreFile" accept=".json,application/json" hidden></label>
       </div>
     </section>
-
-    <section class="card" id="bloqueo">
-      <h2 style="margin-bottom:8px">${icon('lock', 18)} Bloqueo con Face ID o PIN</h2>
-      ${lockSettingsHTML()}
+    <section class="card">
+      <h2 style="margin-bottom:8px">Guardado en OneDrive</h2>
+      <div id="fileSync">${fileSyncHTML()}</div>
     </section>
+  </div>`;
+}
 
+// Dólar: cuánto de tu plata depende del tipo de cambio y qué tipo de cambio usa la app
+function viewDolar() {
+  const s = S.settings;
+  const used = [...new Set([s.localCurrency, ...S.accounts.map((a) => a.currency)])].filter((c) => !USD_PEGGED.has(c));
+  const manualBOB = used.includes('BOB') && s.bobRateType === 'manual';
+  return `
+  ${fxCardHTML()}
+  <div class="settings-grid">
     <section class="card">
       <h2 style="margin-bottom:14px">Moneda y tipo de cambio</h2>
       <div class="form-row"><label for="setLocal">Tu moneda</label>
@@ -1436,57 +1496,57 @@ function viewAjustes() {
       ${used.includes('ARS') ? `<div class="form-row"><label for="setArsType">Dólar para convertir pesos argentinos</label>
         <select id="setArsType">${ARS_TYPES.map(([v, l]) => `<option value="${v}" ${v === s.arsRateType ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
     </section>
-  </div>
+    <section class="card">
+      <h2 style="margin-bottom:14px">Todos los tipos de cambio</h2>
+      <label class="check-line"><input type="checkbox" id="setAutoRates" ${s.autoRates ? 'checked' : ''}><span>Actualizar automáticamente</span></label>
+      <div class="hint" style="margin:6px 0 10px">Última actualización: ${fmtDateTime(s.ratesUpdated)}</div>
+      <table class="rates-table"><thead><tr><th>Moneda</th><th class="num">Unidades por 1 USD</th></tr></thead><tbody>
+        ${used.map((c) => `<tr><td>${curLabel(c)}</td><td class="num"><input type="text" inputmode="decimal" data-rate="${c}" value="${numInput(s.rates[c])}"></td></tr>`).join('') || '<tr><td colspan="2" class="muted">Sólo usás dólares.</td></tr>'}
+      </tbody></table>
+    </section>
+  </div>`;
+}
 
-  <details class="more-box" ${s.settingsAdvOpen ? 'open' : ''} data-pref="settingsAdvOpen">
-    <summary>Avanzado</summary>
-    <div class="more-inner"><div class="settings-grid">
-      <section class="card">
-        <h2 style="margin-bottom:8px">${icon('flame', 18)} Recordatorio diario (con el iPhone)</h2>
-        <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0">
-          <li>App <b>Atajos</b> → <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
-          <li><b>21:00</b>, <b>Diariamente</b>, <b>Ejecutar inmediatamente</b>.</li>
-          <li>Acción <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>
-        <p class="small" style="color:var(--text-2);margin-bottom:0">Con la voz: <i>"Oye Siri, abrir MyFinance"</i>.</p>
-      </section>
+function viewAjustes() {
+  const s = S.settings;
+  return `
+  <div class="settings-grid">
+    <section class="card" id="bloqueo">
+      <h2 style="margin-bottom:8px">${icon('lock', 18)} Bloqueo con Face ID o PIN</h2>
+      ${lockSettingsHTML()}
+    </section>
 
-      <section class="card">
-        <h2 style="margin-bottom:14px">Tipos de cambio</h2>
-        <div class="form-row"><label><input type="checkbox" id="setAutoRates" ${s.autoRates ? 'checked' : ''}> Actualizar automáticamente</label>
-          <span class="hint">Última actualización: ${fmtDateTime(s.ratesUpdated)}</span></div>
-        <table class="rates-table"><thead><tr><th>Moneda</th><th class="num">Unidades por 1 USD</th></tr></thead><tbody>
-          ${used.map((c) => `<tr><td>${curLabel(c)}</td><td class="num"><input type="text" inputmode="decimal" data-rate="${c}" value="${numInput(s.rates[c])}"></td></tr>`).join('') || '<tr><td colspan="2" class="muted">Sólo usás dólares.</td></tr>'}
-        </tbody></table>
-      </section>
+    <section class="card">
+      <h2 style="margin-bottom:8px">${icon('flame', 18)} Recordatorio diario (con el iPhone)</h2>
+      <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0">
+        <li>App <b>Atajos</b> → <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
+        <li><b>21:00</b>, <b>Diariamente</b>, <b>Ejecutar inmediatamente</b>.</li>
+        <li>Acción <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>
+      <p class="small" style="color:var(--text-2);margin-bottom:0">Con la voz: <i>"Oye Siri, abrir MyFinance"</i>.</p>
+    </section>
 
-      <section class="card">
-        <h2 style="margin-bottom:8px">Guardado en OneDrive</h2>
-        <div id="fileSync">${fileSyncHTML()}</div>
-      </section>
+    <section class="card">
+      <h2 style="margin-bottom:8px">Precios de acciones y ETF</h2>
+      <p class="small" style="color:var(--text-2);margin-top:0">BTC, ETH y PAXG se actualizan solos. Para VOO, NVDA y GOOGL hace falta una clave gratis de
+        <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub</a>.</p>
+      <div class="form-row"><input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Clave de Finnhub" autocomplete="off"></div>
+      <button class="btn" data-action="saveKey">Guardar clave</button>
+    </section>
 
-      <section class="card">
-        <h2 style="margin-bottom:8px">Precios de acciones y ETF</h2>
-        <p class="small" style="color:var(--text-2);margin-top:0">BTC, ETH y PAXG se actualizan solos. Para VOO, NVDA y GOOGL hace falta una clave gratis de
-          <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub</a>.</p>
-        <div class="form-row"><input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Clave de Finnhub" autocomplete="off"></div>
-        <button class="btn" data-action="saveKey">Guardar clave</button>
-      </section>
+    <section class="card" id="importar">
+      <h2 style="margin-bottom:8px">Importar mi portafolio desde mi chat</h2>
+      <p class="small" style="color:var(--text-2);margin-top:0">Copiá este pedido, pegalo en tu chat de Claude y pegá abajo lo que te devuelva.</p>
+      <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
+      <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
+      <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
+      <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
+    </section>
 
-      <section class="card" id="importar">
-        <h2 style="margin-bottom:8px">Importar mi portafolio desde mi chat</h2>
-        <p class="small" style="color:var(--text-2);margin-top:0">Copiá este pedido, pegalo en tu chat de Claude y pegá abajo lo que te devuelva.</p>
-        <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
-        <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
-        <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
-        <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
-      </section>
-
-      <section class="card">
-        <h2 style="margin-bottom:8px">Zona peligrosa</h2>
-        <button class="btn danger" data-action="resetAll">Borrar todos los datos</button>
-      </section>
-    </div></div>
-  </details>`;
+    <section class="card">
+      <h2 style="margin-bottom:8px">Zona peligrosa</h2>
+      <button class="btn danger" data-action="resetAll">Borrar todos los datos</button>
+    </section>
+  </div>`;
 }
 /* ---------------- Análisis ---------------- */
 
@@ -1722,18 +1782,14 @@ function planHTML(a) {
   if (!p.rows.length) return '<div class="empty">No encontré gastos recortables en el período.</div>';
   return `<p style="margin:6px 0 14px">Para ahorrar <b class="money">${fmtMoney(p.target)}</b> más por mes, tu tasa de ahorro pasaría de
       <b>${a.rate != null ? fmtPct(a.rate, false) : '—'}</b> a <b class="up">${fmtPct(p.newRate, false)}</b>. Así:</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Categoría</th><th class="num">Hoy / mes</th><th class="num">Meta / mes</th><th class="num">Recorte</th><th>Cómo</th></tr></thead>
-      <tbody>${p.rows.map((r) => `<tr>
-        <td><b>${esc(r.c)}</b></td>
-        <td class="num money">${fmtMoney(r.v)}</td>
-        <td class="num money">${fmtMoney(r.newV)}</td>
-        <td class="num money up">−${fmtMoney(r.cut)}<div class="small muted">−${fmtNum(r.pct, 0)}%</div></td>
-        <td class="small" style="color:var(--text-2);min-width:220px">${esc(r.tip)}</td></tr>`).join('')}
-      </tbody></table></div>
-    ${p.remaining > 0.01 ? `<div class="banner" style="margin-top:12px">Con recortes razonables llegás a ${fmtMoney(p.achieved)} por mes. Los ${fmtMoney(p.remaining)} restantes tendrían que salir de aumentar tus ingresos (mirá las ideas más abajo).</div>` : ''}
-    <div class="toolbar" style="margin-top:14px"><span class="muted small">En 12 meses serían <b class="money">${fmtMoney(p.achieved * 12)}</b> extra.</span><span class="spacer"></span>
-      ${analysisDemo ? '' : `<button class="btn primary" data-action="applyPlan">Usar estas metas como presupuesto mensual</button>`}</div>`;
+    <div class="list">${p.rows.map((r) => `<div class="plan-row">
+      <div class="plan-top"><b>${esc(r.c)}</b>
+        <span class="plan-nums"><span class="money muted">${fmtMoney(r.v)}</span> → <b class="money">${fmtMoney(r.newV)}</b></span></div>
+      <div class="plan-cut up small money">Ahorrás ${fmtMoney(r.cut)} por mes (−${fmtNum(r.pct, 0)}%)</div>
+      <div class="small" style="color:var(--text-2)">${esc(r.tip)}</div></div>`).join('')}</div>
+    ${p.remaining > 0.01 ? `<div class="banner" style="margin-top:12px">Con recortes razonables llegás a ${fmtMoney(p.achieved)} por mes. Los ${fmtMoney(p.remaining)} restantes tendrían que salir de aumentar tus ingresos (mirá <a href="#" data-action="go" data-id="consejos">Consejos</a>).</div>` : ''}
+    <p class="muted small" style="margin:12px 0">En 12 meses serían <b class="money">${fmtMoney(p.achieved * 12)}</b> extra.</p>
+    ${analysisDemo ? '' : `<button class="btn primary wide" data-action="applyPlan">Usar estos montos como topes del mes</button>`}`;
 }
 
 function budgetHTML(txs) {
@@ -1755,8 +1811,8 @@ function budgetHTML(txs) {
     const used = lim ? Math.min(100, (spent / lim) * 100) : 100;
     return `<div class="budget-row">
       <div class="budget-top"><b>${esc(c)}</b> ${statusPill(st)}<span class="spacer"></span>
-        <span class="money small">${fmtIn(fromUSD(spent, b.currency), b.currency)} de ${fmtIn(b.amount, b.currency)}</span>
-        <button class="btn sm ghost" data-action="editBudget" data-id="${esc(c)}">Editar</button></div>
+        <button class="btn sm ghost icon-only" data-action="editBudget" data-id="${esc(c)}" title="Editar tope" aria-label="Editar tope">${icon('settings', 16)}</button></div>
+      <div class="small"><b class="money">${fmtIn(fromUSD(spent, b.currency), b.currency)}</b> <span class="muted">de <span class="money">${fmtIn(b.amount, b.currency)}</span></span></div>
       <div class="meter"><div class="${st.tone}" style="width:${used}%"></div></div>
       <div class="muted small money">${spent >= lim ? `Te pasaste ${fmtIn(fromUSD(spent - lim, b.currency), b.currency)}.` : `Te quedan ${fmtIn(fromUSD(lim - spent, b.currency), b.currency)}.`}
         ${FIXED.has(c) ? '' : `A este ritmo terminás el mes en ${fmtIn(fromUSD(proj, b.currency), b.currency)}.`}</div>
@@ -1784,31 +1840,48 @@ function rule503020(a) {
   }).join('')}</div>`;
 }
 
-function viewAnalisis() {
+// Datos para Análisis, Presupuesto y Consejos (null si todavía no hay movimientos)
+function analysisData() {
   const n = Number(S.settings.anPeriod) || 3;
   const hasReal = S.transactions.some((t) => !nonFlow(t) && t.type !== 'transferencia');
-  if (!analysisDemo && !hasReal) {
-    lastAnalysis = null;
-    return `<section class="card" style="text-align:center;padding:36px 20px">
-      <h2 style="font-size:18px;margin-bottom:8px">Todavía no hay movimientos para analizar</h2>
-      <p style="color:var(--text-2);max-width:520px;margin:0 auto 18px">Cargá tus ingresos y gastos en <b>Movimientos</b> y acá vas a ver en qué gastás más, cuánto ahorrás,
-      un plan para ahorrar más y sugerencias. ¿Querés ver cómo queda con datos de ejemplo?</p>
-      <div class="toolbar" style="justify-content:center"><button class="btn primary" data-action="demoOn">Ver con datos de ejemplo</button>
-      <button class="btn" data-action="go" data-id="movimientos">Cargar movimientos</button></div></section>`;
-  }
+  if (!analysisDemo && !hasReal) { lastAnalysis = null; return null; }
   const txs = analysisDemo ? demoTxs() : S.transactions;
   const a = analyze(n, txs);
   lastAnalysis = a;
-  const st = savingsStatus(a.rate);
+  return { a, n, txs };
+}
+
+const noAnalysisHTML = () => `<section class="card" style="text-align:center;padding:36px 20px">
+  <h2 style="font-size:18px;margin-bottom:8px">Todavía no hay movimientos para analizar</h2>
+  <p style="color:var(--text-2);max-width:520px;margin:0 auto 18px">Cargá tus ingresos y gastos en <b>Movimientos</b> y acá vas a ver en qué gastás más, cuánto ahorrás,
+  un plan para ahorrar más y sugerencias. ¿Querés ver cómo queda con datos de ejemplo?</p>
+  <div class="toolbar" style="justify-content:center"><button class="btn primary" data-action="demoOn">Ver con datos de ejemplo</button>
+  <button class="btn" data-action="go" data-id="movimientos">Cargar movimientos</button></div></section>`;
+
+// Elegir el período (este mes, 3, 6 o 12 meses)
+function periodBarHTML(a, n) {
   const periodTxt = n === 1 ? 'este mes' : `los últimos ${n} meses`;
+  return `${analysisDemo ? `<div class="banner">Estás viendo <b>datos de EJEMPLO</b>, no los tuyos. <a href="#" data-action="demoOff">Volver a mis datos</a></div>` : ''}
+  <div class="period-bar">
+    <select id="anPeriod" aria-label="Período">${[[1, 'Este mes'], [3, 'Últimos 3 meses'], [6, 'Últimos 6 meses'], [12, 'Últimos 12 meses']].map(([v, l]) => `<option value="${v}" ${v === n ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <span class="muted small">Promedios por mes de ${periodTxt}${a.k < n ? ` (${a.k} mes${a.k > 1 ? 'es' : ''} con datos)` : ''}.</span>
+  </div>`;
+}
+
+const insightList = (items) => `<div class="insights">${items.map(([ico, title, text]) => `<div class="insight"><span class="ins-ico">${ico}</span><div><b>${title}</b><div class="small" style="color:var(--text-2)">${text}</div></div></div>`).join('')}</div>`;
+const DISCLAIMER = '<p class="muted small" style="margin:0">Son sugerencias generales calculadas con tus datos, no asesoramiento financiero profesional. Los montos en otras monedas se convierten con el tipo de cambio actual.</p>';
+
+// Análisis: cuánto entra, cuánto sale y en qué
+function viewAnalisis() {
+  const month = currentMonth();
+  lastMonthly = { series: monthlySeries(month) };
+  const D = analysisData();
+  if (!D) return noAnalysisHTML();
+  const { a, n } = D;
+  const st = savingsStatus(a.rate);
+  const prevM = addMonths(month, -1);
   return `
-  ${analysisDemo ? `<div class="banner">Estás viendo <b>datos de EJEMPLO</b>, no los tuyos. <a href="#" data-action="demoOff">Volver a mis datos</a></div>` : ''}
-  <div class="toolbar">
-    <select id="anPeriod">${[[1, 'Este mes'], [3, 'Últimos 3 meses'], [6, 'Últimos 6 meses'], [12, 'Últimos 12 meses']].map(([v, l]) => `<option value="${v}" ${v === n ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <span class="muted small">Promedios mensuales de ${periodTxt}${a.k < n ? ` (${a.k} mes${a.k > 1 ? 'es' : ''} con datos)` : ''}.</span>
-    <span class="spacer"></span>
-    ${analysisDemo ? '' : `<button class="btn sm" data-action="monthClose" data-id="${addMonths(currentMonth(), -1)}">${icon('calendar', 14)} Cierre de ${monthLabel(addMonths(currentMonth(), -1), 'long')}</button>`}
-  </div>
+  ${periodBarHTML(a, n)}
   <div class="tiles">
     ${tile('Ingreso promedio', fmtMoney(a.income), 'por mes')}
     ${tile('Gasto promedio', fmtMoney(a.expense), a.income ? `${fmtPct((a.expense / a.income) * 100, false)} de tus ingresos` : 'por mes')}
@@ -1816,9 +1889,6 @@ function viewAnalisis() {
     ${tile('Tasa de ahorro', a.rate != null ? fmtPct(a.rate, false) : '—', statusPill(st) || 'Faltan ingresos')}
   </div>
   <div class="grid-2">
-    <section class="card"><div class="card-head"><h2>¿Gastás más de lo que ingresás?</h2>
-      <div class="legend"><span><i class="swatch" style="background:var(--c1)"></i>Ingresos</span><span><i class="swatch" style="background:var(--c2)"></i>Gastos</span></div></div>
-      <div id="barsChart" class="line-chart"></div></section>
     <section class="card"><div class="card-head"><h2>¿En qué gastás más?</h2><span class="muted small">por mes</span></div>
       ${a.byCat.length ? `<div class="hbars">${a.byCat.map(([c, v]) => {
         const prev = a.prevByCat[c];
@@ -1829,20 +1899,41 @@ function viewAnalisis() {
           <span class="v"><span class="money">${fmtMoney(v)}</span> <span class="muted small">${fmtPct((v / a.expense) * 100, false)}</span></span></div>`;
       }).join('')}</div>` : '<div class="empty">Sin gastos en el período.</div>'}
     </section>
+    <section class="card"><div class="card-head"><h2>¿Gastás más de lo que ingresás?</h2>
+      <div class="legend"><span><i class="swatch" style="background:var(--c1)"></i>Ingresos</span><span><i class="swatch" style="background:var(--c2)"></i>Gastos</span></div></div>
+      <div id="barsChart" class="line-chart"></div></section>
   </div>
-  <div class="grid-2">
-    <section class="card"><div class="card-head"><h2>Lo que veo en tus números</h2></div>
-      <div class="insights">${insightsFor(a).map(([ico, title, text]) => `<div class="insight"><span class="ins-ico">${ico}</span><div><b>${title}</b><div class="small" style="color:var(--text-2)">${text}</div></div></div>`).join('')}</div></section>
-    <section class="card"><div class="card-head"><h2>Regla 50/30/20</h2><span class="muted small">% de tus ingresos</span></div>${rule503020(a)}</section>
+  ${analysisDemo ? '' : `<div class="grid-2">
+    <section class="card"><div class="card-head"><h2>Este mes vs. tu promedio</h2><span class="muted small">por categoría</span></div>${categoryCompareHTML(month)}</section>
+    <section class="card"><div class="card-head"><h2>Gastos por mes</h2></div><div id="monthlyChart" class="line-chart" style="height:200px"></div></section>
   </div>
-  <section class="card"><div class="card-head"><h2>Plan para ahorrar más</h2></div>${goalSlider()}<div id="planBox">${planHTML(a)}</div></section>
-  <div class="grid-2">
-    <section class="card"><div class="card-head"><h2>Presupuesto de ${monthLabel(currentMonth(), 'long')}</h2>
-      ${analysisDemo ? '' : '<button class="btn sm" data-action="addBudget">+ Presupuesto</button>'}</div>${analysisDemo ? '<div class="empty">Disponible con tus datos reales.</div>' : budgetHTML(txs)}</section>
-    <section class="card"><div class="card-head"><h2>Ideas para aumentar tus ingresos</h2></div>
-      <div class="insights">${incomeIdeas(a).map(([ico, title, text]) => `<div class="insight"><span class="ins-ico">${ico}</span><div><b>${title}</b><div class="small" style="color:var(--text-2)">${text}</div></div></div>`).join('')}</div></section>
-  </div>
-  <p class="muted small" style="margin:0">Son sugerencias generales de presupuesto calculadas con tus datos, no asesoramiento financiero profesional. Los montos en otras monedas se convierten con el tipo de cambio actual.</p>`;
+  <button class="btn wide" data-action="monthClose" data-id="${prevM}">${icon('calendar', 16)} Ver el cierre de ${monthLabel(prevM, 'long')}</button>`}
+  ${DISCLAIMER}`;
+}
+
+// Presupuesto: topes por categoría, plan para ahorrar más y la regla 50/30/20
+function viewPresupuesto() {
+  const D = analysisData();
+  return `
+  <section class="card"><div class="card-head"><h2>Topes de ${monthLabel(currentMonth(), 'long')}</h2>
+    ${analysisDemo ? '' : '<button class="btn sm primary" data-action="addBudget">+ Tope</button>'}</div>
+    ${analysisDemo ? '<div class="empty">Disponible con tus datos reales.</div>' : budgetHTML(S.transactions)}</section>
+  ${D ? `${periodBarHTML(D.a, D.n)}
+  <section class="card"><div class="card-head"><h2>Plan para ahorrar más</h2></div>${goalSlider()}<div id="planBox">${planHTML(D.a)}</div></section>
+  <section class="card"><div class="card-head"><h2>Regla 50/30/20</h2><span class="muted small">% de tus ingresos</span></div>${rule503020(D.a)}</section>
+  ${DISCLAIMER}` : noAnalysisHTML()}`;
+}
+
+// Consejos: lo que se ve en tus números e ideas para ganar más
+function viewConsejos() {
+  const D = analysisData();
+  if (!D) return noAnalysisHTML();
+  return `
+  ${periodBarHTML(D.a, D.n)}
+  <section class="card"><div class="card-head"><h2>Lo que veo en tus números</h2></div>${insightList(insightsFor(D.a))}</section>
+  <section class="card"><div class="card-head"><h2>Ideas para aumentar tus ingresos</h2></div>${insightList(incomeIdeas(D.a))}</section>
+  <div class="shortcuts">${shortcutHTML('presupuesto', 'Plan para ahorrar más')}${shortcutHTML('metas', S.goals.length ? `${S.goals.length} meta${S.goals.length > 1 ? 's' : ''}` : 'Crear una meta')}</div>
+  ${DISCLAIMER}`;
 }
 
 const roundNice = (v) => (v >= 1000 ? Math.round(v / 100) * 100 : Math.round(v));
@@ -2062,9 +2153,7 @@ function viewMetas() {
     <p class="muted" style="margin:0 auto 14px;max-width:460px">Poné una meta (un monto y, si querés, una fecha) y te digo cuánto ahorrar por mes y cuánto podés gastar como máximo para llegar.</p>
     <button class="btn primary" data-action="addGoal">${icon('target', 16)} Crear mi meta</button></section>`}
   ${S.goals.length ? '<div class="toolbar"><span class="spacer"></span><button class="btn" data-action="addGoal">+ Otra meta</button></div>' : ''}
-  <details class="more-box" ${S.settings.planProjOpen ? 'open' : ''} data-pref="planProjOpen">
-  <summary>Proyección y récord de ahorro</summary>
-  <div class="more-inner">
+  <h3 class="section-label">Proyección y récord de ahorro</h3>
   <div class="tiles">
     ${tile('Ahorro máximo posible', fmtMoney(P.maxSaving) + '<span class="t-unit">/mes</span>', 'Ingresos fijos + intereses − gastos fijos')}
     ${tile('Ahorro de este mes', `<span class="${cls(thisMonth.income - thisMonth.expense)}">${fmtMoney(thisMonth.income - thisMonth.expense, { sign: true })}</span>`, 'Lo que va del mes')}
@@ -2077,29 +2166,45 @@ function viewMetas() {
     <p class="small muted" style="margin:8px 0 0">"A tu ritmo" = ingresos fijos (${fmtMoney(P.recInc)}) + intereses (${fmtMoney(P.interest)}) + ingresos extra promedio (${fmtMoney(P.avgExtra)}) − gastos fijos (${fmtMoney(P.recOut)}) − gasto variable promedio (${fmtMoney(P.avgVariable)}), por mes.</p></section>
   <section class="card"><div class="card-head"><h2>Ahorro máximo vs. ahorro real</h2><span class="muted small">por mes</span></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Mes</th><th class="num">Ingresos</th><th class="num">Gastos fijos</th><th class="num">Ahorro máximo</th><th class="num">Gastos variables</th><th class="num">Ahorro real</th><th class="num">% del máximo</th><th class="num">Acumulado</th></tr></thead>
+      <thead><tr><th>Mes</th><th class="num hide-sm">Ingresos</th><th class="num hide-sm">Gastos fijos</th><th class="num">Máximo</th><th class="num hide-sm">Gastos variables</th><th class="num">Real</th><th class="num hide-sm">% del máximo</th><th class="num">Acumulado</th></tr></thead>
       <tbody>${T.rows.map((r) => `<tr class="${r.proj ? 'proj' : ''} ${T.best && r.m === T.best.m && !r.proj ? 'best' : ''}">
-        <td>${monthLabel(r.m, 'long')} ${r.m.slice(2, 4)}${r.proj ? ' <span class="tag">proyección</span>' : ''}${T.best && r.m === T.best.m && !r.proj ? ' <span class="tag good">récord</span>' : ''}</td>
-        <td class="num money">${fmtMoney(r.inc)}</td><td class="num money">${fmtMoney(r.fixed)}</td>
-        <td class="num money"><b>${fmtMoney(r.max)}</b></td><td class="num money">${fmtMoney(r.variable)}</td>
+        <td>${monthLabel(r.m)} ${r.m.slice(2, 4)}${r.proj ? ' <span class="tag">proy.</span>' : ''}${T.best && r.m === T.best.m && !r.proj ? ' <span class="tag good">récord</span>' : ''}</td>
+        <td class="num money hide-sm">${fmtMoney(r.inc)}</td><td class="num money hide-sm">${fmtMoney(r.fixed)}</td>
+        <td class="num money"><b>${fmtMoney(r.max)}</b></td><td class="num money hide-sm">${fmtMoney(r.variable)}</td>
         <td class="num money ${cls(r.real)}"><b>${fmtMoney(r.real, { sign: true })}</b></td>
-        <td class="num">${r.max > 0 ? fmtPct((r.real / r.max) * 100, false) : '—'}</td>
+        <td class="num hide-sm">${r.max > 0 ? fmtPct((r.real / r.max) * 100, false) : '—'}</td>
         <td class="num money">${fmtMoney(r.acc)}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">Registrá movimientos para ver la tabla.</td></tr>'}</tbody>
     </table></div>
-    <p class="small muted" style="margin:8px 0 0"><b>Ahorro máximo</b> = lo que te quedaría si sólo pagaras los gastos fijos. <b>% del máximo</b> = cuánto de ese máximo lograste ahorrar de verdad.</p></section>
-  </div></details>`;
+    <p class="small muted" style="margin:8px 0 0"><b>Máximo</b> = lo que te quedaría si sólo pagaras los gastos fijos. <b>Real</b> = lo que ahorraste de verdad.</p></section>`;
 }
 
-// Plan = metas + análisis en un solo lugar: arriba tu meta y cuánto podés gastar, abajo el detalle
+// Mini resumen de cada meta (Inicio y Plan)
+function goalsMiniHTML(P = planNumbers()) {
+  return S.goals.map((g) => {
+    const M = goalMath(g, P);
+    return `<div class="goal-mini"><div class="budget-top"><b>${esc(g.name)}</b><span class="spacer"></span><b class="small">${fmtNum(M.pct, 0)}%</b></div>
+      <div class="meter"><div style="width:${M.pct}%"></div></div>
+      <div class="small muted">${M.remaining <= 0 ? '¡Ya llegaste!' : `Te faltan <span class="money">${fmtMoney(M.remaining)}</span> · ${M.etaMonths == null ? 'a este ritmo no llegás' : `llegás en ${etaLabel(M.etaMonths)}`}`}</div></div>`;
+  }).join('');
+}
+
+// Plan: lo importante del mes en una pantalla; el detalle está en Metas, Presupuesto, Análisis y Consejos
 function viewPlan() {
+  const nb = Object.keys(S.budgets).length;
   return `
   ${spendCardHTML()}
-  ${viewMetas()}
+  ${S.goals.length ? `<section class="card"><div class="card-head" style="margin-bottom:6px"><h2>Tus metas</h2><a href="#" data-action="go" data-id="metas" class="small">Ver detalle</a></div>${goalsMiniHTML()}</section>`
+    : `<section class="card" style="text-align:center;padding:24px 20px">
+    <h2 style="font-size:17px;margin-bottom:6px">¿A qué querés llegar?</h2>
+    <p class="muted small" style="margin:0 auto 14px;max-width:420px">Poné una meta y te digo cuánto ahorrar por mes y cuánto podés gastar para llegar.</p>
+    <button class="btn primary" data-action="addGoal">${icon('target', 16)} Crear mi meta</button></section>`}
   ${incomeSafetyHTML()}
-  <details class="more-box" ${S.settings.planAnalysisOpen ? 'open' : ''} data-pref="planAnalysisOpen">
-    <summary>En qué gastás y cómo ahorrar más</summary>
-    <div class="more-inner">${viewAnalisis()}</div>
-  </details>`;
+  <div class="shortcuts">
+    ${shortcutHTML('presupuesto', nb ? `${nb} tope${nb > 1 ? 's' : ''} este mes` : 'Poné topes por categoría')}
+    ${shortcutHTML('analisis', 'En qué gastás')}
+    ${shortcutHTML('consejos', 'Ahorrar y ganar más')}
+    ${shortcutHTML('metas', 'Proyección y récord')}
+  </div>`;
 }
 
 function goalForm(g) {
@@ -3886,7 +3991,7 @@ function incomeSafetyHTML() {
       ? `Sólo con lo seguro cubrís lo que gastás por mes (<b class="money">${L(cost)}</b>). Lo que entra "a veces" puede ir directo al ahorro.`
       : `Lo que gastás por mes (<b class="money">${L(cost)}</b>) depende de lo que entra "a veces": sin eso te faltan <b class="money">${L(cost - sure)}</b>.`) : ''}
     ${cut ? `<div class="calc-sub" style="margin-top:12px"><b>¿Y si se corta uno?</b></div><div class="calc">${cut}</div>` : ''}
-    <div class="small muted" style="margin-top:8px">Marcá cuáles son seguros en Movimientos → Ingresos y gastos fijos (tocá el engranaje).</div>
+    <div class="small muted" style="margin-top:8px">Marcá cuáles son seguros en <a href="#" data-action="go" data-id="fijos">Fijos</a> (tocá el engranaje de cada ingreso).</div>
   </section>`;
 }
 
@@ -3906,13 +4011,19 @@ function spendCardHTML() {
       <div class="spend-value money ${tone}">${L(Math.max(0, p.todayLeft))}</div>
       ${why ? `<div class="over-note">${why}</div>` : ''}
     </button>`;
+  const empty = p.budget <= 0 && p.income <= 0 && !S.recurring.length;
+  // Sin fijos todavía: sólo la invitación a cargarlos (sin una barra roja de "Bs 0 de Bs 0")
+  if (empty) return `<section class="card spend-card">
+    <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
+      ${n ? `<span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span>` : ''}</div>
+    <div class="label">¿Cuánto podés gastar por día?</div>
+    <div class="small muted" style="margin:4px 0 12px">Agregá lo que te entra y sale todos los meses (sueldo, alquiler, luz…) y la app te lo calcula.</div>
+    <button class="btn primary" data-action="go" data-id="fijos">${icon('repeat', 16)} Agregar mis fijos</button>
+  </section>`;
   return `<section class="card spend-card">
     <div class="card-head" style="margin-bottom:4px"><span class="muted small">${monthLabel(currentMonth(), 'long').replace(/^\w/, (c) => c.toUpperCase())}</span>
       <span class="streak ${doneToday ? 'done' : ''}">${icon('flame', 15)} ${n} ${n === 1 ? 'día' : 'días'}</span></div>
-    ${p.budget <= 0 && p.income <= 0 && !S.recurring.length ? `<div class="label">¿Cuánto podés gastar por día?</div>
-      <div class="small muted" style="margin:4px 0 8px">Agregá lo que te entra y sale todos los meses (sueldo, alquiler, luz…) y la app te lo calcula.</div>
-      <button class="btn sm primary" data-action="go" data-id="movimientos" data-anchor="fijos" style="margin-bottom:8px">Agregar mis fijos</button>`
-    : p.budget <= 0 ? `<div class="label">Este mes no queda para gastos del día a día</div>
+    ${p.budget <= 0 ? `<div class="label">Este mes no queda para gastos del día a día</div>
       <div class="small muted" style="margin:4px 0 8px">Tus ingresos (${L(p.income)}) no cubren tus fijos más el ahorro. Revisá tu meta o tus fijos.</div>` : big}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
     <div class="small muted money" style="margin-top:6px">Gastaste ${L(p.spent)} de ${L(Math.max(0, p.budget))} del mes · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}${p.budget > 0 && p.perDay > 0 ? ` (${L(p.perDay)}/día)` : ''}</div>
@@ -4023,6 +4134,44 @@ function addFavorite(id) {
 
 /* ---------------- Render ---------------- */
 
+const VIEW_FN = {
+  resumen: () => viewResumen(), movimientos: () => viewMovimientos(), plan: () => viewPlan(),
+  fijos: () => viewFijos(), programados: () => viewProgramados(), presupuesto: () => viewPresupuesto(), metas: () => viewMetas(),
+  cuentas: () => viewCuentas(), prestamos: () => viewPrestamos(), inversiones: () => viewInversiones(), dolar: () => viewDolar(),
+  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
+};
+
+/* Menú "Más": una hoja con todas las secciones, agrupadas */
+function moreMenuHTML() {
+  const v = S.settings.view;
+  const badge = { fijos: pendingRecurring().length, programados: schedPending().length };
+  return `<div class="more-head"><b>Más secciones</b><button class="q-icon" data-more-close aria-label="Cerrar">${icon('x', 18)}</button></div>
+    ${MORE_GROUPS.map(([title, list]) => `<div class="more-group"><div class="more-title">${title}</div><div class="more-grid">
+      ${list.map(([id, label, ico]) => `<button class="more-item ${id === v ? 'on' : ''}" data-view="${id}">
+        <span class="mi-ico">${icon(ico, 22)}${badge[id] ? `<i class="mi-badge">${badge[id]}</i>` : ''}</span><span class="mi-label">${label}</span></button>`).join('')}
+    </div></div>`).join('')}`;
+}
+function openMore() {
+  const m = $('#moreMenu');
+  m.innerHTML = moreMenuHTML();
+  m.hidden = false;
+  $('#moreBackdrop').hidden = false;
+  document.documentElement.classList.add('more-open');
+  $('#moreBtn').classList.add('open');
+}
+function closeMore() {
+  $('#moreMenu').hidden = true;
+  $('#moreBackdrop').hidden = true;
+  document.documentElement.classList.remove('more-open');
+  $('#moreBtn')?.classList.remove('open');
+}
+
+// En la computadora, todas las secciones van en la barra de la izquierda
+function sidebarExtrasHTML() {
+  return MORE_GROUPS.map(([title, list]) => `<div class="nav-group nav-secondary">${title}</div>
+    ${list.map(([id, label, ico]) => `<button class="nav-btn nav-secondary" data-view="${id}"><span class="nav-ico">${icon(ico, 18)}</span><span>${label}</span></button>`).join('')}`).join('');
+}
+
 function render() {
   if (VIEW_ALIAS[S.settings.view]) S.settings.view = VIEW_ALIAS[S.settings.view];
   const v = VIEWS[S.settings.view] ? S.settings.view : 'resumen';
@@ -4030,13 +4179,13 @@ function render() {
   $('#viewTitle').textContent = VIEWS[v];
   document.title = `${VIEWS[v]} · MyFinance`;
   const content = $('#content');
-  content.innerHTML = fileBannerHTML() + { resumen: viewResumen, inversiones: viewInversiones, cuentas: viewCuentas, movimientos: viewMovimientos, plan: viewPlan, ajustes: viewAjustes }[v]();
+  content.innerHTML = fileBannerHTML() + VIEW_FN[v]();
   drawCharts();
   $('#curLocalBtn').textContent = curLabel(S.settings.localCurrency);
   $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.cur === S.settings.displayCurrency));
   document.body.classList.toggle('privado', !!S.settings.privacy);
   $('#privacyBtn').innerHTML = icon(S.settings.privacy ? 'eyeOff' : 'eye');
-  $('#moreBtn').classList.toggle('active', ['inversiones', 'cuentas', 'ajustes'].includes(v));
+  $('#moreBtn').classList.toggle('active', MORE_VIEWS.includes(v));
   $('#lastRefresh').innerHTML = footHTML();
   $('#tip').hidden = true;
 }
@@ -4045,13 +4194,13 @@ function render() {
 function drawCharts() {
   const v = S.settings.view;
   if (v === 'resumen') drawLine($('#nwChart'), S.history);
-  if (v === 'plan' && lastAnalysis) drawBars($('#barsChart'), lastAnalysis.per);
-  if (v === 'movimientos' && lastMonthly) drawMonthly($('#monthlyChart'), lastMonthly);
-  if (v === 'plan' && lastProjection) drawProjection($('#projChart'), lastProjection);
+  if (v === 'analisis' && lastAnalysis) drawBars($('#barsChart'), lastAnalysis.per);
+  if (v === 'analisis' && lastMonthly) drawMonthly($('#monthlyChart'), lastMonthly);
+  if (v === 'metas' && lastProjection) drawProjection($('#projChart'), lastProjection);
 }
 
 function go(view, anchor) {
-  $('#moreMenu').hidden = true;
+  closeMore();
   $('#content').style.minHeight = '';
   S.settings.view = VIEW_ALIAS[view] || view;
   save(false);
@@ -4769,7 +4918,7 @@ function fileSyncHTML() {
 
 function fileBannerHTML() {
   if (FileSync.status === 'paused') return `<div class="banner">⏸ El guardado automático en tu archivo está en pausa. <a href="#" data-action="fileReconnect">Reactivar</a></div>`;
-  if (FileSync.status === 'error') return `<div class="banner">⚠ No se pudo guardar en tu archivo. <a href="#" data-action="go" data-id="ajustes" data-anchor="respaldo">Ver detalle</a></div>`;
+  if (FileSync.status === 'error') return `<div class="banner">⚠ No se pudo guardar en tu archivo. <a href="#" data-action="go" data-id="respaldo">Ver detalle</a></div>`;
   return '';
 }
 
@@ -4824,7 +4973,7 @@ const ACTIONS = {
   editTx: (id) => {
     const t = byId(S.transactions, id);
     if (!t) return;
-    if (t.loanId) return go('cuentas', 'prestamos');
+    if (t.loanId) return go('prestamos');
     if (t.type === 'transferencia') return transferForm(null, t);
     if (t.investment) return txForm(null, t);
     quickEntry(null, t);
@@ -4866,8 +5015,8 @@ const ACTIONS = {
     // Una meta de 0 (ej. intereses) no es un presupuesto: es "no pagar más"
     for (const r of p.rows) if (r.newV > 0.5) S.budgets[r.c] = { amount: roundNice(fromUSD(r.newV, cur)), currency: cur };
     save(); render();
-    $('#planBox')?.closest('section')?.nextElementSibling?.scrollIntoView({ block: 'start' });
-    toast('Listo: tus metas quedaron como presupuesto mensual.');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    toast('Listo: esos montos quedaron como topes del mes.');
   },
   openChat: () => openChat({ listen: true }),
   cloudConnect: () => cloudConnectForm(),
@@ -4924,17 +5073,21 @@ const ACTIONS = {
 };
 
 function bindEvents() {
+  $('#moreBtn').insertAdjacentHTML('beforebegin', sidebarExtrasHTML());
   paintIcons();
   $$('.nav-btn[data-view]').forEach((b) => b.addEventListener('click', () => go(b.dataset.view)));
-  // En el celular, Inversiones / Cuentas / Ajustes van dentro de "Más"
+  // En el celular, todo lo que no es Inicio / Movimientos / Plan va dentro de "Más"
   $('#moreBtn').addEventListener('click', (e) => {
     e.stopPropagation();
-    const m = $('#moreMenu');
-    m.innerHTML = ['inversiones', 'cuentas', 'ajustes'].map((v) => `<button data-view="${v}">${icon({ inversiones: 'trending', cuentas: 'wallet', ajustes: 'settings' }[v])}<span>${VIEWS[v]}</span></button>`).join('');
-    m.hidden = !m.hidden;
-    $$('button', m).forEach((b) => b.addEventListener('click', () => go(b.dataset.view)));
+    if ($('#moreMenu').hidden) openMore(); else closeMore();
   });
-  document.addEventListener('click', (e) => { if (!e.target.closest('#moreMenu')) $('#moreMenu').hidden = true; });
+  $('#moreMenu').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-view]');
+    if (b) return go(b.dataset.view);
+    if (e.target.closest('[data-more-close]')) closeMore();
+  });
+  $('#moreBackdrop').addEventListener('click', closeMore);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#moreMenu').hidden) closeMore(); });
   $('#fabBtn').addEventListener('click', () => quickEntry('gasto'));
   // Las secciones "Ver más" recuerdan si las dejaste abiertas y dibujan sus gráficos al abrirse
   $('#content').addEventListener('toggle', (e) => {
@@ -5011,7 +5164,7 @@ function bindEvents() {
     if (CloudSync.enabled()) CloudSync.sync({ quiet: false }).then(() => toast(CloudSync.status === 'error' ? CloudSync.error : 'Sincronizado ✓'));
     else if (FileSync.status === 'unsupported') syncDialog();
     else if (FileSync.status === 'paused') FileSync.reconnect();
-    else go('ajustes', 'respaldo');
+    else go('respaldo');
   });
   // En pantallas táctiles el tooltip no tiene "mouseleave": se oculta al desplazar
   window.addEventListener('scroll', () => { const tip = $('#tip'); tip.dataset.owner = ''; tip.hidden = true; }, { passive: true });
@@ -5102,7 +5255,7 @@ function welcome() {
   openForm({
     title: '¡Bienvenido a MyFinance!',
     fields: [
-      { type: 'html', html: `<p style="margin:0;color:var(--text-2)">La app empieza vacía. Para arrancar: cargá tu efectivo y cuentas en <b>Cuentas</b>, y lo que entra o sale todos los meses (sueldo, alquiler, luz…) en <b>Movimientos → Ingresos y gastos fijos</b>.</p>` },
+      { type: 'html', html: `<p style="margin:0;color:var(--text-2)">La app empieza vacía. Para arrancar: cargá tu efectivo y cuentas en <b>Cuentas</b>, y lo que entra o sale todos los meses (sueldo, alquiler, luz…) en <b>Más → Fijos</b>.</p>` },
       { name: 'localCurrency', label: '¿Cuál es tu moneda local?', type: 'select', value: 'BOB', full: true,
         options: CURRENCIES.filter(([c]) => !USD_PEGGED.has(c)).map(([c, n]) => [c, `${c} — ${n}`]) },
       { type: 'html', html: `<div class="small muted">¿Ya usás MyFinance en otro dispositivo?
@@ -5115,7 +5268,7 @@ function welcome() {
       for (const a of S.accounts) if (a.currency === old) a.currency = v.localCurrency;
       save(); render();
       refreshAll({ silent: true });
-      setTimeout(() => toast('Tip: tocá − Gasto o + Ingreso para registrar. En Ajustes podés activar la sincronización automática.', 6000), 2800);
+      setTimeout(() => toast('Tip: tocá − Gasto o + Ingreso para registrar. En Más → Respaldo podés activar la sincronización automática.', 6000), 2800);
     },
   });
   $('#welcomeOpen')?.addEventListener('click', () => { $('#dlg').close(); FileSync.supported ? FileSync.openExisting() : syncPull(); });
