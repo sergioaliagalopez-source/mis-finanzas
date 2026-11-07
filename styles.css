@@ -816,3 +816,8 @@ html.more-open, html.more-open body { overflow: hidden; }
   .quick-dlg[open], .chat-dlg[open] { animation: sheet-in .42s var(--ease-out); }
   .quick-dlg.closing { animation: sheet-out .22s ease-in forwards; }
 }
+
+/* "Acumulado sin gastar": chico y discreto, debajo de "Hoy podés gastar" */
+.saved-line { font-size: 13px; color: var(--muted); margin: -2px 0 10px; }
+.saved-line b { color: var(--good); font-weight: 600; }
+.saved-line.zero b { color: var(--muted); }

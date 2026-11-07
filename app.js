@@ -207,6 +207,7 @@ function defaultState() {
     holdings: [],
     transactions: [],
     budgets: {}, // { categoría: { amount, currency } } presupuesto mensual
+    dayBudgets: {}, // presupuesto del día que mostró la app: { 'AAAA-MM-DD': { v: USD, at: cuándo } } (para el "Acumulado sin gastar")
     history: [],
   };
 }
@@ -219,6 +220,7 @@ function migrate(s) {
   s.settings.rates = { USD: 1, ...(s.settings.rates || {}) };
   for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'scheduled', 'goals', 'loans', 'checkins', 'rateLog', 'deleted']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
+  if (!s.dayBudgets || typeof s.dayBudgets !== 'object' || Array.isArray(s.dayBudgets)) s.dayBudgets = {};
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
   }
@@ -2790,6 +2792,7 @@ function mergeRemote(R) {
     if (rr?.skip) r.skip = [...new Set([...(r.skip || []), ...rr.skip])];
   }
   S.checkins = [...new Set([...(S.checkins || []), ...(R.checkins || [])])];
+  S.dayBudgets = mergeDayBudgets(S.dayBudgets, R.dayBudgets);
   S.budgets = { ...(R.budgets || {}), ...(S.budgets || {}) };
   S.deleted = [...dead].slice(-5000);
 }
@@ -2847,7 +2850,9 @@ const CloudSync = {
         if (!remote) await this.upload();
         else if (replace) {
           closeDialogs();
+          const localDays = S.dayBudgets;
           S = migrate(data);
+          S.dayBudgets = mergeDayBudgets(S.dayBudgets, localDays); // no se pierden los días guardados sólo acá
           S.editedAt = remote.editedAt || S.editedAt;
           setCloudCfg({ ...cloudCfg(), base: remote.editedAt || '' });
           save(false);
@@ -2892,7 +2897,9 @@ const CloudSync = {
         setCloudCfg({ token, pass, gistId: id, base: '' });
         if (choice === 'remote') {
           closeDialogs();
+          const localDays = S.dayBudgets;
           S = migrate(data);
+          S.dayBudgets = mergeDayBudgets(S.dayBudgets, localDays);
           S.editedAt = remote.editedAt || S.editedAt;
           setCloudCfg({ ...cloudCfg(), base: remote.editedAt || '' });
           save(false);
@@ -3846,6 +3853,59 @@ function spendPlan() {
   return { income, fixed, sched, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
 }
 
+/* ---------------- "Acumulado sin gastar" ----------------
+   Sólo informativo: NO cambia spendPlan() ni ningún cálculo, saldo, ahorro, fijo o programado.
+   Cada día se guarda el presupuesto del día que mostró la app; el acumulado suma, día por día desde
+   el 1 del mes hasta ayer, lo que te sobró de ese presupuesto. Si gastaste de más, se descuenta, sin bajar de 0.
+   Los días sin presupuesto guardado se estiman con la fórmula actual (y esa estimación no se guarda). */
+
+// Guarda el presupuesto del día de hoy (el último valor que mostró la app hoy)
+function recordDayBudget(p) {
+  const today = todayISO();
+  const v = Math.max(0, Number(p.perDay) || 0);
+  const days = S.dayBudgets || (S.dayBudgets = {});
+  if (days[today] && Math.abs(days[today].v - v) < 1e-9) return;
+  days[today] = { v, at: new Date().toISOString() };
+  // Alcanza con este mes y el anterior
+  const from = addMonths(currentMonth(), -1);
+  for (const k of Object.keys(days)) if (k.slice(0, 7) < from) delete days[k];
+  save(false);
+}
+
+// Une los días guardados en dos dispositivos: de cada fecha queda el valor guardado más tarde
+function mergeDayBudgets(a = {}, b = {}) {
+  const out = { ...(a || {}) };
+  for (const [d, x] of Object.entries(b || {})) if (x && Number.isFinite(x.v) && (!out[d] || (x.at || '') > (out[d].at || ''))) out[d] = x;
+  return out;
+}
+
+// { usd, estimated }: estimated = true si algún día se calculó sin presupuesto guardado
+function dailySaved() {
+  const month = currentMonth(), today = todayISO();
+  const dim = daysInMonth(month), todayDay = Number(today.slice(8, 10));
+  const p = spendPlan();
+  // Lo que gastaste cada día (los mismos gastos que cuenta "Hoy podés gastar": sin fijos, programados, familia ni transferencias)
+  const spentOn = {};
+  for (const t of S.transactions) if (t.date?.startsWith(month) && t.date < today && isVariable(t)) spentOn[t.date] = (spentOn[t.date] || 0) + txUSD(t);
+  // No se cuentan los días antes de que empezaras a usar la app
+  const firsts = [...S.transactions.map((t) => t.date), ...Object.keys(S.dayBudgets || {})].filter(Boolean).sort();
+  const start = firsts[0] || today;
+  let acc = 0, before = 0, estimated = false;
+  for (let d = 1; d < todayDay; d++) {
+    const iso = `${month}-${String(d).padStart(2, '0')}`;
+    const spent = spentOn[iso] || 0;
+    if (iso >= start) {
+      const snap = S.dayBudgets?.[iso];
+      let rec;
+      if (snap && Number.isFinite(snap.v)) rec = snap.v;
+      else { rec = (p.budget - before) / (dim - d + 1); estimated = true; } // misma fórmula que spendPlan() para ese día
+      acc = Math.max(0, acc + Math.max(0, rec) - spent);
+    }
+    before += spent;
+  }
+  return { usd: acc, estimated };
+}
+
 /* ---------------- Colchón e ingreso seguro ---------------- */
 
 // Lo que te cuesta un mes "normal": tus gastos fijos + lo que gastás en promedio en el día a día (USD)
@@ -3929,6 +3989,8 @@ function spendCardHTML() {
     <button class="btn primary" data-action="go" data-id="fijos">${icon('repeat', 16)} Agregar mis fijos</button>
   </section>`;
   const notCounted = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && !countsInPlan(r));
+  recordDayBudget(p);
+  const saved = dailySaved();
   return `<section class="card spend-card">
     ${head(true)}
     ${p.budget <= 0 ? `<div class="label">Este mes no queda para el día a día</div>
@@ -3936,6 +3998,7 @@ function spendCardHTML() {
     : `<button class="spend-main" data-action="spendInfo">
       <div class="label">Hoy podés gastar</div>
       <div class="spend-value money ${tone}">${L(val)}</div>
+      <div class="saved-line ${saved.usd > 0.004 ? '' : 'zero'}" ${saved.estimated ? 'title="Incluye días estimados (sin presupuesto guardado ese día)"' : ''}>Acumulado sin gastar: <b class="money">${L(saved.usd)}</b></div>
       ${overMonth ? '<div class="over-note">Te pasaste del mes</div>' : overToday ? '<div class="over-note">Te pasaste hoy · mañana se reparte lo que queda</div>' : ''}
     </button>`}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
