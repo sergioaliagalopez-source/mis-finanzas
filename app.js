@@ -1879,10 +1879,12 @@ function budgetForm(cat) {
     fields: [
       cat ? { type: 'html', html: '' } : { name: 'cat', label: 'Categoría', type: 'select', full: true, options: CAT_GASTO.filter((c) => !used.has(c)).map((c) => [c, c]) },
       { name: 'amount', label: `Tope por mes (${cur})`, type: 'number', full: true, required: true,
-        value: b ? round2(fromUSD(toUSD(b.amount, b.currency), cur)) : '', hint: cat ? 'Poné 0 para eliminar este presupuesto.' : '' },
+        value: b ? round2(fromUSD(toUSD(b.amount, b.currency), cur)) : '' },
+      ...(cat ? [{ name: 'remove', label: 'Eliminar este tope', type: 'checkbox', full: true }] : []),
     ],
     onSubmit: (v) => {
       const c = cat || v.cat;
+      if (cat && v.remove) { delete S.budgets[cat]; save(); render(); toast(`Tope de ${cat} eliminado`); return; }
       if (!c) return 'Ya tenés presupuesto para todas las categorías.';
       if (!(v.amount > 0)) { delete S.budgets[c]; } else S.budgets[c] = { amount: v.amount, currency: cur };
       save(); render();
