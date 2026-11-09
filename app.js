@@ -917,7 +917,8 @@ function viewInversiones() {
   </div>
   <section class="card">
     <div class="card-head"><h2>Mis posiciones</h2>
-      <button class="btn primary" data-action="addHolding">+ Agregar activo</button></div>
+      <div class="toolbar"><button class="btn" data-action="go" data-id="ajustes" data-anchor="importar">Importar desde mi chat</button>
+      <button class="btn primary" data-action="addHolding">+ Agregar activo</button></div></div>
     <div class="list show-sm">${[...S.holdings].sort((a, b) => holdingValue(b) - holdingValue(a)).map((h) => {
       const v = holdingValue(h), c = holdingCost(h), g = v - c, hasCost = Number(h.avgCost) > 0;
       return `<div class="hold-row">
@@ -1447,6 +1448,16 @@ function loanCountLabel() {
   return `<span class="muted small">${n ? `${n} abierto${n > 1 ? 's' : ''}` : 'Ninguno'}</span>`;
 }
 
+const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devolveme SOLO un bloque JSON (sin texto extra) con este formato exacto:
+[
+  {"symbol": "VOO", "quantity": 0, "avgCost": 0, "platform": "broker"},
+  {"symbol": "PAXG", "quantity": 0, "avgCost": 0, "platform": "Binance"}
+]
+- symbol: ticker (VOO, PAXG, BTC, ETH, NVDA, GOOGL, etc.)
+- quantity: cantidad de unidades/acciones/monedas que tengo
+- avgCost: precio promedio de compra por unidad en USD (0 si no lo sabés)
+- platform: dónde lo tengo (Binance, broker, etc.)`;
+
 function viewRespaldo() {
   const s = S.settings;
   return `
@@ -1516,6 +1527,15 @@ function viewAjustes() {
         <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub</a>.</p>
       <div class="form-row"><input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Clave de Finnhub" autocomplete="off"></div>
       <button class="btn" data-action="saveKey">Guardar clave</button>
+    </section>
+
+    <section class="card" id="importar">
+      <h2 style="margin-bottom:8px">Importar mi portafolio desde mi chat</h2>
+      <p class="small" style="color:var(--text-2);margin-top:0">Copiá este pedido, pegalo en tu chat de Claude y pegá abajo lo que te devuelva.</p>
+      <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
+      <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
+      <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
+      <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
     </section>
 
     <section class="card">
@@ -4342,6 +4362,40 @@ function undoTrade(h, tradeId) {
   h.trades.splice(i, 1);
 }
 
+function importHoldings(text) {
+  let data;
+  const m = text.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
+  try { data = JSON.parse(m ? m[0] : text); } catch (e) { return toast('No pude leer el JSON. Revisá que esté completo.'); }
+  if (!Array.isArray(data)) data = data.holdings || data.portfolio || data.portafolio || [];
+  let added = 0, updated = 0;
+  for (const r of data) {
+    const symbol = String(r.symbol || r.ticker || '').toUpperCase().trim();
+    if (!symbol) continue;
+    const qty = parseNum(r.quantity ?? r.cantidad ?? 0) || 0;
+    const avg = parseNum(r.avgCost ?? r.precioPromedio ?? r.avg_cost ?? 0) || 0;
+    const platform = String(r.platform || r.plataforma || '').trim();
+    let h = S.holdings.find((x) => x.symbol === symbol && (!platform || !x.platform || x.platform === platform));
+    if (h) {
+      h.quantity = qty;
+      if (avg) h.avgCost = avg;
+      if (platform) h.platform = platform;
+      updated++;
+    } else {
+      const cg = CG_IDS[symbol] || '';
+      S.holdings.push({
+        id: uid(), symbol, name: r.name || r.nombre || '', assetType: cg ? (cg.includes('gold') ? 'oro' : 'cripto') : (r.type || 'accion'),
+        platform, quantity: qty, avgCost: avg, price: 0, change24h: null, priceUpdated: null, priceSource: '', coingeckoId: cg, trades: [],
+      });
+      added++;
+    }
+  }
+  if (!added && !updated) return toast('No encontré activos en el texto.');
+  save();
+  toast(`Importado: ${updated} actualizado(s), ${added} nuevo(s).`);
+  go('inversiones');
+  refreshAll({ silent: true });
+}
+
 /* ---------------- Acciones: cuentas ---------------- */
 
 function accountForm(a) {
@@ -4907,6 +4961,11 @@ const ACTIONS = {
     }
   },
   saveKey: () => { S.settings.finnhubKey = $('#setFinnhub').value.trim(); save(); toast('Clave guardada.'); refreshAll(); },
+  copyPrompt: async () => {
+    try { await navigator.clipboard.writeText(CHAT_PROMPT); toast('Pedido copiado. Pegalo en tu chat.'); }
+    catch (e) { const r = document.createRange(); r.selectNodeContents($('#chatPrompt')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Seleccionado: copialo con Ctrl+C.'); }
+  },
+  importHoldings: () => importHoldings($('#importText').value),
   backup: () => backup(),
   addBudget: () => budgetForm(),
   editBudget: (cat) => budgetForm(cat),
