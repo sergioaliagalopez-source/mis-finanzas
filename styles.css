@@ -821,3 +821,12 @@ html.more-open, html.more-open body { overflow: hidden; }
 .saved-line { font-size: 13px; color: var(--muted); margin: -2px 0 10px; }
 .saved-line b { color: var(--good); font-weight: 600; }
 .saved-line.zero b { color: var(--muted); }
+
+/* Informe para analizar */
+.rep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rep-fmt { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; border-radius: 12px; background: var(--surface-2); }
+.rep-fmt button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 42px; border: 0; border-radius: 9px; background: none; color: var(--text-2); font-weight: 600; cursor: pointer; }
+.rep-fmt button.on { background: var(--surface); color: var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, .2); }
+.rep-list { margin: 0; padding-left: 18px; color: var(--text-2); display: flex; flex-direction: column; gap: 4px; }
+h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
+@media (max-width: 480px) { .rep-grid { grid-template-columns: 1fr; gap: 0; } }

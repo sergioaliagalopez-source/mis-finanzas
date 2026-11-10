@@ -28,6 +28,7 @@ const ICONS = {
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
   pie: '<path d="M21 12A9 9 0 1 1 12 3"/><path d="M12 3a9 9 0 0 1 9 9h-9z"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
+  download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v3h16v-3"/>',
   dollar: '<path d="M12 2.5v19"/><path d="M17 6.5c-.8-1.3-2.6-2-5-2-2.8 0-4.5 1.3-4.5 3.3 0 4.7 9.5 2.4 9.5 7.4 0 2-1.8 3.3-5 3.3-2.4 0-4.2-.8-5-2.2"/>',
   trending: '<path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
   wallet: '<path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v11a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2z"/><circle cx="16" cy="14.5" r="1.2"/>',
@@ -168,6 +169,7 @@ const MORE_GROUPS = [
   ['Entender tus números', [
     ['analisis', 'Análisis', 'chart', 'En qué gastás'],
     ['consejos', 'Consejos', 'sparkle', 'Ahorrar y ganar más'],
+    ['informe', 'Informe', 'download', 'PDF o Excel'],
   ]],
   ['La app', [
     ['respaldo', 'Respaldo', 'sync', 'iPhone, PC y copias'],
@@ -426,6 +428,9 @@ function snapshot() {
   if (!S.accounts.some((a) => Number(a.balance)) && !S.holdings.some((h) => Number(h.quantity))) return;
   const d = todayISO();
   const row = { date: d, netWorth: t.netWorth, inv: t.inv, liquid: t.liquid, debt: t.debt };
+  // Precio de cada activo ese día (para el informe "día por día"; las acciones no tienen historial gratis)
+  const px = Object.fromEntries(S.holdings.filter((h) => Number(h.price) > 0).map((h) => [h.symbol, Number(h.price)]));
+  if (Object.keys(px).length) row.px = px;
   const last = S.history[S.history.length - 1];
   if (last && last.date === d) Object.assign(last, row); else S.history.push(row);
   if (S.history.length > 3650) S.history.shift();
@@ -3789,6 +3794,364 @@ function parseReceipt(text) {
   return { amount, date, time, note, category };
 }
 
+/* ---------------- Informe para analizar (PDF o Excel) ----------------
+   Elegís desde qué mes y hasta cuál (sólo aparecen los meses con registros) y el formato.
+   Todo se arma en el teléfono con librerías gratis (jsPDF y SheetJS); los precios de cripto de cada día
+   se bajan gratis de CoinGecko. Las acciones (VOO, NVDA…) sólo tienen precio de los días en que abriste la app. */
+
+const PDF_LIBS = ['https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'];
+const XLSX_LIB = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+const scriptLoads = {};
+const loadScript = (src) => scriptLoads[src] || (scriptLoads[src] = new Promise((res, rej) => {
+  const s = document.createElement('script');
+  s.src = src;
+  s.onload = res;
+  s.onerror = () => { delete scriptLoads[src]; s.remove(); rej(new Error('No se pudo descargar el generador del informe. Revisá tu conexión.')); };
+  document.head.append(s);
+}));
+
+// Meses con algo registrado (movimientos o compras/ventas de inversiones), del más viejo al más nuevo
+function reportMonths() {
+  const dates = [...S.transactions.map((t) => t.date), ...S.holdings.flatMap((h) => (h.trades || []).map((x) => x.date))].filter(Boolean).sort();
+  const months = [...new Set(dates.map((d) => d.slice(0, 7)))].filter((m) => m <= currentMonth());
+  return { first: dates[0] || null, months };
+}
+
+function viewInforme() {
+  const { first, months } = reportMonths();
+  if (!months.length) return `<section class="card" style="text-align:center;padding:30px 20px">
+    <h2 style="font-size:18px;margin-bottom:8px">Todavía no hay nada para el informe</h2>
+    <p class="muted" style="margin:0 auto 16px;max-width:420px">Cuando registres tus gastos e ingresos, acá vas a poder descargar un informe por mes en PDF o Excel.</p>
+    <button class="btn primary" data-action="go" data-id="movimientos">Ir a Movimientos</button></section>`;
+  const s = S.settings;
+  const from = months.includes(s.repFrom) ? s.repFrom : months[0];
+  const to = months.includes(s.repTo) ? s.repTo : months[months.length - 1];
+  const fmt = s.repFmt === 'xlsx' ? 'xlsx' : 'pdf';
+  const opt = (sel) => months.map((m) => `<option value="${m}" ${m === sel ? 'selected' : ''}>${monthLabel(m, 'long').replace(/^\w/, (c) => c.toUpperCase())} ${m.slice(0, 4)}</option>`).join('');
+  return `<section class="card">
+    <h2 style="margin-bottom:6px">${icon('download', 18)} Informe para analizar</h2>
+    <p class="small" style="color:var(--text-2);margin:0 0 14px">Empezaste a registrar el <b>${fmtDate(first)}</b>. Sólo aparecen los meses en los que registraste algo.</p>
+    <div class="rep-grid">
+      <div class="form-row"><label for="repFrom">Desde</label><select id="repFrom">${opt(from)}</select></div>
+      <div class="form-row"><label for="repTo">Hasta</label><select id="repTo">${opt(to)}</select></div>
+    </div>
+    <div class="form-row"><label>Formato</label>
+      <div class="rep-fmt">
+        <button type="button" class="${fmt === 'pdf' ? 'on' : ''}" data-action="repFmt" data-id="pdf">${icon('receipt', 16)} PDF</button>
+        <button type="button" class="${fmt === 'xlsx' ? 'on' : ''}" data-action="repFmt" data-id="xlsx">${icon('list', 16)} Excel</button>
+      </div></div>
+    <button class="btn primary wide" data-action="reportMake">${icon('download', 16)} Descargar informe</button>
+  </section>
+  <section class="card">
+    <h2 style="margin-bottom:8px">Qué trae</h2>
+    <ul class="small rep-list">
+      <li>Resumen de cada mes: ingresos, gastos, ahorro, lo que pagó tu familia y tu patrimonio.</li>
+      <li>Todos los movimientos con fecha, día, hora, categoría, detalle y cuenta.</li>
+      <li>Gastos por categoría y gasto de cada día.</li>
+      <li>Tus inversiones día por día: precio, cantidad, valor y variación de cada activo, y las compras y ventas.</li>
+      <li>Tus cuentas, fijos y notas para que tu IA entienda los datos.</li>
+    </ul>
+    <p class="small muted" style="margin:8px 0 0">Los precios de cripto y oro (PAXG) de cada día se bajan gratis de CoinGecko. Las acciones y ETF tienen precio sólo de los días en que abriste la app; desde ahora se guardan todos los días.</p>
+  </section>`;
+}
+
+// Cantidad que tenías de un activo al final de un día, a partir de la cantidad de hoy y las compras/ventas posteriores
+function qtyAt(h, date) {
+  let q = Number(h.quantity) || 0;
+  for (const tr of h.trades || []) if (tr.date > date) q += tr.side === 'compra' ? -tr.qty : tr.qty;
+  return Math.max(0, Math.round(q * 1e10) / 1e10);
+}
+
+// Precio de cada día de cada cripto (CoinGecko, gratis). { coingeckoId: { 'AAAA-MM-DD': precio USD } }
+async function cryptoDaily(fromISO, toISO, onStep) {
+  const ids = [...new Set(S.holdings.map((h) => (h.coingeckoId || '').trim().toLowerCase()).filter(Boolean))];
+  const out = {};
+  const minFrom = Date.now() - 364 * 864e5; // la versión gratis da hasta un año para atrás
+  const from = Math.max(minFrom, Date.parse(fromISO + 'T00:00:00')) / 1000;
+  const to = Math.min(Date.now(), Date.parse(toISO + 'T23:59:59')) / 1000;
+  if (to <= from) return out;
+  for (const [i, id] of ids.entries()) {
+    onStep?.(`Bajando precios de ${id}…`);
+    try {
+      const j = await getJSON(`https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart/range?vs_currency=usd&from=${Math.floor(from)}&to=${Math.floor(to)}`, 20000);
+      const days = {};
+      for (const [ms, p] of j.prices || []) days[isoOf(ms)] = p; // queda el último precio de cada día
+      out[id] = days;
+    } catch (e) { console.warn(e); }
+    if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 1200)); // sin apurar a CoinGecko
+  }
+  return out;
+}
+
+// Todos los datos del informe, mes por mes
+async function buildReport(fromM, toM, onStep) {
+  const cur = S.settings.localCurrency;
+  const L = (usd) => round2(fromUSD(usd, cur));
+  const U = (usd) => round2(usd);
+  const today = todayISO();
+  const months = reportMonths().months.filter((m) => m >= fromM && m <= toM);
+  const firstDay = `${months[0]}-01`, lastDay = `${months[months.length - 1]}-${String(daysInMonth(months[months.length - 1])).padStart(2, '0')}`;
+  const crypto = S.holdings.some((h) => h.coingeckoId) ? await cryptoDaily(firstDay, lastDay < today ? lastDay : today, onStep) : {};
+  const histByDay = Object.fromEntries((S.history || []).map((r) => [r.date, r]));
+  const accName = (t) => (t.familyPaid ? 'Lo pagó tu familia' : S.accounts.find((a) => a.id === t.accountId)?.name || '');
+  const weekday = (d) => new Date(d + 'T12:00:00').toLocaleDateString('es-AR', { weekday: 'long' });
+  const priceOn = (h, d) => {
+    const id = (h.coingeckoId || '').trim().toLowerCase();
+    if (id && crypto[id]?.[d] != null) return { p: crypto[id][d], src: 'CoinGecko' };
+    const px = histByDay[d]?.px?.[h.symbol];
+    if (px != null) return { p: px, src: 'App' };
+    if (d === today && Number(h.price)) return { p: Number(h.price), src: 'App' };
+    return null;
+  };
+  onStep?.('Ordenando tus movimientos…');
+  const out = [];
+  for (const m of months) {
+    const dim = daysInMonth(m);
+    const end = `${m}-${String(dim).padStart(2, '0')}`;
+    const lastD = end < today ? end : today;
+    const txs = S.transactions.filter((t) => t.date?.startsWith(m)).sort((a, b) => `${a.date}${a.time || ''}`.localeCompare(`${b.date}${b.time || ''}`));
+    const ms = monthStats(m);
+    const fam = familyPaidIn(m);
+    const fixed = txs.filter((t) => t.type === 'gasto' && isFixedTx(t) && !nonFlow(t)).reduce((s, t) => s + txUSD(t), 0);
+    const variable = txs.filter(isVariable).reduce((s, t) => s + txUSD(t), 0);
+    const daysWith = new Set(txs.map((t) => t.date)).size;
+    const daysElapsed = Number(lastD.slice(8, 10));
+    const biggest = txs.filter((t) => t.type === 'gasto' && !t.investment).sort((a, b) => txUSD(b) - txUSD(a))[0];
+    const hist = (S.history || []).filter((r) => r.date.startsWith(m));
+    const rows = txs.map((t) => ({
+      fecha: t.date, dia: weekday(t.date), hora: t.time || '',
+      tipo: t.type === 'gasto' ? 'Gasto' : t.type === 'ingreso' ? 'Ingreso' : 'Transferencia',
+      categoria: t.type === 'transferencia' ? 'Transferencia' : t.category || '',
+      detalle: t.note && t.note !== t.category ? t.note : '',
+      cuenta: t.type === 'transferencia' ? `${accName(t)} -> ${S.accounts.find((a) => a.id === t.toAccountId)?.name || ''}` : accName(t),
+      moneda: S.accounts.find((a) => a.id === t.accountId)?.currency || t.currency || cur,
+      monto: Number(t.amount) || 0,
+      // + ingreso / - gasto (las transferencias van en positivo: sólo pasan plata de una cuenta a otra)
+      montoLocal: t.type === 'gasto' ? -L(txUSD(t)) : L(txUSD(t)),
+      montoUSD: t.type === 'gasto' ? -U(txUSD(t)) : U(txUSD(t)),
+      fijo: t.recurringId ? 'Sí' : '', programado: t.scheduledId ? 'Sí' : '', familia: t.familyPaid ? 'Sí' : '',
+      inversion: t.investment ? 'Sí' : '', prestamo: t.loan || t.loanId ? 'Sí' : '',
+    }));
+    const cats = (obj, total) => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([c, v]) => ({ categoria: c, local: L(v), usd: U(v), pct: total ? round2((v / total) * 100) : 0, n: txs.filter((t) => (t.category || '') === c && !nonFlow(t) && t.type !== 'transferencia').length }));
+    const days = [];
+    for (let d = 1; d <= Number(lastD.slice(8, 10)); d++) {
+      const iso = `${m}-${String(d).padStart(2, '0')}`;
+      const dayTx = txs.filter((t) => t.date === iso);
+      const spent = dayTx.filter(isVariable).reduce((s, t) => s + txUSD(t), 0);
+      const all = dayTx.filter((t) => t.type === 'gasto' && !nonFlow(t)).reduce((s, t) => s + txUSD(t), 0);
+      const inc = dayTx.filter((t) => t.type === 'ingreso' && !nonFlow(t)).reduce((s, t) => s + txUSD(t), 0);
+      const bud = S.dayBudgets?.[iso]?.v;
+      days.push({ fecha: iso, dia: weekday(iso), variable: L(spent), gastos: L(all), ingresos: L(inc), presupuesto: bud != null ? L(bud) : null, n: dayTx.length });
+    }
+    // Inversiones: precio y valor de cada activo, cada día
+    const invDaily = [];
+    const holdRows = [];
+    for (const h of S.holdings) {
+      let prev = null, first = null, last = null;
+      for (let d = 1; d <= Number(lastD.slice(8, 10)); d++) {
+        const iso = `${m}-${String(d).padStart(2, '0')}`;
+        const q = qtyAt(h, iso);
+        const pr = priceOn(h, iso);
+        if (!pr) continue; // días sin precio (acciones antes de que se guardara): no se inventan
+        const p = pr?.p ?? null;
+        const ch = p != null && prev != null ? round2((p / prev - 1) * 100) : null;
+        invDaily.push({ fecha: iso, activo: h.symbol, cantidad: q, precio: p != null ? Math.round(p * 100) / 100 : null, variacion: ch, valorUSD: p != null ? U(q * p) : null, valorLocal: p != null ? L(q * p) : null, fuente: pr?.src || 'Sin dato' });
+        if (p != null) { if (first == null) first = { d: iso, p }; last = { d: iso, p }; prev = p; }
+      }
+      const qEnd = qtyAt(h, lastD), qStart = qtyAt(h, addDays(`${m}-01`, -1));
+      if (!qEnd && !qStart && !(h.trades || []).some((x) => x.date?.startsWith(m))) continue;
+      holdRows.push({ activo: h.symbol, nombre: h.name || '', tipo: ASSET_TYPES[h.assetType] || h.assetType, plataforma: h.platform || '', cantidadInicio: qStart, cantidadFin: qEnd,
+        precioInicio: first ? Math.round(first.p * 100) / 100 : null, precioFin: last ? Math.round(last.p * 100) / 100 : null,
+        variacion: first && last ? round2((last.p / first.p - 1) * 100) : null, valorFinUSD: last ? U(qEnd * last.p) : null, valorFinLocal: last ? L(qEnd * last.p) : null,
+        precioPromedio: Number(h.avgCost) || null });
+    }
+    const trades = S.holdings.flatMap((h) => (h.trades || []).filter((x) => x.date?.startsWith(m)).map((x) => ({ fecha: x.date, activo: h.symbol, operacion: x.side === 'compra' ? 'Compra' : 'Venta', cantidad: x.qty, precio: x.price, totalUSD: U(x.qty * x.price) }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const portfolio = hist.map((r) => ({ fecha: r.date, patrimonio: L(r.netWorth), liquidez: L(r.liquid), inversiones: L(r.inv), deuda: L(r.debt || 0) }));
+    out.push({
+      m, nombre: `${monthLabel(m, 'long').replace(/^\w/, (c) => c.toUpperCase())} ${m.slice(0, 4)}`, completo: end < today,
+      resumen: {
+        ingresos: L(ms.income), gastos: L(ms.expense), ahorro: L(ms.income - ms.expense), tasa: ms.income ? round2(((ms.income - ms.expense) / ms.income) * 100) : null,
+        familia: L(fam), costoReal: L(ms.expense + fam), fijos: L(fixed), variables: L(variable), promedioDiario: L(variable / daysElapsed),
+        movimientos: txs.length, diasConRegistro: daysWith, dias: daysElapsed, mayorGasto: biggest ? `${biggest.note || biggest.category} (${fmtIn(L(txUSD(biggest)), cur)}, ${biggest.date})` : '',
+        categoriaTop: Object.entries(ms.byCat).sort((a, b) => b[1] - a[1])[0]?.[0] || '',
+        patrimonioInicio: hist[0] ? L(hist[0].netWorth) : null, patrimonioFin: hist.length ? L(hist[hist.length - 1].netWorth) : null,
+      },
+      gastosCat: cats(ms.byCat, ms.expense), ingresosCat: cats(ms.incomeCats, ms.income), movimientos: rows, dias: days,
+      inversiones: holdRows, operaciones: trades, invDiario: invDaily, patrimonio: portfolio,
+    });
+  }
+  return {
+    meses: out, moneda: cur, simbolo: curLabel(cur), tipoCambio: rate(cur), generado: new Date().toLocaleString('es-AR'), primerRegistro: reportMonths().first,
+    cuentas: S.accounts.map((a) => ({ cuenta: a.name, tipo: ACCOUNT_TYPES[a.type]?.label || a.type, moneda: a.currency, saldo: Number(a.balance) || 0, saldoLocal: L(toUSD(a.balance, a.currency)) })),
+    fijos: S.recurring.map((r) => ({ nombre: r.name, tipo: r.type === 'ingreso' ? 'Ingreso' : 'Gasto', monto: Number(r.amount) || 0, moneda: r.currency, dia: r.day || 'Sin día fijo', categoria: r.category, seRepite: repeats(r) ? 'Sí' : 'No', seguro: r.type === 'ingreso' ? (isSure(r) ? 'Sí' : 'A veces') : '' })),
+    metas: S.goals.map((g) => ({ meta: g.name, objetivo: Number(g.target) || 0, moneda: g.currency, fecha: g.date || '' })),
+  };
+}
+
+const addDays = (iso, k) => isoOf(Date.parse(iso + 'T12:00:00') + k * 864e5);
+
+const REPORT_NOTES = [
+  'Los montos en la moneda local están convertidos con el tipo de cambio de hoy.',
+  'Gastos = lo que salió de tus cuentas (sin transferencias, inversiones ni préstamos).',
+  '"Lo pagó tu familia" son gastos que tu familia pagó directo por vos: no salen de tus cuentas, pero muestran el costo real de tu mes.',
+  'Fijo = gasto o ingreso de todos los meses. Programado = gasto de una sola vez con fecha. Variable = gasto del día a día.',
+  'Presupuesto del día = lo que la app te mostró en "Hoy podés gastar" ese día (sólo desde que se guarda).',
+  'Inversiones: la cantidad de cada día sale de tus compras y ventas registradas; los precios de cripto y oro son de CoinGecko y los de acciones, de los días en que abriste la app.',
+];
+
+/* ---- PDF ---- */
+const pdfTxt = (s) => String(s ?? '').replace(/[−–—]/g, '-').replace(/→/g, '->').replace(/[✓✔]/g, 'OK').replace(/[^\x00-\xFF]/g, '').trim();
+
+async function reportPDF(R) {
+  for (const src of PDF_LIBS) await loadScript(src);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth(), M = 36;
+  const sym = R.simbolo;
+  const n = (v, d = 2) => (v == null || Number.isNaN(v) ? '-' : Number(v).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d }));
+  const money = (v) => (v == null ? '-' : `${sym} ${n(v)}`);
+  let y = M;
+  const title = (t, size = 13) => { if (y > 760) { doc.addPage(); y = M; } doc.setFont('helvetica', 'bold'); doc.setFontSize(size); doc.text(pdfTxt(t), M, y); y += size + 6; doc.setFont('helvetica', 'normal'); };
+  const para = (t, size = 9) => { doc.setFontSize(size); const lines = doc.splitTextToSize(pdfTxt(t), W - 2 * M); if (y + lines.length * (size + 3) > 800) { doc.addPage(); y = M; } doc.text(lines, M, y); y += lines.length * (size + 3) + 4; };
+  const table = (head, body, opts = {}) => {
+    if (!body.length) { para('(sin datos)'); return; }
+    doc.autoTable({ startY: y, head: [head.map(pdfTxt)], body: body.map((r) => r.map(pdfTxt)), margin: { left: M, right: M }, styles: { fontSize: 7.5, cellPadding: 3 }, headStyles: { fillColor: [42, 120, 214] }, theme: 'striped', ...opts });
+    y = doc.lastAutoTable.finalY + 14;
+  };
+  title('Informe financiero - MyFinance', 18);
+  para(`Período: ${R.meses[0].nombre} a ${R.meses[R.meses.length - 1].nombre}. Generado el ${R.generado}. Empezaste a registrar el ${fmtDate(R.primerRegistro)}.`);
+  para(`Moneda: ${R.moneda} (${sym}). Tipo de cambio usado: ${sym} ${n(R.tipoCambio)} por 1 USD.`);
+  title('Resumen por mes');
+  table(['Mes', 'Ingresos', 'Gastos', 'Ahorro', 'Tasa', 'Pagó familia', 'Costo real'], R.meses.map((x) => [x.nombre, money(x.resumen.ingresos), money(x.resumen.gastos), money(x.resumen.ahorro), x.resumen.tasa == null ? '-' : `${n(x.resumen.tasa, 1)}%`, money(x.resumen.familia), money(x.resumen.costoReal)]));
+  title('Cuentas (saldo de hoy)');
+  table(['Cuenta', 'Tipo', 'Moneda', 'Saldo', `En ${sym}`], R.cuentas.map((a) => [a.cuenta, a.tipo, a.moneda, n(a.saldo), money(a.saldoLocal)]));
+  if (R.fijos.length) { title('Ingresos y gastos fijos'); table(['Nombre', 'Tipo', 'Monto', 'Moneda', 'Día', 'Categoría', 'Se repite', 'Seguro'], R.fijos.map((f) => [f.nombre, f.tipo, n(f.monto), f.moneda, f.dia, f.categoria, f.seRepite, f.seguro])); }
+  if (R.metas.length) { title('Metas'); table(['Meta', 'Objetivo', 'Moneda', 'Para'], R.metas.map((g) => [g.meta, n(g.objetivo), g.moneda, g.fecha])); }
+  title('Notas para el análisis');
+  for (const t of REPORT_NOTES) para(`- ${t}`);
+  for (const x of R.meses) {
+    doc.addPage(); y = M;
+    const r = x.resumen;
+    title(`${x.nombre}${x.completo ? '' : ' (mes en curso)'}`, 16);
+    table(['Dato', 'Valor'], [
+      ['Ingresos', money(r.ingresos)], ['Gastos', money(r.gastos)], ['Ahorro', money(r.ahorro)], ['Tasa de ahorro', r.tasa == null ? '-' : `${n(r.tasa, 1)}%`],
+      ['Lo pagó tu familia', money(r.familia)], ['Costo real del mes (gastos + familia)', money(r.costoReal)], ['Gastos fijos y programados', money(r.fijos)], ['Gastos del día a día', money(r.variables)],
+      ['Promedio diario (día a día)', money(r.promedioDiario)], ['Movimientos registrados', String(r.movimientos)], ['Días con registros', `${r.diasConRegistro} de ${r.dias}`],
+      ['Mayor gasto', r.mayorGasto || '-'], ['Categoría con más gasto', r.categoriaTop || '-'], ['Patrimonio al inicio / al final', `${money(r.patrimonioInicio)} / ${money(r.patrimonioFin)}`],
+    ], { columnStyles: { 0: { cellWidth: 200 } } });
+    title('Gastos por categoría', 11);
+    table(['Categoría', `Total ${sym}`, 'USD', '%', 'Movimientos'], x.gastosCat.map((c) => [c.categoria, n(c.local), n(c.usd), `${n(c.pct, 1)}%`, String(c.n)]));
+    if (x.ingresosCat.length) { title('Ingresos por categoría', 11); table(['Categoría', `Total ${sym}`, 'USD', '%'], x.ingresosCat.map((c) => [c.categoria, n(c.local), n(c.usd), `${n(c.pct, 1)}%`])); }
+    title('Día por día', 11);
+    table(['Fecha', 'Día', `Día a día ${sym}`, `Todos los gastos ${sym}`, `Ingresos ${sym}`, `Presupuesto del día ${sym}`, 'Mov.'], x.dias.map((d) => [d.fecha, d.dia, n(d.variable), n(d.gastos), n(d.ingresos), d.presupuesto == null ? '-' : n(d.presupuesto), String(d.n)]));
+    title('Todos los movimientos', 11);
+    table(['Fecha', 'Hora', 'Tipo', 'Categoría', 'Detalle', 'Cuenta', 'Monto', `${sym}`, 'Marca'], x.movimientos.map((t) => [t.fecha, t.hora, t.tipo, t.categoria, t.detalle, t.cuenta, `${n(t.monto)} ${t.moneda === R.moneda ? '' : t.moneda}`, n(t.montoLocal), [t.fijo && 'fijo', t.programado && 'programado', t.familia && 'familia', t.inversion && 'inversión', t.prestamo && 'préstamo'].filter(Boolean).join(', ')]),
+      { columnStyles: { 4: { cellWidth: 90 } } });
+    if (x.inversiones.length || x.operaciones.length) {
+      title('Inversiones del mes', 11);
+      table(['Activo', 'Tipo', 'Cant. inicio', 'Cant. fin', 'Precio inicio', 'Precio fin', 'Variación', 'Valor fin USD', `Valor fin ${sym}`], x.inversiones.map((h) => [h.activo, h.tipo, n(h.cantidadInicio, 6), n(h.cantidadFin, 6), n(h.precioInicio), n(h.precioFin), h.variacion == null ? '-' : `${n(h.variacion)}%`, n(h.valorFinUSD), n(h.valorFinLocal)]));
+      if (x.operaciones.length) { title('Compras y ventas', 11); table(['Fecha', 'Activo', 'Operación', 'Cantidad', 'Precio USD', 'Total USD'], x.operaciones.map((o) => [o.fecha, o.activo, o.operacion, n(o.cantidad, 6), n(o.precio), n(o.totalUSD)])); }
+      title('Inversiones día por día', 11);
+      table(['Fecha', 'Activo', 'Cantidad', 'Precio USD', 'Variación día', 'Valor USD', `Valor ${sym}`, 'Fuente'], x.invDiario.map((d) => [d.fecha, d.activo, n(d.cantidad, 6), n(d.precio), d.variacion == null ? '-' : `${n(d.variacion)}%`, n(d.valorUSD), n(d.valorLocal), d.fuente]));
+    }
+    if (x.patrimonio.length) { title('Tu patrimonio día por día', 11); table(['Fecha', `Patrimonio ${sym}`, `Liquidez ${sym}`, `Inversiones ${sym}`, `Deuda ${sym}`], x.patrimonio.map((p) => [p.fecha, n(p.patrimonio), n(p.liquidez), n(p.inversiones), n(p.deuda)])); }
+  }
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) { doc.setPage(i); doc.setFontSize(7); doc.setTextColor(140); doc.text(`MyFinance - página ${i} de ${pages}`, W - M, 820, { align: 'right' }); }
+  return doc.output('blob');
+}
+
+/* ---- Excel ---- */
+async function reportXLSX(R) {
+  await loadScript(XLSX_LIB);
+  const X = window.XLSX;
+  const wb = X.utils.book_new();
+  const sym = R.simbolo;
+  const add = (name, rows) => {
+    const ws = X.utils.json_to_sheet(rows.length ? rows : [{ '(sin datos)': '' }]);
+    ws['!cols'] = Object.keys(rows[0] || { x: 1 }).map((k) => ({ wch: Math.min(40, Math.max(10, k.length + 2, ...rows.slice(0, 200).map((r) => String(r[k] ?? '').length + 1))) }));
+    X.utils.book_append_sheet(wb, ws, name);
+  };
+  add('Resumen', R.meses.map((x) => ({ Mes: x.nombre, 'Mes completo': x.completo ? 'Sí' : 'En curso', [`Ingresos ${sym}`]: x.resumen.ingresos, [`Gastos ${sym}`]: x.resumen.gastos, [`Ahorro ${sym}`]: x.resumen.ahorro, 'Tasa de ahorro %': x.resumen.tasa,
+    [`Pagó la familia ${sym}`]: x.resumen.familia, [`Costo real ${sym}`]: x.resumen.costoReal, [`Fijos y programados ${sym}`]: x.resumen.fijos, [`Día a día ${sym}`]: x.resumen.variables, [`Promedio diario ${sym}`]: x.resumen.promedioDiario,
+    Movimientos: x.resumen.movimientos, 'Días con registros': x.resumen.diasConRegistro, 'Días del mes': x.resumen.dias, 'Mayor gasto': x.resumen.mayorGasto, 'Categoría con más gasto': x.resumen.categoriaTop,
+    [`Patrimonio inicio ${sym}`]: x.resumen.patrimonioInicio, [`Patrimonio fin ${sym}`]: x.resumen.patrimonioFin })));
+  add('Movimientos', R.meses.flatMap((x) => x.movimientos.map((t) => ({ Mes: x.nombre, Fecha: t.fecha, Día: t.dia, Hora: t.hora, Tipo: t.tipo, Categoría: t.categoria, Detalle: t.detalle, Cuenta: t.cuenta, Moneda: t.moneda, Monto: t.monto,
+    [`Monto ${sym} (+ingreso / -gasto)`]: t.montoLocal, 'Monto USD': t.montoUSD, Fijo: t.fijo, Programado: t.programado, 'Pagó la familia': t.familia, Inversión: t.inversion, Préstamo: t.prestamo }))));
+  add('Por categoría', R.meses.flatMap((x) => [...x.gastosCat.map((c) => ({ Mes: x.nombre, Tipo: 'Gasto', ...c })), ...x.ingresosCat.map((c) => ({ Mes: x.nombre, Tipo: 'Ingreso', ...c }))]
+    .map((c) => ({ Mes: c.Mes, Tipo: c.Tipo, Categoría: c.categoria, [`Total ${sym}`]: c.local, 'Total USD': c.usd, '%': c.pct, Movimientos: c.n }))));
+  add('Día por día', R.meses.flatMap((x) => x.dias.map((d) => ({ Mes: x.nombre, Fecha: d.fecha, Día: d.dia, [`Día a día ${sym}`]: d.variable, [`Todos los gastos ${sym}`]: d.gastos, [`Ingresos ${sym}`]: d.ingresos, [`Presupuesto del día ${sym}`]: d.presupuesto, Movimientos: d.n }))));
+  add('Inversiones', R.meses.flatMap((x) => x.inversiones.map((h) => ({ Mes: x.nombre, Activo: h.activo, Nombre: h.nombre, Tipo: h.tipo, Plataforma: h.plataforma, 'Cantidad inicio': h.cantidadInicio, 'Cantidad fin': h.cantidadFin,
+    'Precio inicio USD': h.precioInicio, 'Precio fin USD': h.precioFin, 'Variación %': h.variacion, 'Valor fin USD': h.valorFinUSD, [`Valor fin ${sym}`]: h.valorFinLocal, 'Precio promedio de compra USD': h.precioPromedio }))));
+  add('Inversiones diario', R.meses.flatMap((x) => x.invDiario.map((d) => ({ Fecha: d.fecha, Activo: d.activo, Cantidad: d.cantidad, 'Precio USD': d.precio, 'Variación día %': d.variacion, 'Valor USD': d.valorUSD, [`Valor ${sym}`]: d.valorLocal, Fuente: d.fuente }))));
+  add('Compras y ventas', R.meses.flatMap((x) => x.operaciones.map((o) => ({ Fecha: o.fecha, Activo: o.activo, Operación: o.operacion, Cantidad: o.cantidad, 'Precio USD': o.precio, 'Total USD': o.totalUSD }))));
+  add('Patrimonio diario', R.meses.flatMap((x) => x.patrimonio.map((p) => ({ Fecha: p.fecha, [`Patrimonio ${sym}`]: p.patrimonio, [`Liquidez ${sym}`]: p.liquidez, [`Inversiones ${sym}`]: p.inversiones, [`Deuda ${sym}`]: p.deuda }))));
+  add('Cuentas', R.cuentas.map((a) => ({ Cuenta: a.cuenta, Tipo: a.tipo, Moneda: a.moneda, 'Saldo de hoy': a.saldo, [`En ${sym}`]: a.saldoLocal })));
+  add('Fijos', R.fijos.map((f) => ({ Nombre: f.nombre, Tipo: f.tipo, Monto: f.monto, Moneda: f.moneda, Día: f.dia, Categoría: f.categoria, 'Se repite': f.seRepite, Seguro: f.seguro })));
+  add('Notas', [
+    { Nota: `Informe de ${R.meses[0].nombre} a ${R.meses[R.meses.length - 1].nombre}, generado el ${R.generado}.` },
+    { Nota: `Empezaste a registrar el ${fmtDate(R.primerRegistro)}. Moneda ${R.moneda}; tipo de cambio ${R.tipoCambio} por 1 USD.` },
+    ...REPORT_NOTES.map((t) => ({ Nota: t })),
+  ]);
+  const data = X.write(wb, { bookType: 'xlsx', type: 'array' });
+  return new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// Arma el informe con una ventana de progreso; al terminar, un botón para guardarlo o compartirlo
+// (el iPhone sólo deja compartir un archivo como respuesta directa a un toque)
+async function makeReport() {
+  const s = S.settings;
+  const { months } = reportMonths();
+  let from = $('#repFrom')?.value || months[0], to = $('#repTo')?.value || months[months.length - 1];
+  if (from > to) [from, to] = [to, from];
+  const fmt = s.repFmt === 'xlsx' ? 'xlsx' : 'pdf';
+  const dlg = $('#dlg'), form = $('#dlgForm');
+  let cancelled = false;
+  form.innerHTML = `<h2>Armando tu informe…</h2>
+    <p class="small muted" id="repMsg" style="margin:0">Preparando…</p>
+    <div class="meter"><div id="repBar" class="good" style="width:8%"></div></div>
+    <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Cancelar</button></div>`;
+  form.onsubmit = (e) => e.preventDefault();
+  form.oninput = null; form.onchange = null; form.onclick = null; dlg.onclose = null;
+  form.querySelector('[data-close]').onclick = () => { cancelled = true; dlg.close(); };
+  dlg.showModal();
+  const step = (t, p) => { const m = $('#repMsg'); if (m) m.textContent = t; const b = $('#repBar'); if (b && p != null) b.style.width = `${p}%`; };
+  try {
+    step('Juntando tus datos…', 15);
+    const R = await buildReport(from, to, (t) => step(t, 40));
+    if (cancelled) return;
+    step(fmt === 'pdf' ? 'Armando el PDF…' : 'Armando el Excel…', 75);
+    const blob = fmt === 'pdf' ? await reportPDF(R) : await reportXLSX(R);
+    if (cancelled) return;
+    const name = `MyFinance-informe-${from}${from === to ? '' : `-a-${to}`}.${fmt}`;
+    const file = new File([blob], name, { type: blob.type });
+    form.innerHTML = `<h2>Tu informe está listo</h2>
+      <p class="small" style="margin:0;color:var(--text-2)"><b>${esc(name)}</b> · ${R.meses.length} mes${R.meses.length > 1 ? 'es' : ''} · ${Math.max(1, Math.round(blob.size / 1024))} KB</p>
+      <p class="small muted" style="margin:0">Guardalo en Archivos o mandalo directo a tu app de Claude para analizarlo.</p>
+      <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Cerrar</button>
+        <button type="button" class="btn primary" id="repSave">${icon('download', 16)} Guardar o compartir</button></div>`;
+    form.querySelector('[data-close]').onclick = () => dlg.close();
+    $('#repSave').onclick = async () => {
+      const mobile = matchMedia('(pointer: coarse)').matches;
+      if (mobile && navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: name }); dlg.close(); return; }
+        catch (e) { if (e.name === 'AbortError') return; }
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      dlg.close();
+      toast('Informe descargado ✓');
+    };
+  } catch (e) {
+    console.warn(e);
+    if (cancelled) return;
+    step(`No pude armar el informe: ${e.message || e}`, null);
+    const b = $('#repBar'); if (b) b.className = 'critical';
+  }
+}
+
 /* --- Filas de movimientos (Resumen y Movimientos) --- */
 
 function txRowHTML(t) {
@@ -4132,7 +4495,7 @@ const VIEW_FN = {
   resumen: () => viewResumen(), movimientos: () => viewMovimientos(), plan: () => viewPlan(),
   fijos: () => viewFijos(), programados: () => viewProgramados(), presupuesto: () => viewPresupuesto(), metas: () => viewMetas(),
   cuentas: () => viewCuentas(), prestamos: () => viewPrestamos(), inversiones: () => viewInversiones(), dolar: () => viewDolar(),
-  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
+  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
 };
 
 /* Menú "Más": una hoja con todas las secciones, agrupadas */
@@ -4966,6 +5329,8 @@ const ACTIONS = {
     catch (e) { const r = document.createRange(); r.selectNodeContents($('#chatPrompt')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Seleccionado: copialo con Ctrl+C.'); }
   },
   importHoldings: () => importHoldings($('#importText').value),
+  repFmt: (fmt) => { S.settings.repFmt = fmt; save(false); render(); },
+  reportMake: () => makeReport(),
   backup: () => backup(),
   addBudget: () => budgetForm(),
   editBudget: (cat) => budgetForm(cat),
@@ -5160,6 +5525,7 @@ function bindEvents() {
     if (t.id === 'txMonth') { S.settings.txMonth = t.value; save(false); render(); }
     if (t.id === 'txAccount') { S.settings.txAccount = t.value; save(false); render(); }
     if (t.id === 'anPeriod') { S.settings.anPeriod = Number(t.value); save(false); render(); }
+    if (t.id === 'repFrom' || t.id === 'repTo') { S.settings[t.id] = t.value; save(false); }
     if (t.id === 'goalRange') save(false);
     if (t.id === 'setLocal') { S.settings.localCurrency = t.value; save(); render(); refreshAll({ silent: true }); }
     if (t.id === 'setArsType') { S.settings.arsRateType = t.value; save(); refreshAll(); }
