@@ -1543,15 +1543,18 @@ function loanCountLabel() {
   return `<span class="muted small">${n ? `${n} abierto${n > 1 ? 's' : ''}` : 'Ninguno'}</span>`;
 }
 
-const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devolveme SOLO un bloque JSON (sin texto extra) con este formato exacto:
+const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devolveme SOLO un bloque JSON (sin texto extra) con UNA línea por cada compra que hice (si compré el mismo activo varias veces, una línea por cada compra), con este formato exacto:
 [
-  {"symbol": "VOO", "quantity": 0, "avgCost": 0, "platform": "broker"},
-  {"symbol": "PAXG", "quantity": 0, "avgCost": 0, "platform": "Binance"}
+  {"symbol": "VOO", "quantity": 0, "avgCost": 0, "platform": "broker", "purchaseDate": "AAAA-MM-DD", "fee": 0, "total": 0},
+  {"symbol": "PAXG", "quantity": 0, "avgCost": 0, "platform": "Binance", "purchaseDate": "AAAA-MM-DD", "fee": 0, "total": 0}
 ]
 - symbol: ticker (VOO, PAXG, BTC, ETH, NVDA, GOOGL, etc.)
-- quantity: cantidad de unidades/acciones/monedas que tengo
-- avgCost: precio promedio de compra por unidad en USD (0 si no lo sabés)
-- platform: dónde lo tengo (Binance, broker, etc.)`;
+- quantity: cantidad de unidades/acciones/monedas de ESA compra (se aceptan decimales, ej. 0.145)
+- avgCost: precio por unidad en USD de esa compra
+- platform: dónde lo tengo (Binance, broker, etc.)
+- purchaseDate: fecha de esa compra (AAAA-MM-DD). Si no la sabés, dejala vacía ""
+- fee: comisión en USD de esa compra (0 si no hubo)
+- total: monto pagado en USD (cantidad × precio + comisión; 0 si no lo sabés)`;
 
 function viewRespaldo() {
   const s = S.settings;
@@ -4126,7 +4129,7 @@ async function buildReport(fromM, toM, onStep) {
     }
     if (noPrice) monthQuality.push(`${noPrice} día(s) de inversiones sin precio guardado (acciones/ETF de días en que no se actualizaron los precios).`);
     const trades = S.holdings.flatMap((h) => (h.trades || []).filter((x) => x.date?.startsWith(m)).map((x) => ({ fecha: x.date, activo: h.symbol, operacion: x.side === 'compra' ? 'Compra' : x.side === 'venta' ? 'Venta' : 'Ajuste de cantidad',
-      cantidad: x.qty, precio: x.price || 0, comision: x.fee || 0, totalUSD: x.side === 'ajuste' ? 0 : R2(x.qty * x.price + (x.side === 'compra' ? 1 : -1) * (x.fee || 0)), origen: x.src === 'importado' ? 'Importado (estimado)' : 'Registrado' }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
+      cantidad: x.qty, precio: x.price || 0, comision: x.fee || 0, totalUSD: x.side === 'ajuste' ? 0 : R2(x.qty * x.price + (x.side === 'compra' ? 1 : -1) * (x.fee || 0)), origen: x.src === 'importado' ? 'Importado sin fecha (estimado)' : x.src === 'chat' ? 'Importado del chat' : 'Registrado' }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
     // Préstamos: lo que prestaste/te prestaron y cuánto falta al final del mes
     const loans = (S.loans || []).filter((l) => l.date <= lastD).map((l) => {
       const paid = (l.payments || []).filter((p) => p.date <= lastD).reduce((s, p) => s + (Number(p.amount) || 0), 0);
@@ -4874,6 +4877,111 @@ function go(view, anchor) {
 
 /* ---------------- Acciones: inversiones ---------------- */
 
+/* Agregar activo: "Lo compré hoy" o "Ya lo tenía (compra anterior)". Cada compra (lote) se guarda como una
+   operación real con su fecha; con "+ Agregar otra compra" se cargan varias en el mismo formulario. */
+function addHoldingForm(state = { n: 1, vals: {} }) {
+  const n = state.n, V = state.vals;
+  const fields = [
+    { name: 'when', label: '¿Cuándo lo compraste?', type: 'select', value: V.when || 'hoy', full: true, options: [['hoy', 'Lo compré hoy'], ['antes', 'Ya lo tenía (compra anterior)']] },
+    { name: 'symbol', label: 'Ticker / símbolo', value: V.symbol || '', required: true, placeholder: 'VOO, BTC, NVDA…' },
+    { name: 'name', label: 'Nombre', value: V.name || '', placeholder: 'Opcional' },
+    { name: 'assetType', label: 'Tipo', type: 'select', value: V.assetType || 'accion', options: Object.entries(ASSET_TYPES) },
+    { name: 'platform', label: 'Dónde lo tenés', value: V.platform || '', placeholder: 'Binance, broker…' },
+    { name: 'coingeckoId', label: 'ID de CoinGecko', value: V.coingeckoId || '', placeholder: 'bitcoin, pax-gold…', full: true, hint: 'Para precio automático de cripto/oro.', showIf: (v) => v.assetType === 'cripto' || v.assetType === 'oro' },
+  ];
+  for (let k = 0; k < n; k++) {
+    fields.push({ type: 'html', html: `<div class="imp-head"><b>${n > 1 ? `Compra ${k + 1}` : 'La compra'}</b></div>` });
+    // La primera compra de "Lo compré hoy" es de hoy; las demás (o "Ya lo tenía") piden su fecha
+    fields.push({ name: `date_${k}`, label: 'Fecha de compra', type: 'date', value: V[`date_${k}`] || '', full: true, showIf: (v) => v.when === 'antes' || k > 0 });
+    fields.push({ name: `qty_${k}`, label: 'Cantidad', type: 'number', value: V[`qty_${k}`] ?? '', placeholder: 'ej. 0,1450' });
+    fields.push({ name: `total_${k}`, label: 'Monto pagado (USD)', type: 'number', value: V[`total_${k}`] ?? '', placeholder: 'ej. 100' });
+    fields.push({ name: `price_${k}`, label: 'Precio de compra por unidad (USD)', type: 'number', value: V[`price_${k}`] ?? '' });
+    fields.push({ name: `fee_${k}`, label: 'Comisión (USD, opcional)', type: 'number', value: V[`fee_${k}`] ?? '', placeholder: '0' });
+    fields.push({ type: 'html', html: `<div class="fx-hint" id="lotHint_${k}"></div>` });
+  }
+  fields.push({ type: 'html', html: '<button type="button" class="btn wide" id="addLotBtn">+ Agregar otra compra de este activo</button>' });
+  fields.push({ type: 'html', html: '<div id="lotTotal" class="imp-result"></div>' });
+  // Cantidad, monto y precio de una compra: lo último que escribiste manda
+  const lotOf = (v, k) => {
+    const price = v[`price_${k}`], fee = Math.max(0, v[`fee_${k}`] || 0);
+    let qty = v[`qty_${k}`] > 0 ? v[`qty_${k}`] : null;
+    if (!qty && v[`total_${k}`] > 0 && price > 0) qty = Math.round(((v[`total_${k}`] - fee) / price) * 1e8) / 1e8;
+    return { qty, price, fee, date: k === 0 && v.when !== 'antes' ? todayISO() : v[`date_${k}`] };
+  };
+  let priceAsked = '';
+  openForm({
+    title: 'Agregar activo',
+    fields,
+    onInput: (form, v, changed) => {
+      if (changed === 'symbol' || changed === 'assetType') {
+        const id = CG_IDS[v.symbol.toUpperCase()];
+        if (id && !form.elements.coingeckoId.value) form.elements.coingeckoId.value = id;
+        if (changed === 'symbol' && id && form.elements.assetType.value !== 'oro') form.elements.assetType.value = id.includes('gold') ? 'oro' : 'cripto';
+      }
+      // "Lo compré hoy": se sugiere el precio actual como precio de compra
+      const cg = form.elements.coingeckoId?.value.trim().toLowerCase();
+      if (v.when === 'hoy' && cg && cg !== priceAsked && !form.elements.price_0.value) {
+        priceAsked = cg;
+        getJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(cg)}&vs_currencies=usd`).then((j) => {
+          const p = j?.[cg]?.usd;
+          if (p > 0 && !form.elements.price_0.value && $('#addLotBtn')) { form.elements.price_0.value = numInput(p); form.elements.price_0.dispatchEvent(new Event('input', { bubbles: true })); }
+        }).catch(() => {});
+      }
+      const m = changed && changed.match(/^(qty|total|price|fee)_(\d+)$/);
+      if (m) {
+        const k = m[2], el = (x) => form.elements[`${x}_${k}`];
+        if (m[1] === 'qty' || m[1] === 'total') form.dataset[`last${k}`] = m[1];
+        const last = form.dataset[`last${k}`], price = parseNum(el('price').value), fee = Math.max(0, parseNum(el('fee').value) || 0);
+        if (price > 0 && last === 'qty' && parseNum(el('qty').value) > 0) el('total').value = numInput(round2(parseNum(el('qty').value) * price + fee));
+        if (price > 0 && last === 'total' && parseNum(el('total').value) > 0) el('qty').value = numInput(Math.round(((parseNum(el('total').value) - fee) / price) * 1e8) / 1e8);
+      }
+      let tq = 0, tc = 0;
+      for (let k = 0; k < n; k++) {
+        const L = lotOf({ ...v, ...Object.fromEntries(['qty', 'total', 'price', 'fee'].map((x) => [`${x}_${k}`, parseNum(form.elements[`${x}_${k}`].value)])) }, k);
+        const h = $(`#lotHint_${k}`);
+        if (h) h.innerHTML = L.qty > 0 && L.price > 0 ? `${fmtNum(L.qty)} × US$ ${fmtNum(L.price, 2)}${L.fee ? ` + comisión US$ ${fmtNum(L.fee, 2)}` : ''} = <b>US$ ${fmtNum(round2(L.qty * L.price + L.fee), 2)}</b>` : 'Escribí la cantidad o el monto pagado, y el precio.';
+        if (L.qty > 0 && L.price > 0) { tq += L.qty; tc += L.qty * L.price + L.fee; }
+      }
+      const tot = $('#lotTotal');
+      if (tot) tot.innerHTML = tq > 0 ? `Posición: <b class="money">${fmtNum(Math.round(tq * 1e8) / 1e8)} ${esc((v.symbol || '').toUpperCase())}</b> · precio promedio <b class="money">US$ ${fmtNum(tc / tq, 2)}</b>` : '';
+    },
+    onSubmit: (v) => {
+      const symbol = v.symbol.toUpperCase();
+      if (S.holdings.some((x) => x.symbol === symbol && x.platform === v.platform)) return `Ya tenés ${symbol} en esa plataforma. Usá Compra/Venta o su Historial.`;
+      const trades = [];
+      for (let k = 0; k < n; k++) {
+        const L = lotOf(v, k), tag = n > 1 ? ` (compra ${k + 1})` : '';
+        if (!L.date) return `Poné la fecha de compra${tag}.`;
+        if (L.date > todayISO()) return `La fecha de compra${tag} no puede ser futura.`;
+        if (!(L.price > 0)) return `Poné el precio de compra${tag}.`;
+        if (!(L.qty > 0)) return `Poné la cantidad o el monto pagado${tag}.`;
+        if (v[`qty_${k}`] > 0 && v[`total_${k}`] > 0 && Math.abs(v[`qty_${k}`] * L.price + L.fee - v[`total_${k}`]) > Math.max(0.05, v[`total_${k}`] * 0.01))
+          return `No cierra${tag}: ${fmtNum(v[`qty_${k}`])} × US$ ${fmtNum(L.price, 2)}${L.fee ? ' + comisión' : ''} = US$ ${fmtNum(round2(v[`qty_${k}`] * L.price + L.fee), 2)}, no US$ ${fmtNum(v[`total_${k}`], 2)}.`;
+        trades.push({ id: uid(), date: L.date, side: 'compra', qty: L.qty, price: L.price, fee: L.fee, u: new Date().toISOString() });
+      }
+      const cg = (v.assetType === 'cripto' || v.assetType === 'oro') ? v.coingeckoId.toLowerCase() : '';
+      const today = v.when !== 'antes' ? lotOf(v, 0).price : 0;
+      const h = { id: uid(), symbol, name: v.name, assetType: v.assetType, platform: v.platform, quantity: 0, avgCost: 0, coingeckoId: cg, trades: [],
+        price: today || 0, priceUpdated: today ? new Date().toISOString() : null, priceSource: today ? 'manual' : '', change24h: null };
+      S.holdings.push(h);
+      changeTrades(h, () => trades, [], { resetGap: true });
+      snapshot(); save(); render();
+      toast(`${symbol}: ${trades.length} compra${trades.length > 1 ? 's' : ''} registrada${trades.length > 1 ? 's' : ''} ✓`);
+      if (cg || !h.price) refreshAll({ silent: true });
+    },
+  });
+  const form = $('#dlgForm');
+  for (const k of Object.keys(form.dataset)) delete form.dataset[k];
+  // "+ Agregar otra compra": se vuelve a abrir con una compra más, sin perder lo que escribiste
+  $('#addLotBtn').onclick = () => {
+    const vals = Object.fromEntries([...form.elements].filter((e) => e.name).map((e) => [e.name, e.value]));
+    $('#dlg').close();
+    addHoldingForm({ n: n + 1, vals });
+    $(`#dlgForm [name="date_${n}"]`)?.focus();
+  };
+  form.elements.symbol.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function holdingForm(h) {
   const isNew = !h;
   h = h || { symbol: '', name: '', assetType: 'accion', platform: '', quantity: 0, avgCost: 0, price: 0, coingeckoId: '' };
@@ -5051,7 +5159,7 @@ function viewHistorial() {
       const acc = S.accounts.find((a) => a.id === linked(t)?.accountId);
       return `<div class="list-row act op-row">
         <span class="acc-ico sm ${t.side === 'venta' ? 'in' : ''}">${icon(t.side === 'ajuste' ? 'edit' : 'trending', 16)}</span>
-        <div class="grow"><div class="name">${tradeLabel(t)}${t.src === 'importado' ? ' <span class="tag">importado</span>' : ''}</div>
+        <div class="grow"><div class="name">${tradeLabel(t)}${t.src === 'importado' ? ' <span class="tag">importado (sin fecha)</span>' : t.src === 'chat' ? ' <span class="tag">del chat</span>' : ''}</div>
           <div class="meta money">${fmtDate(t.date)} · ${t.side === 'ajuste' ? `${t.qty > 0 ? '+' : ''}${fmtNum(t.qty)} ${esc(h.symbol)}` : `${fmtNum(t.qty)} × US$ ${fmtNum(t.price, 2)}`}${t.fee ? ` + comisión US$ ${fmtNum(t.fee, 2)}` : ''}${acc ? ` · ${esc(acc.name)}` : ''}</div></div>
         <div class="val">${total != null ? `<div class="money"><b>US$ ${fmtNum(round2(total), 2)}</b></div>` : ''}</div>
         <button class="btn sm ghost icon-only" data-action="tradeEdit" data-id="${h.id}|${t.id}" title="Editar" aria-label="Editar">${icon('edit', 16)}</button>
@@ -5196,45 +5304,152 @@ function changeTrades(h, mutate, removedIds = [], { resetGap = false } = {}) {
   return null;
 }
 
-function importHoldings(text) {
-  let data;
+/* ---------------- Importar desde mi chat ----------------
+   Cada entrada es una compra (un "lote") con su fecha: el mismo activo puede venir varias veces.
+   Antes de guardar se muestra una vista previa (fechas que faltan, reemplazar o agregar, duplicados y avisos). */
+
+// Lee el texto pegado: devuelve los lotes válidos y los que no se pueden cargar (con el motivo)
+function parseImport(text) {
   const m = text.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
-  try { data = JSON.parse(m ? m[0] : text); } catch (e) { return toast('No pude leer el JSON. Revisá que esté completo.'); }
-  if (!Array.isArray(data)) data = data.holdings || data.portfolio || data.portafolio || [];
-  let added = 0, updated = 0;
-  for (const r of data) {
+  let data;
+  try { data = JSON.parse(m ? m[0] : text); } catch (e) { return { error: 'No pude leer el JSON. Revisá que esté completo.' }; }
+  if (!Array.isArray(data)) data = data.holdings || data.portfolio || data.portafolio || data.compras || [];
+  const lots = [], bad = [];
+  data.forEach((r, i) => {
     const symbol = String(r.symbol || r.ticker || '').toUpperCase().trim();
-    if (!symbol) continue;
-    const qty = parseNum(r.quantity ?? r.cantidad ?? 0) || 0;
-    const avg = parseNum(r.avgCost ?? r.precioPromedio ?? r.avg_cost ?? 0) || 0;
-    const platform = String(r.platform || r.plataforma || '').trim();
-    let h = S.holdings.find((x) => x.symbol === symbol && (!platform || !x.platform || x.platform === platform));
-    if (h) {
-      // La diferencia con lo que tenías queda como compra/venta de hoy (marcada "importado"): así el historial
-      // no cambia hacia atrás y el informe sabe desde cuándo tenés cada cantidad
-      const diff = Math.round((qty - (Number(h.quantity) || 0)) * 1e10) / 1e10;
-      if (Math.abs(diff) > 1e-10) {
-        (h.trades = h.trades || []).push({ id: uid(), date: todayISO(), side: diff > 0 ? 'compra' : 'venta', qty: Math.abs(diff), price: Number(h.price) || avg || 0, fee: 0, prevAvg: Number(h.avgCost) || 0, src: 'importado' });
-      }
-      h.quantity = qty;
-      if (avg) h.avgCost = avg;
-      if (platform) h.platform = platform;
-      updated++;
-    } else {
-      const cg = CG_IDS[symbol] || '';
-      S.holdings.push({
-        id: uid(), symbol, name: r.name || r.nombre || '', assetType: cg ? (cg.includes('gold') ? 'oro' : 'cripto') : (r.type || 'accion'),
-        platform, quantity: qty, avgCost: avg, price: 0, change24h: null, priceUpdated: null, priceSource: '', coingeckoId: cg, trades: [],
-        initial: { date: todayISO(), price: avg || null, src: 'importado' }, // saldo inicial desde hoy (no se sabe la fecha real de compra)
-      });
-      added++;
-    }
+    const n = (x) => (x == null || x === '' ? null : parseNum(x));
+    let qty = n(r.quantity ?? r.cantidad), price = n(r.avgCost ?? r.price ?? r.precio ?? r.precioPromedio ?? r.avg_cost);
+    const fee = Math.max(0, n(r.fee ?? r.comision) || 0), total = n(r.total ?? r.monto);
+    const date = String(r.purchaseDate ?? r.fecha ?? r.date ?? '').trim();
+    const why = [];
+    if (!symbol) why.push('falta el símbolo');
+    // Con el total se completa la cantidad o el precio que falte
+    if (total > 0 && !(qty > 0) && price > 0) qty = Math.round(((total - fee) / price) * 1e8) / 1e8;
+    if (total > 0 && qty > 0 && !(price > 0)) price = (total - fee) / qty;
+    if (!(qty > 0)) why.push('la cantidad tiene que ser mayor a 0');
+    if (!(price > 0)) why.push('el precio tiene que ser mayor a 0');
+    if (qty > 0 && price > 0 && total > 0 && Math.abs(qty * price + fee - total) > Math.max(0.05, total * 0.01)) why.push(`cantidad × precio (+ comisión) da US$ ${fmtNum(round2(qty * price + fee), 2)}, no US$ ${fmtNum(total, 2)}`);
+    if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date)))) why.push(`la fecha "${date}" no es AAAA-MM-DD`);
+    else if (date > todayISO()) why.push('la fecha es futura');
+    const lot = { i, symbol, name: r.name || r.nombre || '', type: r.type || '', platform: String(r.platform || r.plataforma || '').trim(), qty, price, fee, date };
+    if (why.length) bad.push({ ...lot, why: why.join('; ') }); else lots.push(lot);
+  });
+  return { lots, bad };
+}
+
+const findHolding = (symbol, platform) => S.holdings.find((x) => x.symbol === symbol && (!platform || !x.platform || x.platform === platform));
+const sameTrade = (a, b) => a.date === b.date && Math.abs(a.qty - b.qty) < 1e-9 && Math.abs(a.price - b.price) <= Math.max(0.01, b.price * 0.001);
+
+// Resultado de importar un activo (posición y precio promedio) sin guardar nada: para la vista previa y para guardar
+function planImport(group, vals) {
+  const today = todayISO(), h = group.h;
+  const mode = h ? vals[`mode_${group.k}`] || 'add' : 'replace';
+  const trades = [], dups = [];
+  for (const l of group.lots) {
+    const qty = vals[`usd_${l.i}`] ? Math.round((l.qty / l.price) * 1e8) / 1e8 : l.qty; // era un monto en USD, no unidades
+    const noDate = !l.date && vals[`nodate_${l.i}`];
+    const date = l.date || (noDate ? today : vals[`date_${l.i}`] || today);
+    const t = noDate
+      ? { id: uid(), date: today, side: 'ajuste', qty, price: l.price, fee: 0, note: 'Saldo inicial importado (sin fecha de compra)', src: 'importado', u: new Date().toISOString() }
+      : { id: uid(), date, side: 'compra', qty, price: l.price, fee: l.fee, src: 'chat', u: new Date().toISOString() };
+    const dup = [...(mode === 'add' ? h?.trades || [] : []), ...trades].some((x) => sameTrade(x, t));
+    (dup ? dups : trades).push({ ...t, lot: l });
   }
-  if (!added && !updated) return toast('No encontré activos en el texto.');
-  save();
-  toast(`Importado: ${updated} actualizado(s), ${added} nuevo(s).`);
-  go('inversiones');
-  refreshAll({ silent: true });
+  const clean = (list) => list.map(({ lot, ...t }) => ({ ...t }));
+  let q, avg;
+  if (h && mode === 'add') {
+    const gap = positionGap(h), r = replayHolding(h, clean([...(h.trades || []), ...trades]), Math.max(0, gap), baseAvgOf(h));
+    q = r.error ? null : Math.max(0, r.q + Math.min(0, gap)); avg = r.avg;
+  } else {
+    const r = replayHolding({ symbol: group.symbol }, clean(trades), 0, 0);
+    q = r.q; avg = r.avg;
+  }
+  return { mode, trades, dups, q, avg };
+}
+
+function importHoldings(text) {
+  const P = parseImport(text);
+  if (P.error) return toast(P.error, 4500);
+  if (!P.lots.length) return toast(P.bad.length ? `No se puede cargar nada: ${P.bad[0].why}.` : 'No encontré activos en el texto.', 5000);
+  // Agrupado por activo (símbolo + plataforma)
+  const groups = [];
+  for (const l of P.lots) {
+    let g = groups.find((x) => x.symbol === l.symbol && (x.platform === l.platform || !x.platform || !l.platform));
+    if (!g) groups.push(g = { k: groups.length, symbol: l.symbol, platform: l.platform, name: l.name, type: l.type, lots: [], h: findHolding(l.symbol, l.platform) });
+    g.lots.push(l);
+  }
+  // ¿Monto en USD en vez de unidades? Si un lote vale muchísimo más que el resto de tu cartera
+  const portfolio = S.holdings.reduce((s, h) => s + holdingValue(h), 0) + P.lots.reduce((s, l) => s + l.qty * l.price, 0);
+  for (const l of P.lots) { const v = l.qty * l.price, rest = portfolio - v; l.big = v > 1000 && v > Math.max(rest, 100) * 10; }
+  const fields = [{ type: 'html', html: '<p class="small" style="margin:0;color:var(--text-2)">Revisá lo que encontré. Cada línea es una compra con su fecha; nada se guarda hasta que toques <b>Importar</b>.</p>' }];
+  for (const g of groups) {
+    fields.push({ type: 'html', html: `<div class="imp-head"><b>${esc(g.symbol)}</b>${g.platform ? ` <span class="muted small">· ${esc(g.platform)}</span>` : ''} ${g.h ? '<span class="tag">ya lo tenés</span>' : '<span class="tag good">nuevo</span>'}</div>` });
+    if (g.h) fields.push({ name: `mode_${g.k}`, label: `Ya tenés ${fmtNum(Number(g.h.quantity) || 0)} ${g.symbol}: ¿qué hago?`, type: 'select', value: 'add', full: true,
+      options: [['add', 'Agregar: sumar estas compras a las que ya tengo'], ['replace', 'Reemplazar: borrar mis compras de este activo y usar éstas']] });
+    for (const l of g.lots) {
+      fields.push({ type: 'html', html: `<div class="imp-lot"><span>${l.date ? fmtDate(l.date) : '<span class="warn-text">sin fecha</span>'}</span><span class="money">${fmtNum(l.qty)} × US$ ${fmtNum(l.price, 2)}${l.fee ? ` + US$ ${fmtNum(l.fee, 2)}` : ''}</span><b class="money">US$ ${fmtNum(round2(l.qty * l.price + l.fee), 2)}</b></div>` });
+      if (l.big) fields.push({ name: `usd_${l.i}`, type: 'checkbox', full: true, label: `¿Quisiste decir US$ ${fmtNum(l.qty, 2)} en lugar de ${fmtNum(l.qty)} unidades?`, hint: `${fmtNum(l.qty)} × US$ ${fmtNum(l.price, 2)} da US$ ${fmtNum(round2(l.qty * l.price), 2)}, muchísimo más que el resto de tu cartera. Marcalo si era un monto en dólares.` });
+      if (!l.date) {
+        fields.push({ name: `date_${l.i}`, label: `¿Cuándo compraste estos ${fmtNum(l.qty)} ${l.symbol}?`, type: 'date', full: true, showIf: (v) => !v[`nodate_${l.i}`] });
+        fields.push({ name: `nodate_${l.i}`, type: 'checkbox', full: true, label: 'No la sé → usar como saldo inicial desde hoy' });
+      }
+    }
+    fields.push({ type: 'html', html: `<div class="imp-result" id="impRes_${g.k}"></div>` });
+  }
+  if (P.bad.length) fields.push({ type: 'html', html: `<div class="banner"><b>No se van a cargar:</b><br>${P.bad.map((b) => `${esc(b.symbol || '(sin símbolo)')}: ${esc(b.why)}`).join('<br>')}</div>` });
+  const paint = (v) => {
+    for (const g of groups) {
+      const p = planImport(g, v), el = $(`#impRes_${g.k}`);
+      if (!el) continue;
+      el.innerHTML = `${p.dups.length ? `<div class="small warn-text">${p.dups.length} compra(s) repetida(s): no se cargan dos veces.</div>` : ''}
+        Resultado: <b class="money">${p.q == null ? '—' : `${fmtNum(p.q)} ${esc(g.symbol)}`}</b> · precio promedio <b class="money">${p.avg ? `US$ ${fmtNum(p.avg, 2)}` : '—'}</b>
+        ${g.h && p.mode === 'replace' ? '<div class="small muted">Las compras que movieron plata de una cuenta quedan en Movimientos.</div>' : ''}`;
+    }
+  };
+  openForm({
+    title: 'Vista previa de la importación',
+    fields,
+    submitLabel: 'Importar',
+    onInput: (form, v) => paint(v),
+    onSubmit: (v) => {
+      for (const g of groups) for (const l of g.lots) {
+        if (l.date || v[`nodate_${l.i}`]) continue;
+        const d = v[`date_${l.i}`];
+        if (!d) return `Falta la fecha de compra de ${fmtNum(l.qty)} ${l.symbol} (o marcá "No la sé").`;
+        if (d > todayISO()) return `La fecha de ${l.symbol} no puede ser futura.`;
+      }
+      const plans = groups.map((g) => [g, planImport(g, v)]);
+      const neg = plans.find(([, p]) => p.q == null);
+      if (neg) return `${neg[0].symbol}: con estas compras la cantidad quedaría negativa en algún momento. Elegí "Reemplazar" o revisá tus ventas.`;
+      let added = 0, dupN = 0;
+      for (const [g, p] of plans) {
+        const trades = p.trades.map(({ lot, ...t }) => t);
+        dupN += p.dups.length;
+        let h = g.h;
+        if (!h) {
+          const cg = CG_IDS[g.symbol] || '';
+          h = { id: uid(), symbol: g.symbol, name: g.name, assetType: cg ? (cg.includes('gold') ? 'oro' : 'cripto') : (g.type || 'accion'), platform: g.platform,
+            quantity: 0, avgCost: 0, price: 0, change24h: null, priceUpdated: null, priceSource: '', coingeckoId: cg, trades: [] };
+          S.holdings.push(h);
+          changeTrades(h, () => trades, [], { resetGap: true });
+        } else if (p.mode === 'replace') {
+          // Las compras de antes se borran (la plata que movieron queda en Movimientos, sin vínculo)
+          const old = (h.trades || []).map((t) => t.id);
+          for (const t of S.transactions) if (t.holdingId === h.id && old.includes(t.tradeId)) { delete t.tradeId; delete t.holdingId; }
+          h.initial = null;
+          changeTrades(h, () => trades, old, { resetGap: true });
+        } else {
+          changeTrades(h, (list) => [...list, ...trades]);
+        }
+        if (g.platform) h.platform = g.platform;
+        added += trades.length;
+      }
+      snapshot(); save();
+      toast(`Importado: ${added} compra(s) en ${groups.length} activo(s)${dupN ? ` · ${dupN} repetida(s) no se cargaron` : ''}.`, 4500);
+      setTimeout(() => { go('inversiones'); refreshAll({ silent: true }); }, 50);
+    },
+  });
+  paint(Object.fromEntries([...$('#dlgForm').elements].filter((e) => e.name).map((e) => [e.name, e.type === 'checkbox' ? e.checked : e.value])));
 }
 
 /* ---------------- Acciones: cuentas ---------------- */
@@ -5778,7 +5993,7 @@ const byId = (arr, id) => arr.find((x) => x.id === id);
 const ACTIONS = {
   // Un enlace a una sección de "Más" (Fijos, Programados, Metas…) la abre en una hoja, sin cambiar de pestaña
   go: (id, el) => (MORE_VIEWS.includes(id) && !el.dataset.anchor ? openSheet(id) : go(id, el.dataset.anchor)),
-  addHolding: () => holdingForm(),
+  addHolding: () => addHoldingForm(),
   editHolding: (id) => holdingForm(byId(S.holdings, id)),
   trade: (id) => tradeForm(byId(S.holdings, id)),
   delHolding: async (id) => {

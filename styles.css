@@ -835,3 +835,10 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .hist-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
 .pos-warn .toolbar .btn { white-space: normal; }
 .op-row .val { min-width: 0; }
+
+/* Vista previa de la importación y compras de "Agregar activo" */
+.imp-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--grid); }
+.imp-lot { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; font-size: 14px; padding: 4px 0; }
+.imp-lot > span:nth-child(2) { color: var(--text-2); }
+.imp-result { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.imp-result:empty { display: none; }
