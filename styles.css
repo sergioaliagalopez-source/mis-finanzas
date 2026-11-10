@@ -830,3 +830,8 @@ html.more-open, html.more-open body { overflow: hidden; }
 .rep-list { margin: 0; padding-left: 18px; color: var(--text-2); display: flex; flex-direction: column; gap: 4px; }
 h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 @media (max-width: 480px) { .rep-grid { grid-template-columns: 1fr; gap: 0; } }
+
+/* Historial de operaciones */
+.hist-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+.pos-warn .toolbar .btn { white-space: normal; }
+.op-row .val { min-width: 0; }

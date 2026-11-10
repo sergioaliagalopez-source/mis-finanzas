@@ -358,7 +358,11 @@ function missingRates() {
 
 const holdingValue = (h) => (Number(h.quantity) || 0) * (Number(h.price) || 0);
 // Compras menos ventas registradas (hasta una fecha, si se indica)
-const netTrades = (h, upTo) => (h.trades || []).filter((x) => !upTo || x.date <= upTo).reduce((s, x) => s + (x.side === 'compra' ? x.qty : -x.qty), 0);
+// (un "ajuste" de cantidad suma o resta lo que diga su cantidad, con signo)
+const tradeDelta = (x) => (x.side === 'compra' ? x.qty : x.side === 'venta' ? -x.qty : Number(x.qty) || 0);
+const netTrades = (h, upTo) => (h.trades || []).filter((x) => !upTo || x.date <= upTo).reduce((s, x) => s + tradeDelta(x), 0);
+// Diferencia entre tu posición y la suma de tus operaciones: > 0 faltan operaciones (sin fecha), < 0 sobran
+const positionGap = (h) => Math.round(((Number(h.quantity) || 0) - netTrades(h)) * 1e10) / 1e10;
 // "Saldo inicial": lo que tenés de un activo que no sale de compras registradas (ej. algo que ya tenías)
 const baseQty = (h) => Math.max(0, Math.round(((Number(h.quantity) || 0) - netTrades(h)) * 1e10) / 1e10);
 // Saldo inicial sin fecha: no se sabe desde cuándo lo tenés (se pide completarla)
@@ -954,15 +958,14 @@ function viewInversiones() {
       <td class="num">${t.inv ? fmtPct((v / t.inv) * 100, false) : '—'}</td>
       <td><div class="row-actions">
         <button class="btn sm" data-action="trade" data-id="${h.id}">Compra/Venta</button>
+        <button class="btn sm" data-action="opsHist" data-id="${h.id}">Historial</button>
         <button class="btn sm ghost" data-action="editHolding" data-id="${h.id}">Editar</button>
         <button class="btn sm ghost danger" data-action="delHolding" data-id="${h.id}" title="Eliminar">✕</button>
       </div></td></tr>`;
   }).join('');
   const gp = t.invWithCost - t.cost;
-  const undated = S.holdings.filter(undatedBase);
   return `
-  ${undated.map((h) => `<div class="banner">Tenés <b>${fmtNum(baseQty(h))} ${esc(h.symbol)}</b> sin fecha de compra: el informe no sabe desde cuándo lo tenés.
-    <a href="#" data-action="editHolding" data-id="${h.id}">Completar la fecha</a></div>`).join('')}
+  ${S.holdings.map((h) => positionWarnHTML(h)).join('')}
   ${noKey ? `<div class="banner">Bitcoin, Ethereum y PAXG se actualizan solos. Para que <b>VOO, NVDA y GOOGL</b> también se actualicen, pegá una clave gratuita de Finnhub en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>. Mientras tanto podés cargar el precio a mano con “Editar”.</div>` : ''}
   <div class="tiles">
     ${tile('Valor del portafolio', fmtMoney(t.inv), `${S.holdings.length} activos`)}
@@ -982,6 +985,7 @@ function viewInversiones() {
           <div class="val"><div class="money"><b>${fmtMoney(v)}</b></div>${hasCost ? `<div class="meta money ${cls(g)}">${fmtMoney(g, { sign: true })} (${fmtPct((g / c) * 100)})</div>` : ''}</div></div>
         <div class="row-actions" style="justify-content:flex-start">
           <button class="btn sm" data-action="trade" data-id="${h.id}">Compra/Venta</button>
+        <button class="btn sm" data-action="opsHist" data-id="${h.id}">Historial</button>
           <button class="btn sm ghost" data-action="editHolding" data-id="${h.id}">Editar</button>
           <button class="btn sm ghost danger" data-action="delHolding" data-id="${h.id}" title="Eliminar">✕</button></div></div>`;
     }).join('') || '<div class="empty">Todavía no cargaste activos.</div>'}</div>
@@ -2852,15 +2856,7 @@ function mergeRemote(R) {
     if (t.scheduledId && S.transactions.some((x) => x.scheduledId === t.scheduledId)) { dead.add(t.id); continue; }
     S.transactions.push(t);
     applyTx(t, 1); // sólo afecta cuentas que ya existían acá; las cuentas nuevas traen su saldo
-    // Compras/ventas hechas en el otro dispositivo también mueven la cantidad
-    const h = t.tradeId && S.holdings.find((x) => x.id === t.holdingId);
-    const tr = h && (R.holdings || []).find((x) => x.id === h.id)?.trades?.find((x) => x.id === t.tradeId);
-    if (tr && !(h.trades || []).some((x) => x.id === tr.id)) {
-      const q = Number(h.quantity) || 0;
-      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price + (tr.fee || 0)) / (q + tr.qty); h.quantity = q + tr.qty; }
-      else h.quantity = Math.max(0, q - tr.qty);
-      (h.trades = h.trades || []).push(tr);
-    }
+    // (las compras/ventas del otro dispositivo se unen más abajo, junto con las editadas o borradas)
   }
   for (const k of ['accounts', 'holdings', 'recurring', 'scheduled', 'goals', 'loans']) {
     S[k] = (S[k] || []).filter((x) => !dead.has(x.id));
@@ -2881,15 +2877,24 @@ function mergeRemote(R) {
     const ids = new Set(S[k].map((x) => x.id));
     for (const x of R[k] || []) if (!ids.has(x.id) && !dead.has(x.id)) S[k].push(x);
   }
+  // Operaciones de inversión: nuevas, editadas (gana la más nueva) o borradas en cualquiera de los dos. Después se recalcula la posición
   for (const h of S.holdings) {
     const rh = (R.holdings || []).find((x) => x.id === h.id);
-    for (const tr of rh?.trades || []) {
-      if ((h.trades || []).some((x) => x.id === tr.id)) continue;
-      const q = Number(h.quantity) || 0;
-      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price + (tr.fee || 0)) / (q + tr.qty); h.quantity = q + tr.qty; }
-      else h.quantity = Math.max(0, q - tr.qty);
-      (h.trades = h.trades || []).push(tr);
-    }
+    const theirs = (rh?.trades || []).filter((tr) => !dead.has(tr.id));
+    const touched = (h.trades || []).some((x) => dead.has(x.id)) || theirs.some((tr) => {
+      const mine = (h.trades || []).find((x) => x.id === tr.id);
+      return !mine || (tr.u || '') > (mine.u || '');
+    });
+    if (!touched) continue;
+    changeTrades(h, (list) => {
+      const out = list.filter((x) => !dead.has(x.id));
+      for (const tr of theirs) {
+        const i = out.findIndex((x) => x.id === tr.id);
+        if (i < 0) out.push(JSON.parse(JSON.stringify(tr)));
+        else if ((tr.u || '') > (out[i].u || '')) out[i] = JSON.parse(JSON.stringify(tr));
+      }
+      return out;
+    });
   }
   // Devoluciones de préstamos registradas en el otro dispositivo
   for (const l of S.loans) {
@@ -4120,8 +4125,8 @@ async function buildReport(fromM, toM, onStep) {
         nota: [undatedBase(h) && `${fmtNum(baseQty(h))} sin fecha de compra (no contados)`, tradesM.some((x) => x.src === 'importado') && 'incluye cantidades importadas', !last && 'sin precio en el mes', last && sinPrecio && `${sinPrecio} día(s) sin precio`].filter(Boolean).join('; ') });
     }
     if (noPrice) monthQuality.push(`${noPrice} día(s) de inversiones sin precio guardado (acciones/ETF de días en que no se actualizaron los precios).`);
-    const trades = S.holdings.flatMap((h) => (h.trades || []).filter((x) => x.date?.startsWith(m)).map((x) => ({ fecha: x.date, activo: h.symbol, operacion: x.side === 'compra' ? 'Compra' : 'Venta',
-      cantidad: x.qty, precio: x.price, comision: x.fee || 0, totalUSD: R2(x.qty * x.price + (x.side === 'compra' ? 1 : -1) * (x.fee || 0)), origen: x.src === 'importado' ? 'Importado (estimado)' : 'Registrado' }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const trades = S.holdings.flatMap((h) => (h.trades || []).filter((x) => x.date?.startsWith(m)).map((x) => ({ fecha: x.date, activo: h.symbol, operacion: x.side === 'compra' ? 'Compra' : x.side === 'venta' ? 'Venta' : 'Ajuste de cantidad',
+      cantidad: x.qty, precio: x.price || 0, comision: x.fee || 0, totalUSD: x.side === 'ajuste' ? 0 : R2(x.qty * x.price + (x.side === 'compra' ? 1 : -1) * (x.fee || 0)), origen: x.src === 'importado' ? 'Importado (estimado)' : 'Registrado' }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
     // Préstamos: lo que prestaste/te prestaron y cuánto falta al final del mes
     const loans = (S.loans || []).filter((l) => l.date <= lastD).map((l) => {
       const paid = (l.payments || []).filter((p) => p.date <= lastD).reduce((s, p) => s + (Number(p.amount) || 0), 0);
@@ -4734,7 +4739,7 @@ const VIEW_FN = {
   resumen: () => viewResumen(), movimientos: () => viewMovimientos(), plan: () => viewPlan(),
   fijos: () => viewFijos(), programados: () => viewProgramados(), presupuesto: () => viewPresupuesto(), metas: () => viewMetas(),
   cuentas: () => viewCuentas(), prestamos: () => viewPrestamos(), inversiones: () => viewInversiones(), dolar: () => viewDolar(),
-  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
+  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), historial: () => viewHistorial(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
 };
 
 /* Menú "Más": una hoja con todas las secciones, agrupadas */
@@ -4848,7 +4853,8 @@ function fillSheet() {
   const d = $('#sheetDlg');
   if (!sheetView || !d?.open) return;
   const sh = $('#sheet'), y = sh.scrollTop;
-  sh.innerHTML = `<div class="sheet-head"><h2>${VIEWS[sheetView]}</h2>
+  const title = sheetView === 'historial' ? `Historial de ${esc(S.holdings.find((x) => x.id === S.settings.histId)?.symbol || '')}` : VIEWS[sheetView];
+  sh.innerHTML = `<div class="sheet-head"><h2>${title}</h2>
     <button type="button" class="q-icon" data-sheet-close aria-label="Cerrar">${icon('x', 18)}</button></div>${VIEW_FN[sheetView]()}`;
   sh.scrollTop = y;
   drawCharts(sheetView);
@@ -4916,92 +4922,81 @@ function holdingForm(h) {
   });
 }
 
-// Compra o venta: se puede escribir la CANTIDAD o el MONTO en USD (el otro se calcula con el precio).
+// Compra o venta: primero elegís si escribís el MONTO en USD o la CANTIDAD de unidades (el otro se calcula con el precio).
 // Acepta fracciones (0,1450). La comisión se suma al costo (y se resta de lo que cobrás al vender).
 function tradeForm(h) {
   const accOpts = [['', '— No mover dinero de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${a.currency})`])];
-  const p0 = Number(h.price) || '';
+  const mode0 = S.settings.tradeMode === 'qty' ? 'qty' : 'usd';
   openForm({
     title: `Compra / venta de ${h.symbol}`,
     fields: [
       { name: 'side', label: 'Operación', type: 'select', value: 'compra', options: [['compra', 'Compra'], ['venta', 'Venta']] },
       { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
-      { name: 'price', label: 'Precio por unidad (USD)', type: 'number', value: p0, required: true, full: true },
-      { name: 'qty', label: `Cantidad (${h.symbol})`, type: 'number', placeholder: 'ej. 0,1450', hint: 'Se aceptan fracciones.' },
-      { name: 'total', label: 'Monto (USD)', type: 'number', placeholder: 'ej. 100', hint: 'Escribí la cantidad o el monto: el otro se calcula.' },
-      { name: 'fee', label: 'Comisión (USD, opcional)', type: 'number', blankZero: true, placeholder: '0', full: true },
+      { name: 'mode', label: '¿Qué vas a escribir?', type: 'select', value: mode0, full: true, options: [['usd', 'Monto en USD (ej. invertí 100 dólares)'], ['qty', `Cantidad de unidades (ej. 0,1450 ${h.symbol})`]] },
+      { name: 'total', label: 'Monto (USD)', type: 'number', placeholder: 'ej. 100', full: true, showIf: (v) => v.mode === 'usd' },
+      { name: 'qty', label: `Cantidad (${h.symbol})`, type: 'number', placeholder: 'ej. 0,1450', hint: 'Se aceptan fracciones.', full: true, showIf: (v) => v.mode === 'qty' },
+      { name: 'price', label: 'Precio por unidad (USD)', type: 'number', value: Number(h.price) || '', required: true },
+      { name: 'fee', label: 'Comisión (USD, opcional)', type: 'number', blankZero: true, placeholder: '0' },
       { name: 'accountId', label: 'Cuenta de donde sale / a donde entra el dinero', type: 'select', options: accOpts, full: true,
         hint: 'Opcional. Si elegís una, se descuenta (compra) o acredita (venta) en esa cuenta.' },
       { type: 'html', html: '<div id="tradeHint" class="fx-hint"></div>' },
     ],
     submitLabel: 'Registrar',
-    onInput: (form, v, changed) => {
-      // Lo último que escribiste manda: cantidad → monto, o monto → cantidad
-      if ((changed === 'qty' || changed === 'price') && v.qty > 0 && v.price > 0 && form.dataset.last !== 'total') form.elements.total.value = numInput(round2(v.qty * v.price));
-      if ((changed === 'total' || (changed === 'price' && form.dataset.last === 'total')) && v.total > 0 && v.price > 0) form.elements.qty.value = numInput(Math.round((v.total / v.price) * 1e8) / 1e8);
-      if (changed === 'qty' || changed === 'total') form.dataset.last = changed;
-      const qty = parseNum(form.elements.qty.value), total = parseNum(form.elements.total.value), fee = v.fee || 0;
+    onInput: (form, v) => {
+      const qty = v.mode === 'qty' ? v.qty : v.total > 0 && v.price > 0 ? Math.round((v.total / v.price) * 1e8) / 1e8 : null;
+      const fee = v.fee || 0, sign = v.side === 'compra' ? 1 : -1;
       $('#tradeHint').innerHTML = qty > 0 && v.price > 0
-        ? `${fmtNum(qty)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(qty * v.price), 2)}</b>${fee ? ` ${v.side === 'compra' ? '+' : '−'} comisión US$ ${fmtNum(fee, 2)} = <b>US$ ${fmtNum(round2(qty * v.price + (v.side === 'compra' ? fee : -fee)), 2)}</b>` : ''}`
-        : total > 0 && !(v.price > 0) ? 'Escribí el precio para calcular la cantidad.' : '';
+        ? `${v.mode === 'usd' ? `Son <b>${fmtNum(qty)} ${esc(h.symbol)}</b>. ` : ''}${fmtNum(qty)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(qty * v.price), 2)}</b>${fee ? ` ${sign > 0 ? '+' : '−'} comisión US$ ${fmtNum(fee, 2)} = <b>US$ ${fmtNum(round2(qty * v.price + sign * fee), 2)}</b>` : ''}`
+        : (v.mode === 'usd' ? v.total > 0 : v.qty > 0) && !(v.price > 0) ? 'Escribí el precio para calcular.' : '';
     },
     onSubmit: (v) => {
       if (!(v.price > 0)) return 'El precio tiene que ser mayor a 0.';
-      let qty = v.qty > 0 ? v.qty : v.total > 0 ? Math.round((v.total / v.price) * 1e8) / 1e8 : 0;
-      if (!(qty > 0)) return 'Escribí la cantidad o el monto en USD.';
-      // Cantidad × precio tiene que dar el monto (si escribiste los dos)
-      if (v.qty > 0 && v.total > 0 && Math.abs(v.qty * v.price - v.total) > Math.max(0.02, v.total * 0.005)) {
-        return `No cierra: ${fmtNum(v.qty)} × US$ ${fmtNum(v.price, 2)} = US$ ${fmtNum(round2(v.qty * v.price), 2)}, no US$ ${fmtNum(v.total, 2)}. Corregí uno de los dos.`;
-      }
+      S.settings.tradeMode = v.mode;
+      const qty = v.mode === 'qty' ? v.qty : v.total > 0 ? Math.round((v.total / v.price) * 1e8) / 1e8 : 0;
+      if (!(qty > 0)) return v.mode === 'qty' ? 'Escribí la cantidad.' : 'Escribí el monto en USD.';
       const fee = Math.max(0, v.fee || 0);
       const q = Number(h.quantity) || 0;
       if (v.side === 'venta' && qty > q + 1e-12) return `Sólo tenés ${fmtNum(q)} ${h.symbol}.`;
+      if (v.date > todayISO()) return 'La fecha no puede ser futura.';
       const acc = v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
       if (acc && convert(1, 'USD', acc.currency) == null) return NO_RATE;
       // ¿Monto raro? (mucho más que tu saldo o que tus compras de siempre): se pregunta antes de guardar
       const total = qty * v.price;
-      const past = S.holdings.flatMap((x) => x.trades || []).map((x) => x.qty * x.price).filter((x) => x > 0).sort((a, b) => a - b);
+      const past = S.holdings.flatMap((x) => x.trades || []).filter((x) => x.side === 'compra').map((x) => x.qty * x.price).filter((x) => x > 0).sort((a, b) => a - b);
       const typical = past.length >= 2 ? past[Math.floor(past.length / 2)] : null;
       const saldo = acc ? toUSD(acc.balance, acc.currency) : null;
       const big = v.side === 'compra' && ((saldo != null && total > Math.max(saldo, 0) * 1.5 + 1) || (typical && total > typical * 10));
       if (big) {
+        const why = saldo != null ? `en ${esc(acc.name)} tenés US$ ${fmtNum(round2(saldo), 2)}` : `tus compras de siempre son de ≈ US$ ${fmtNum(round2(typical), 2)}`;
         setTimeout(async () => {
-          const asUsd = Math.round((qty / v.price) * 1e8) / 1e8;
-          const ch = await chooseDlg('¿Está bien el monto?',
-            `${fmtNum(qty)} ${h.symbol} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(total), 2)}</b>${saldo != null ? `, y en ${esc(acc.name)} tenés US$ ${fmtNum(round2(saldo), 2)}` : typical ? `, mucho más que tus compras de siempre (≈ US$ ${fmtNum(round2(typical), 2)})` : ''}.<br><br>¿Quisiste decir <b>US$ ${fmtNum(qty, 2)}</b> en lugar de ${fmtNum(qty)} unidades?`,
-            [['usd', `Sí: US$ ${fmtNum(qty, 2)} (${fmtNum(asUsd)} ${h.symbol})`], ['units', `No: son ${fmtNum(qty)} unidades`]]);
-          if (ch === 'usd') saveTrade(h, { ...v, qty: asUsd, fee, acc });
-          else if (ch === 'units') saveTrade(h, { ...v, qty, fee, acc });
+          if (v.mode === 'qty') {
+            // Escribiste unidades: quizás eran dólares
+            const asUsd = Math.round((qty / v.price) * 1e8) / 1e8;
+            const ch = await chooseDlg('¿Está bien la cantidad?',
+              `${fmtNum(qty)} ${esc(h.symbol)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(total), 2)}</b>, y ${why}.<br><br>¿Quisiste decir <b>US$ ${fmtNum(qty, 2)}</b> en lugar de ${fmtNum(qty)} unidades?`,
+              [['usd', `Sí: US$ ${fmtNum(qty, 2)} (${fmtNum(asUsd)} ${h.symbol})`], ['units', `No: son ${fmtNum(qty)} unidades`]]);
+            if (ch === 'usd') saveTrade(h, { ...v, qty: asUsd, fee, acc });
+            else if (ch === 'units') saveTrade(h, { ...v, qty, fee, acc });
+          } else {
+            const ch = await chooseDlg('¿Está bien el monto?', `Vas a registrar una compra de <b>US$ ${fmtNum(round2(total), 2)}</b>, y ${why}.`,
+              [['ok', `Sí, registrar US$ ${fmtNum(round2(total), 2)}`], ['no', 'No, lo corrijo']]);
+            if (ch === 'ok') saveTrade(h, { ...v, qty, fee, acc });
+            else if (ch === 'no') tradeForm(h);
+          }
         }, 80);
         return;
       }
       saveTrade(h, { ...v, qty, fee, acc });
     },
   });
-  $('#dlgForm').dataset.last = '';
 }
 
 function saveTrade(h, { side, date, qty, price, fee, acc }) {
-  const q = Number(h.quantity) || 0;
-  const prevAvg = Number(h.avgCost) || 0;
-  const r10 = (x) => Math.round(x * 1e10) / 1e10;
-  if (side === 'compra') {
-    const newQ = r10(q + qty);
-    h.avgCost = ((q * prevAvg) + qty * price + fee) / newQ; // la comisión es parte del costo real
-    h.quantity = newQ;
-  } else {
-    h.quantity = r10(Math.max(0, q - qty));
-  }
-  h.trades = h.trades || [];
   const tradeId = uid();
-  h.trades.push({ id: tradeId, date, side, qty, price, fee: fee || 0, prevAvg });
+  const err = changeTrades(h, (list) => [...list, { id: tradeId, date, side, qty, price, fee: fee || 0, u: new Date().toISOString() }]);
+  if (err) return toast(err, 5000);
   if (acc) {
-    const usd = side === 'compra' ? qty * price + fee : qty * price - fee;
-    const tx = {
-      id: uid(), created: new Date().toISOString(), date, type: side === 'compra' ? 'gasto' : 'ingreso',
-      accountId: acc.id, amount: round2(convert(usd, 'USD', acc.currency)), category: side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
-      note: `${side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(qty)} ${h.symbol}${fee ? ` (comisión US$ ${fmtNum(fee, 2)})` : ''}`, investment: true, holdingId: h.id, tradeId,
-    };
+    const tx = { id: uid(), created: new Date().toISOString(), investment: true, holdingId: h.id, tradeId, ...tradeTxFields(h, { side, date, qty, price, fee }, acc) };
     S.transactions.push(tx);
     applyTx(tx, 1);
   }
@@ -5009,16 +5004,196 @@ function saveTrade(h, { side, date, qty, price, fee, acc }) {
   toast(`${side === 'compra' ? 'Compra' : 'Venta'} de ${fmtNum(qty)} ${h.symbol} registrada.`);
 }
 
+// Lo que mueve en tu cuenta una compra (sale plata, con la comisión) o una venta (entra, menos la comisión)
+function tradeTxFields(h, { side, date, qty, price, fee }, acc) {
+  const usd = side === 'compra' ? qty * price + (fee || 0) : qty * price - (fee || 0);
+  return {
+    date, type: side === 'compra' ? 'gasto' : 'ingreso', accountId: acc.id, amount: round2(convert(usd, 'USD', acc.currency)),
+    category: side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
+    note: `${side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(qty)} ${h.symbol}${fee ? ` (comisión US$ ${fmtNum(fee, 2)})` : ''}`,
+  };
+}
+
+/* ---------------- Historial de operaciones de un activo ----------------
+   Cada compra, venta o ajuste se puede ver, editar o borrar. La cantidad, el precio promedio,
+   el rendimiento y el informe se recalculan solos. */
+
+const tradeLabel = (t) => (t.side === 'compra' ? 'Compra' : t.side === 'venta' ? 'Venta' : 'Ajuste de cantidad');
+
+// Aviso cuando tu posición no coincide con la suma de tus operaciones (con las dos formas de arreglarlo)
+function positionWarnHTML(h, inSheet = false) {
+  const gap = positionGap(h);
+  if (Math.abs(gap) <= 1e-9 || (gap > 0 && h.initial?.date)) return '';
+  const sum = netTrades(h);
+  return `<div class="banner pos-warn"><div>${gap > 0
+    ? `<b>${esc(h.symbol)}</b>: tu posición dice <b>${fmtNum(Number(h.quantity) || 0)}</b>, pero tus operaciones suman <b>${fmtNum(Math.round(sum * 1e10) / 1e10)}</b>. Faltan ${fmtNum(gap)} sin fecha (¿algo que ya tenías?).`
+    : `<b>${esc(h.symbol)}</b>: tu posición dice <b>${fmtNum(Number(h.quantity) || 0)}</b>, pero tus operaciones suman <b>${fmtNum(Math.round(sum * 1e10) / 1e10)}</b> (${fmtNum(-gap)} de más).`}</div>
+    <div class="toolbar" style="margin-top:8px">
+      ${inSheet ? '' : `<button class="btn sm" data-action="opsHist" data-id="${h.id}">Corregir una operación</button>`}
+      <button class="btn sm primary" data-action="qtyAdjust" data-id="${h.id}">Crear un ajuste de cantidad</button></div></div>`;
+}
+
+function viewHistorial() {
+  const h = S.holdings.find((x) => x.id === S.settings.histId);
+  if (!h) return '<div class="empty">Ese activo ya no existe.</div>';
+  const list = byTradeDate(h.trades || []).reverse();
+  const base = baseQty(h), q = Number(h.quantity) || 0, avg = Number(h.avgCost) || 0, p = Number(h.price) || 0;
+  const linked = (t) => S.transactions.find((x) => x.tradeId === t.id);
+  return `<section class="card">
+    <div class="hist-head"><div><div class="muted small">Tu posición</div><b class="money" style="font-size:20px">${fmtNum(q)} ${esc(h.symbol)}</b></div>
+      <div style="text-align:right"><div class="muted small">Precio promedio</div><b class="money">${avg ? `US$ ${fmtNum(avg, 2)}` : '—'}</b></div></div>
+    <div class="small muted money" style="margin-top:6px">${p ? `Precio actual US$ ${fmtNum(p, 2)} · valor US$ ${fmtNum(round2(q * p), 2)}` : 'Sin precio actual'}${avg && p ? ` · <span class="${cls(p - avg)}">${fmtPct((p / avg - 1) * 100)} desde la compra</span>` : ''}</div>
+  </section>
+  ${positionWarnHTML(h, true)}
+  <section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Operaciones</h2><button class="btn sm primary" data-action="trade" data-id="${h.id}">+ Compra/Venta</button></div>
+    <div class="list">${list.map((t) => {
+      const total = t.side === 'ajuste' ? null : t.qty * t.price + (t.side === 'compra' ? 1 : -1) * (t.fee || 0);
+      const acc = S.accounts.find((a) => a.id === linked(t)?.accountId);
+      return `<div class="list-row act op-row">
+        <span class="acc-ico sm ${t.side === 'venta' ? 'in' : ''}">${icon(t.side === 'ajuste' ? 'edit' : 'trending', 16)}</span>
+        <div class="grow"><div class="name">${tradeLabel(t)}${t.src === 'importado' ? ' <span class="tag">importado</span>' : ''}</div>
+          <div class="meta money">${fmtDate(t.date)} · ${t.side === 'ajuste' ? `${t.qty > 0 ? '+' : ''}${fmtNum(t.qty)} ${esc(h.symbol)}` : `${fmtNum(t.qty)} × US$ ${fmtNum(t.price, 2)}`}${t.fee ? ` + comisión US$ ${fmtNum(t.fee, 2)}` : ''}${acc ? ` · ${esc(acc.name)}` : ''}</div></div>
+        <div class="val">${total != null ? `<div class="money"><b>US$ ${fmtNum(round2(total), 2)}</b></div>` : ''}</div>
+        <button class="btn sm ghost icon-only" data-action="tradeEdit" data-id="${h.id}|${t.id}" title="Editar" aria-label="Editar">${icon('edit', 16)}</button>
+        <button class="btn sm ghost icon-only danger" data-action="tradeDel" data-id="${h.id}|${t.id}" title="Borrar" aria-label="Borrar">${icon('x', 16)}</button></div>`;
+    }).join('')}
+    ${base > 1e-9 ? `<div class="list-row act op-row">
+        <span class="acc-ico sm">${icon('wallet', 16)}</span>
+        <div class="grow"><div class="name">Saldo inicial</div><div class="meta money">${h.initial?.date ? fmtDate(h.initial.date) : '<span class="warn-text">sin fecha</span>'} · ${fmtNum(base)} ${esc(h.symbol)}${h.initial?.price ? ` × US$ ${fmtNum(h.initial.price, 2)}` : ''}</div></div>
+        <button class="btn sm ghost icon-only" data-action="editHolding" data-id="${h.id}" title="Editar" aria-label="Editar">${icon('edit', 16)}</button></div>` : ''}
+    ${!list.length && !(base > 1e-9) ? '<div class="empty">Todavía no hay operaciones.</div>' : ''}</div>
+  </section>
+  <p class="small muted" style="margin:0">Al editar o borrar una operación se recalculan tu cantidad, el precio promedio, el rendimiento y el informe.</p>`;
+}
+
+// Editar una compra, venta o ajuste (y la plata que movió en tu cuenta, si tenía una)
+function tradeEditForm(h, t) {
+  const tx = S.transactions.find((x) => x.tradeId === t.id);
+  const isAdj = t.side === 'ajuste';
+  const accOpts = [['', '— No mover dinero de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${a.currency})`])];
+  openForm({
+    title: `Editar ${tradeLabel(t).toLowerCase()} de ${h.symbol}`,
+    fields: isAdj ? [
+      { name: 'date', label: 'Fecha', type: 'date', value: t.date },
+      { name: 'qty', label: `Cantidad (+ suma, − resta)`, type: 'number', value: t.qty, required: true },
+      { name: 'note', label: 'Motivo', value: t.note || '', full: true, placeholder: 'Opcional' },
+    ] : [
+      { name: 'side', label: 'Operación', type: 'select', value: t.side, options: [['compra', 'Compra'], ['venta', 'Venta']] },
+      { name: 'date', label: 'Fecha', type: 'date', value: t.date },
+      { name: 'qty', label: `Cantidad (${h.symbol})`, type: 'number', value: t.qty, required: true },
+      { name: 'price', label: 'Precio por unidad (USD)', type: 'number', value: t.price, required: true },
+      { name: 'fee', label: 'Comisión (USD)', type: 'number', value: t.fee || 0, blankZero: true, placeholder: '0' },
+      { name: 'accountId', label: 'Cuenta donde se movió la plata', type: 'select', value: tx?.accountId || '', options: accOpts, full: true },
+      { type: 'html', html: '<div id="tradeHint" class="fx-hint"></div>' },
+    ],
+    onInput: (form, v) => {
+      const hint = $('#tradeHint');
+      if (hint && v.qty > 0 && v.price > 0) hint.innerHTML = `${fmtNum(v.qty)} × US$ ${fmtNum(v.price, 2)}${v.fee ? ` ${v.side === 'compra' ? '+' : '−'} US$ ${fmtNum(v.fee, 2)}` : ''} = <b>US$ ${fmtNum(round2(v.qty * v.price + (v.side === 'compra' ? 1 : -1) * (v.fee || 0)), 2)}</b>`;
+    },
+    onSubmit: (v) => {
+      if (v.date > todayISO()) return 'La fecha no puede ser futura.';
+      if (isAdj ? !v.qty : !(v.qty > 0)) return 'La cantidad no puede ser 0.';
+      if (!isAdj && !(v.price > 0)) return 'El precio tiene que ser mayor a 0.';
+      const acc = !isAdj && v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
+      if (acc && convert(1, 'USD', acc.currency) == null) return NO_RATE;
+      const next = isAdj ? { ...t, date: v.date, qty: v.qty, note: v.note, u: new Date().toISOString() }
+        : { ...t, side: v.side, date: v.date, qty: v.qty, price: v.price, fee: Math.max(0, v.fee || 0), src: undefined, u: new Date().toISOString() };
+      const err = changeTrades(h, (list) => list.map((x) => (x.id === t.id ? next : x)));
+      if (err) return err;
+      // La plata que movió en tu cuenta se rehace con los datos nuevos
+      if (!isAdj) {
+        if (tx) { applyTx(tx, -1); S.transactions = S.transactions.filter((x) => x !== tx); tombstone(tx.id); }
+        if (acc) {
+          const nt = { id: uid(), created: new Date().toISOString(), investment: true, holdingId: h.id, tradeId: t.id, ...tradeTxFields(h, next, acc) };
+          S.transactions.push(nt); applyTx(nt, 1);
+        }
+      }
+      snapshot(); save(); render();
+      toast(`${tradeLabel(next)} de ${h.symbol} corregida ✓`);
+    },
+  });
+}
+
+async function tradeDelete(h, t) {
+  const tx = S.transactions.find((x) => x.tradeId === t.id);
+  const ok = await confirmDlg(`Borrar ${tradeLabel(t).toLowerCase()}`,
+    `Se borra la ${tradeLabel(t).toLowerCase()} del ${fmtDate(t.date)} (${fmtNum(t.qty)} ${esc(h.symbol)}) y se recalcula tu cantidad y tu precio promedio${tx ? '. También se revierte la plata que movió en tu cuenta' : ''}.`, 'Borrar');
+  if (!ok) return;
+  const err = undoTrade(h, t.id);
+  if (err) return toast(err, 5000);
+  if (tx) { applyTx(tx, -1); S.transactions = S.transactions.filter((x) => x !== tx); tombstone(tx.id); }
+  snapshot(); save(); render();
+  toast('Operación borrada ✓');
+}
+
+// Ajuste de cantidad: deja tus operaciones iguales a tu posición (con fecha, para que el informe sepa desde cuándo)
+function qtyAdjustForm(h) {
+  const gap = positionGap(h);
+  openForm({
+    title: `Ajuste de cantidad de ${h.symbol}`,
+    fields: [
+      { type: 'html', html: `<p class="small" style="margin:0;color:var(--text-2)">Tu posición: <b>${fmtNum(Number(h.quantity) || 0)}</b> · tus operaciones suman: <b>${fmtNum(Math.round(netTrades(h) * 1e10) / 1e10)}</b>.<br>
+        Se registra un ajuste de <b>${gap > 0 ? '+' : ''}${fmtNum(gap)} ${esc(h.symbol)}</b> para que coincidan. No mueve plata de tus cuentas.</p>` },
+      { name: 'date', label: gap > 0 ? '¿Desde qué fecha lo tenés?' : '¿Desde qué fecha ya no lo tenés?', type: 'date', value: todayISO(), full: true, required: true },
+      { name: 'note', label: 'Motivo', value: '', full: true, placeholder: gap > 0 ? 'ej. lo tenía antes de usar la app' : 'ej. comisión cobrada en cripto' },
+    ],
+    submitLabel: 'Crear ajuste',
+    onSubmit: (v) => {
+      if (v.date > todayISO()) return 'La fecha no puede ser futura.';
+      const id = uid();
+      // Si suma, lleva el costo de esas unidades (así tu precio promedio no cambia); si resta, no mueve el precio promedio
+      const price = gap > 0 ? Math.round(baseAvgOf(h) * 1e6) / 1e6 : 0;
+      const err = changeTrades(h, (list) => [...list, { id, date: v.date, side: 'ajuste', qty: gap, price, fee: 0, note: v.note, u: new Date().toISOString() }], [], { resetGap: true });
+      if (err) return err;
+      snapshot(); save(); render();
+      toast('Listo: tu posición y tus operaciones coinciden ✓');
+    },
+  });
+}
+
 // Deshace una compra/venta (al borrar su movimiento): devuelve la cantidad y el precio promedio de antes
 function undoTrade(h, tradeId) {
-  const i = (h.trades || []).findIndex((x) => x.id === tradeId);
-  if (i < 0) return;
-  const tr = h.trades[i];
-  const q = Number(h.quantity) || 0;
-  const r10 = (x) => Math.round(x * 1e10) / 1e10; // evita 0,0099999… por la aritmética de decimales
-  if (tr.side === 'compra') { h.quantity = r10(Math.max(0, q - tr.qty)); h.avgCost = tr.prevAvg ?? h.avgCost; }
-  else h.quantity = r10(q + tr.qty);
-  h.trades.splice(i, 1);
+  if (!(h.trades || []).some((x) => x.id === tradeId)) return null;
+  return changeTrades(h, (list) => list.filter((x) => x.id !== tradeId), [tradeId]);
+}
+
+/* La posición (cantidad y precio promedio) sale de repasar TODAS las operaciones en orden de fecha,
+   partiendo del saldo inicial. Así, al editar o borrar cualquier operación, todo se recalcula solo. */
+const byTradeDate = (list) => list.map((t, i) => [t, i]).sort((a, b) => (a[0].date || '').localeCompare(b[0].date || '') || a[1] - b[1]).map(([t]) => t);
+function replayHolding(h, trades, base, baseAvg) {
+  let q = base, avg = base > 0 ? baseAvg : 0;
+  for (const t of byTradeDate(trades)) {
+    t.prevAvg = avg;
+    // Una compra (o un ajuste que suma con su costo) cambia el precio promedio; una venta o un ajuste que resta, no
+    if (t.side === 'compra' || (t.side === 'ajuste' && t.qty > 0 && t.price > 0)) { const nq = q + t.qty; avg = nq > 0 ? (q * avg + t.qty * t.price + (t.fee || 0)) / nq : avg; q = nq; }
+    else q += tradeDelta(t);
+    if (q < -1e-9) return { error: `Con este cambio te quedarías con ${fmtNum(Math.round(q * 1e8) / 1e8)} ${h.symbol} el ${fmtDate(t.date)}: revisá las ventas de después.` };
+  }
+  return { q: Math.max(0, Math.round(q * 1e10) / 1e10), avg };
+}
+// Precio promedio del saldo inicial: el que cargaste, o el que hace cerrar tu precio promedio de hoy
+function baseAvgOf(h) {
+  if (h.initial?.price > 0) return h.initial.price;
+  const base = baseQty(h), trades = (h.trades || []).map((t) => ({ ...t }));
+  if (!(base > 0)) return 0;
+  if (!trades.some((t) => t.side === 'compra')) return Number(h.avgCost) || 0;
+  const a0 = replayHolding(h, trades.map((t) => ({ ...t })), base, 0).avg, a1 = replayHolding(h, trades.map((t) => ({ ...t })), base, 1).avg;
+  return a1 - a0 > 1e-12 ? Math.max(0, ((Number(h.avgCost) || 0) - a0) / (a1 - a0)) : Number(h.avgCost) || 0;
+}
+// Cambia las operaciones de un activo (agregar, editar o borrar) y recalcula su posición.
+// Devuelve un texto de error (y no cambia nada) si la cantidad quedaría negativa en algún momento.
+function changeTrades(h, mutate, removedIds = [], { resetGap = false } = {}) {
+  // Si tu posición ya no coincidía con las operaciones, esa diferencia se mantiene (se corrige con el aviso de Inversiones).
+  // Un ajuste de cantidad (resetGap) la reemplaza: desde ahí, posición = suma de operaciones.
+  const gap = resetGap ? 0 : positionGap(h), base = Math.max(0, gap), offset = Math.min(0, gap), bAvg = baseAvgOf(h);
+  const next = mutate((h.trades || []).map((t) => ({ ...t })));
+  const r = replayHolding(h, next, base, bAvg);
+  if (r.error) return r.error;
+  h.trades = next;
+  h.quantity = Math.max(0, Math.round((r.q + offset) * 1e10) / 1e10);
+  if (r.q > 0 || next.length) h.avgCost = r.avg;
+  for (const id of removedIds) tombstone(id); // así no vuelve desde el otro dispositivo
+  return null;
 }
 
 function importHoldings(text) {
@@ -5648,7 +5823,7 @@ const ACTIONS = {
     // Si el activo ya se eliminó, se puede borrar igual (sólo se revierte el saldo de la cuenta)
     if (t.investment && !h && !t.holdingId) return toast('Es una compra/venta de inversión: corregí la cantidad desde Inversiones → Editar.', 4500);
     if (await confirmDlg('Eliminar movimiento', `Se va a revertir su efecto en el saldo de la cuenta${h ? ` y en tu cantidad de ${esc(h.symbol)}` : ''}.`)) {
-      if (h) undoTrade(h, t.tradeId);
+      if (h) { const err = undoTrade(h, t.tradeId); if (err) return toast(err, 5000); }
       // Un fijo borrado no se vuelve a registrar solo ese mes
       const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
       if (r && r.day) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
@@ -5662,6 +5837,10 @@ const ACTIONS = {
   },
   importHoldings: () => importHoldings($('#importText').value),
   repFmt: (fmt) => { S.settings.repFmt = fmt; save(false); render(); },
+  opsHist: (id) => { S.settings.histId = id; openSheet('historial'); },
+  tradeEdit: (ids) => { const [hid, tid] = ids.split('|'); const h = byId(S.holdings, hid); const t = h?.trades?.find((x) => x.id === tid); if (t) tradeEditForm(h, t); },
+  tradeDel: (ids) => { const [hid, tid] = ids.split('|'); const h = byId(S.holdings, hid); const t = h?.trades?.find((x) => x.id === tid); if (t) tradeDelete(h, t); },
+  qtyAdjust: (id) => qtyAdjustForm(byId(S.holdings, id)),
   fixSuggest: (i) => { const s = fixedSuggestions()[Number(i)]; if (s) recurringForm(null, { type: 'gasto', name: s.name, amount: s.amount, currency: s.currency, accountId: s.accountId, category: s.category }); },
   fixDismiss: (i) => { const s = fixedSuggestions()[Number(i)]; if (!s) return; S.settings.fixDismissed = [...(S.settings.fixDismissed || []), s.key].slice(-100); save(false); render(); },
   reportMake: () => makeReport(),
