@@ -223,6 +223,8 @@ function migrate(s) {
   for (const k of ['accounts', 'holdings', 'transactions', 'history', 'recurring', 'scheduled', 'goals', 'loans', 'checkins', 'rateLog', 'deleted']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
   if (!s.dayBudgets || typeof s.dayBudgets !== 'object' || Array.isArray(s.dayBudgets)) s.dayBudgets = {};
+  if (!s.priceLog || typeof s.priceLog !== 'object' || Array.isArray(s.priceLog)) s.priceLog = {};
+  if (!Array.isArray(s.balanceLog)) s.balanceLog = [];
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
   }
@@ -355,6 +357,12 @@ function missingRates() {
 /* ---------------- Cálculos ---------------- */
 
 const holdingValue = (h) => (Number(h.quantity) || 0) * (Number(h.price) || 0);
+// Compras menos ventas registradas (hasta una fecha, si se indica)
+const netTrades = (h, upTo) => (h.trades || []).filter((x) => !upTo || x.date <= upTo).reduce((s, x) => s + (x.side === 'compra' ? x.qty : -x.qty), 0);
+// "Saldo inicial": lo que tenés de un activo que no sale de compras registradas (ej. algo que ya tenías)
+const baseQty = (h) => Math.max(0, Math.round(((Number(h.quantity) || 0) - netTrades(h)) * 1e10) / 1e10);
+// Saldo inicial sin fecha: no se sabe desde cuándo lo tenés (se pide completarla)
+const undatedBase = (h) => baseQty(h) > 1e-9 && !h.initial?.date;
 const holdingCost = (h) => (Number(h.quantity) || 0) * (Number(h.avgCost) || 0);
 
 function allocKeyAccount(a) {
@@ -392,7 +400,31 @@ function totals() {
 }
 
 // Compras/ventas de inversiones y préstamos mueven plata pero no son gasto ni ingreso
-const nonFlow = (t) => !!(t.investment || t.loan || t.familyPaid);
+// Intereses, dividendos y rendimientos (ej. Binance Earn, Meru) son ingresos de inversión, no ingresos para gastar
+const INV_INCOME_CATS = new Set(['Intereses', 'Dividendos']);
+const isInvIncome = (t) => t.type === 'ingreso' && !!(t.invIncome || INV_INCOME_CATS.has(t.category));
+// Lo que no es gasto ni ingreso "normal": inversiones, préstamos, lo que pagó tu familia y rendimientos de inversión
+const nonFlow = (t) => !!(t.investment || t.loan || t.familyPaid || isInvIncome(t));
+
+// Tipo de cambio de un día, de lo que la app guardó cada día. est = estimado (no hay dato cerca de esa fecha)
+function rateAt(cur, date) {
+  if (USD_PEGGED.has(cur)) return { r: 1, est: false };
+  let best = null, after = null;
+  for (const x of S.rateLog || []) {
+    if (x.cur !== cur || !(x.rate > 0)) continue;
+    if (x.date <= date) { if (!best || x.date > best.date) best = x; } else if (!after || x.date < after.date) after = x;
+  }
+  const pick = best || after;
+  if (pick) return { r: pick.rate, est: Math.abs(Date.parse(pick.date) - Date.parse(date)) > 3 * 864e5 };
+  return { r: rate(cur), est: true };
+}
+// Un monto convertido con el tipo de cambio del día del movimiento (para el informe)
+function convertAt(amount, from, to, date) {
+  if (from === to) return { v: Number(amount) || 0, est: false };
+  const a = rateAt(from, date), b = rateAt(to, date);
+  if (!a.r || !b.r) return { v: convert(amount, from, to) ?? 0, est: true };
+  return { v: (Number(amount) || 0) / a.r * b.r, est: a.est || b.est };
+}
 // Gastos que pagó tu familia directamente por vos (ej. la U): no salen de tus cuentas
 const FAMILY_ID = 'family';
 const familyAcc = () => ({ id: FAMILY_ID, name: 'Lo pagó mi familia', type: 'familia', currency: S.settings.localCurrency, balance: 0 });
@@ -423,14 +455,21 @@ function monthStats(month, txs = S.transactions) {
   return { income, expense, byCat, incomeCats };
 }
 
+// Precio de cada activo por día (para el informe "día por día": las acciones y ETF no tienen historial gratis)
+function logPrices(date, px, { keep = false } = {}) {
+  if (!Object.keys(px).length) return;
+  const log = S.priceLog || (S.priceLog = {});
+  log[date] = keep ? { ...px, ...(log[date] || {}) } : { ...(log[date] || {}), ...px };
+  const keys = Object.keys(log).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - 420))) delete log[k];
+}
+
 function snapshot() {
   const t = totals();
   if (!S.accounts.some((a) => Number(a.balance)) && !S.holdings.some((h) => Number(h.quantity))) return;
   const d = todayISO();
   const row = { date: d, netWorth: t.netWorth, inv: t.inv, liquid: t.liquid, debt: t.debt };
-  // Precio de cada activo ese día (para el informe "día por día"; las acciones no tienen historial gratis)
-  const px = Object.fromEntries(S.holdings.filter((h) => Number(h.price) > 0).map((h) => [h.symbol, Number(h.price)]));
-  if (Object.keys(px).length) row.px = px;
+  logPrices(d, Object.fromEntries(S.holdings.filter((h) => Number(h.price) > 0).map((h) => [h.symbol, Number(h.price)])));
   const last = S.history[S.history.length - 1];
   if (last && last.date === d) Object.assign(last, row); else S.history.push(row);
   if (S.history.length > 3650) S.history.shift();
@@ -511,7 +550,15 @@ async function refreshAllInner({ silent = false } = {}) {
       await Promise.all(stocks.map(async (h) => {
         try {
           const q = await getJSON(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(h.symbol.trim().toUpperCase())}&token=${encodeURIComponent(key)}`);
-          if (q && q.c > 0) { Object.assign(h, { price: q.c, change24h: q.dp ?? null, priceUpdated: now, priceSource: 'Finnhub' }); updated++; }
+          if (q && q.c > 0) {
+            Object.assign(h, { price: q.c, change24h: q.dp ?? null, priceUpdated: now, priceSource: 'Finnhub' }); updated++;
+            // El cierre del día hábil anterior también se guarda (si ese día no se abrió la app)
+            if (q.pc > 0 && q.t) {
+              let p = q.t * 1000 - 864e5; // día hábil anterior (el lunes, el anterior es el viernes)
+              while ([0, 6].includes(new Date(p).getDay())) p -= 864e5;
+              logPrices(isoOf(p), { [h.symbol]: q.pc }, { keep: true });
+            }
+          }
           else notes.push(`${h.symbol}: sin cotización en Finnhub`);
         } catch (e) { notes.push(`${h.symbol}: Finnhub no respondió`); }
       }));
@@ -912,7 +959,10 @@ function viewInversiones() {
       </div></td></tr>`;
   }).join('');
   const gp = t.invWithCost - t.cost;
+  const undated = S.holdings.filter(undatedBase);
   return `
+  ${undated.map((h) => `<div class="banner">Tenés <b>${fmtNum(baseQty(h))} ${esc(h.symbol)}</b> sin fecha de compra: el informe no sabe desde cuándo lo tenés.
+    <a href="#" data-action="editHolding" data-id="${h.id}">Completar la fecha</a></div>`).join('')}
   ${noKey ? `<div class="banner">Bitcoin, Ethereum y PAXG se actualizan solos. Para que <b>VOO, NVDA y GOOGL</b> también se actualicen, pegá una clave gratuita de Finnhub en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>. Mientras tanto podés cargar el precio a mano con “Editar”.</div>` : ''}
   <div class="tiles">
     ${tile('Valor del portafolio', fmtMoney(t.inv), `${S.holdings.length} activos`)}
@@ -1437,8 +1487,44 @@ function shortcutHTML(view, sub, warn = false) {
 /* ---------------- Secciones de "Más" ---------------- */
 
 function viewFijos() {
-  return `<section class="card"><div class="card-head"><span class="muted small">Lo que entra o sale todos los meses</span><button class="btn sm primary" data-action="addRecurring">+ Fijo</button></div>
+  const sug = fixedSuggestions();
+  return `${sug.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>¿Los hacemos fijos?</h2></div>
+    <div class="small muted" style="margin-bottom:4px">Se repiten todos los meses con un monto parecido.</div>
+    <div class="list">${sug.map((s, i) => `<div class="list-row act">
+      <div class="grow"><div class="name">${esc(s.name)}</div><div class="meta">${esc(s.category)} · ${s.months.map((m) => monthLabel(m)).join(', ')}</div></div>
+      <span class="money">${fmtIn(s.amount, s.currency)}</span>
+      <button class="btn sm primary" data-action="fixSuggest" data-id="${i}">Hacer fijo</button>
+      <button class="btn sm ghost icon-only" data-action="fixDismiss" data-id="${i}" title="No sugerir más" aria-label="No sugerir más">${icon('x', 16)}</button></div>`).join('')}</div></section>` : ''}
+  <section class="card"><div class="card-head"><span class="muted small">Lo que entra o sale todos los meses</span><button class="btn sm primary" data-action="addRecurring">+ Fijo</button></div>
     ${recurringHTML(currentMonth())}</section>`;
+}
+
+// Gastos que se repiten todos los meses con monto parecido (ej. seguro, suscripción del banco) y todavía no son fijos
+function fixedSuggestions() {
+  const months = [0, 1, 2].map((k) => addMonths(currentMonth(), -k));
+  const dismissed = new Set(S.settings.fixDismissed || []);
+  const groups = new Map();
+  for (const t of S.transactions) {
+    const m = t.date?.slice(0, 7);
+    if (t.type !== 'gasto' || nonFlow(t) || isFixedTx(t) || t.adjust || !t.note || !months.includes(m)) continue;
+    const key = `${norm(t.note)}|${t.category}`;
+    if (dismissed.has(key) || S.recurring.some((r) => norm(r.name) === norm(t.note))) continue;
+    const g = groups.get(key) || { key, name: t.note, category: t.category, byMonth: {}, last: t };
+    (g.byMonth[m] = g.byMonth[m] || []).push(Number(t.amount) || 0);
+    if (t.date >= g.last.date) g.last = t;
+    groups.set(key, g);
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    const ms = Object.keys(g.byMonth).sort();
+    if (ms.length < 2 || ms.some((m) => g.byMonth[m].length > 2)) continue; // una o dos veces por mes, no algo de todos los días
+    const per = ms.map((m) => g.byMonth[m].reduce((s, x) => s + x, 0)).sort((a, b) => a - b);
+    const mid = per[Math.floor(per.length / 2)];
+    if (!(mid > 0) || per.some((x) => Math.abs(x - mid) > mid * 0.2)) continue; // monto parecido (±20%)
+    const acc = S.accounts.find((a) => a.id === g.last.accountId);
+    out.push({ key: g.key, name: g.name, category: g.category, amount: round2(mid), currency: acc?.currency || S.settings.localCurrency, accountId: acc?.id || '', months: ms });
+  }
+  return out.slice(0, 5);
 }
 
 function viewProgramados() {
@@ -2771,7 +2857,7 @@ function mergeRemote(R) {
     const tr = h && (R.holdings || []).find((x) => x.id === h.id)?.trades?.find((x) => x.id === t.tradeId);
     if (tr && !(h.trades || []).some((x) => x.id === tr.id)) {
       const q = Number(h.quantity) || 0;
-      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price) / (q + tr.qty); h.quantity = q + tr.qty; }
+      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price + (tr.fee || 0)) / (q + tr.qty); h.quantity = q + tr.qty; }
       else h.quantity = Math.max(0, q - tr.qty);
       (h.trades = h.trades || []).push(tr);
     }
@@ -2800,7 +2886,7 @@ function mergeRemote(R) {
     for (const tr of rh?.trades || []) {
       if ((h.trades || []).some((x) => x.id === tr.id)) continue;
       const q = Number(h.quantity) || 0;
-      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price) / (q + tr.qty); h.quantity = q + tr.qty; }
+      if (tr.side === 'compra') { h.avgCost = (q * (Number(h.avgCost) || 0) + tr.qty * tr.price + (tr.fee || 0)) / (q + tr.qty); h.quantity = q + tr.qty; }
       else h.quantity = Math.max(0, q - tr.qty);
       (h.trades = h.trades || []).push(tr);
     }
@@ -2820,6 +2906,10 @@ function mergeRemote(R) {
   }
   S.checkins = [...new Set([...(S.checkins || []), ...(R.checkins || [])])];
   S.dayBudgets = mergeDayBudgets(S.dayBudgets, R.dayBudgets);
+  // Precios guardados día por día y correcciones de saldo: se juntan los de los dos dispositivos
+  for (const [d, px] of Object.entries(R.priceLog || {})) S.priceLog[d] = { ...px, ...(S.priceLog?.[d] || {}) };
+  const seenFix = new Set((S.balanceLog || []).map((x) => x.id));
+  for (const x of R.balanceLog || []) if (!seenFix.has(x.id)) S.balanceLog.push(x);
   S.budgets = { ...(R.budgets || {}), ...(S.budgets || {}) };
   S.deleted = [...dead].slice(-5000);
 }
@@ -3849,17 +3939,19 @@ function viewInforme() {
       <li>Todos los movimientos con fecha, día, hora, categoría, detalle y cuenta.</li>
       <li>Gastos por categoría y gasto de cada día.</li>
       <li>Tus inversiones día por día: precio, cantidad, valor y variación de cada activo, y las compras y ventas.</li>
-      <li>Tus cuentas, fijos y notas para que tu IA entienda los datos.</li>
+      <li>Separado: gastos propios, lo que pagó tu familia, transferencias, inversiones y préstamos (con lo que falta cobrar).</li>
+      <li>Saldos de tus cuentas día por día, tus fijos y "Para revisar": días sin registros, saldos que bajaron sin movimientos y datos estimados.</li>
     </ul>
     <p class="small muted" style="margin:8px 0 0">Los precios de cripto y oro (PAXG) de cada día se bajan gratis de CoinGecko. Las acciones y ETF tienen precio sólo de los días en que abriste la app; desde ahora se guardan todos los días.</p>
   </section>`;
 }
 
 // Cantidad que tenías de un activo al final de un día, a partir de la cantidad de hoy y las compras/ventas posteriores
+// Cantidad que tenías al final de un día: sólo compras y ventas registradas hasta ese día, más el saldo
+// inicial desde su fecha. Antes de la primera compra (o del saldo inicial) es 0; un saldo sin fecha no se cuenta.
 function qtyAt(h, date) {
-  let q = Number(h.quantity) || 0;
-  for (const tr of h.trades || []) if (tr.date > date) q += tr.side === 'compra' ? -tr.qty : tr.qty;
-  return Math.max(0, Math.round(q * 1e10) / 1e10);
+  const base = h.initial?.date && date >= h.initial.date ? baseQty(h) : 0;
+  return Math.max(0, Math.round((base + netTrades(h, date)) * 1e10) / 1e10);
 }
 
 // Precio de cada día de cada cripto (CoinGecko, gratis). { coingeckoId: { 'AAAA-MM-DD': precio USD } }
@@ -3883,107 +3975,205 @@ async function cryptoDaily(fromISO, toISO, onStep) {
   return out;
 }
 
-// Todos los datos del informe, mes por mes
+// Todos los datos del informe, mes por mes.
+// Montos convertidos con el tipo de cambio de la FECHA de cada movimiento; lo estimado queda marcado.
 async function buildReport(fromM, toM, onStep) {
   const cur = S.settings.localCurrency;
-  const L = (usd) => round2(fromUSD(usd, cur));
-  const U = (usd) => round2(usd);
+  const R2 = (x) => round2(x);
   const today = todayISO();
   const months = reportMonths().months.filter((m) => m >= fromM && m <= toM);
-  const firstDay = `${months[0]}-01`, lastDay = `${months[months.length - 1]}-${String(daysInMonth(months[months.length - 1])).padStart(2, '0')}`;
+  const firstDay = `${months[0]}-01`, lastM = months[months.length - 1];
+  const lastDay = `${lastM}-${String(daysInMonth(lastM)).padStart(2, '0')}`;
   const crypto = S.holdings.some((h) => h.coingeckoId) ? await cryptoDaily(firstDay, lastDay < today ? lastDay : today, onStep) : {};
+  onStep?.('Ordenando tus movimientos…');
   const histByDay = Object.fromEntries((S.history || []).map((r) => [r.date, r]));
-  const accName = (t) => (t.familyPaid ? 'Lo pagó tu familia' : S.accounts.find((a) => a.id === t.accountId)?.name || '');
+  const accOf = (id) => S.accounts.find((a) => a.id === id);
+  const curOfTx = (t) => accOf(t.accountId)?.currency || t.currency || cur;
+  // Monto del movimiento en moneda local y en USD con el tipo de cambio de su fecha
+  const conv = (t) => {
+    const c = curOfTx(t), amt = Number(t.amount) || 0;
+    const loc = convertAt(amt, c, cur, t.date), usd = convertAt(amt, c, 'USD', t.date);
+    return { loc: loc.v, usd: usd.v, est: c !== cur && loc.est, tc: rateAt(cur, t.date) };
+  };
   const weekday = (d) => new Date(d + 'T12:00:00').toLocaleDateString('es-AR', { weekday: 'long' });
+  const accName = (t) => (t.familyPaid ? 'Lo pagó tu familia' : accOf(t.accountId)?.name || '');
+  const group = (t) => (t.type === 'transferencia' ? 'Transferencia' : t.familyPaid ? 'Pagado por la familia' : t.loan ? 'Préstamo'
+    : t.investment || isInvIncome(t) ? 'Inversión' : t.adjust ? 'Ajuste de saldo' : 'Propio');
+  const ownFlow = (t) => t.type !== 'transferencia' && !nonFlow(t); // gastos e ingresos propios (incluye ajustes)
   const priceOn = (h, d) => {
     const id = (h.coingeckoId || '').trim().toLowerCase();
     if (id && crypto[id]?.[d] != null) return { p: crypto[id][d], src: 'CoinGecko' };
-    const px = histByDay[d]?.px?.[h.symbol];
-    if (px != null) return { p: px, src: 'App' };
-    if (d === today && Number(h.price)) return { p: Number(h.price), src: 'App' };
+    const px = S.priceLog?.[d]?.[h.symbol] ?? histByDay[d]?.px?.[h.symbol];
+    if (px != null) return { p: px, src: 'Guardado por la app' };
+    if (d === today && Number(h.price)) return { p: Number(h.price), src: 'Guardado por la app' };
     return null;
   };
-  onStep?.('Ordenando tus movimientos…');
+  const quality = []; // avisos de datos incompletos o estimados (para todo el período)
+  for (const h of S.holdings) {
+    if (undatedBase(h)) quality.push(`${h.symbol}: tenés ${fmtNum(baseQty(h))} sin fecha de compra. No se cuentan en el día por día hasta que pongas la fecha (Inversiones → Editar).`);
+    if (h.initial?.src === 'importado') quality.push(`${h.symbol}: la cantidad inicial se importó el ${fmtDate(h.initial.date)}; antes de esa fecha no hay datos.`);
+  }
   const out = [];
   for (const m of months) {
     const dim = daysInMonth(m);
-    const end = `${m}-${String(dim).padStart(2, '0')}`;
+    const start = `${m}-01`, end = `${m}-${String(dim).padStart(2, '0')}`;
     const lastD = end < today ? end : today;
+    const nDays = Number(lastD.slice(8, 10));
     const txs = S.transactions.filter((t) => t.date?.startsWith(m)).sort((a, b) => `${a.date}${a.time || ''}`.localeCompare(`${b.date}${b.time || ''}`));
-    const ms = monthStats(m);
-    const fam = familyPaidIn(m);
-    const fixed = txs.filter((t) => t.type === 'gasto' && isFixedTx(t) && !nonFlow(t)).reduce((s, t) => s + txUSD(t), 0);
-    const variable = txs.filter(isVariable).reduce((s, t) => s + txUSD(t), 0);
-    const daysWith = new Set(txs.map((t) => t.date)).size;
-    const daysElapsed = Number(lastD.slice(8, 10));
-    const biggest = txs.filter((t) => t.type === 'gasto' && !t.investment).sort((a, b) => txUSD(b) - txUSD(a))[0];
-    const hist = (S.history || []).filter((r) => r.date.startsWith(m));
-    const rows = txs.map((t) => ({
-      fecha: t.date, dia: weekday(t.date), hora: t.time || '',
-      tipo: t.type === 'gasto' ? 'Gasto' : t.type === 'ingreso' ? 'Ingreso' : 'Transferencia',
-      categoria: t.type === 'transferencia' ? 'Transferencia' : t.category || '',
-      detalle: t.note && t.note !== t.category ? t.note : '',
-      cuenta: t.type === 'transferencia' ? `${accName(t)} -> ${S.accounts.find((a) => a.id === t.toAccountId)?.name || ''}` : accName(t),
-      moneda: S.accounts.find((a) => a.id === t.accountId)?.currency || t.currency || cur,
-      monto: Number(t.amount) || 0,
-      // + ingreso / - gasto (las transferencias van en positivo: sólo pasan plata de una cuenta a otra)
-      montoLocal: t.type === 'gasto' ? -L(txUSD(t)) : L(txUSD(t)),
-      montoUSD: t.type === 'gasto' ? -U(txUSD(t)) : U(txUSD(t)),
-      fijo: t.recurringId ? 'Sí' : '', programado: t.scheduledId ? 'Sí' : '', familia: t.familyPaid ? 'Sí' : '',
-      inversion: t.investment ? 'Sí' : '', prestamo: t.loan || t.loanId ? 'Sí' : '',
-    }));
-    const cats = (obj, total) => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([c, v]) => ({ categoria: c, local: L(v), usd: U(v), pct: total ? round2((v / total) * 100) : 0, n: txs.filter((t) => (t.category || '') === c && !nonFlow(t) && t.type !== 'transferencia').length }));
+    const cv = new Map(txs.map((t) => [t, conv(t)]));
+    const fxEst = txs.filter((t) => cv.get(t).est).length;
+    const sum = (list, k = 'loc') => list.reduce((s, t) => s + cv.get(t)[k], 0);
+    const own = txs.filter(ownFlow);
+    const gastos = own.filter((t) => t.type === 'gasto'), ingresos = own.filter((t) => t.type === 'ingreso');
+    const fam = txs.filter((t) => t.familyPaid && t.type === 'gasto');
+    const transfers = txs.filter((t) => t.type === 'transferencia');
+    const invIncome = txs.filter(isInvIncome);
+    const loanTxs = txs.filter((t) => t.loan);
+    const adjusts = txs.filter((t) => t.adjust);
+    const fixed = gastos.filter(isFixedTx), variable = txs.filter(isVariable);
+    const byCat = (list) => {
+      const o = {};
+      for (const t of list) { const c = t.category || 'Otros'; o[c] = o[c] || { loc: 0, usd: 0, n: 0 }; o[c].loc += cv.get(t).loc; o[c].usd += cv.get(t).usd; o[c].n++; }
+      const tot = Object.values(o).reduce((s, x) => s + x.loc, 0);
+      return Object.entries(o).sort((a, b) => b[1].loc - a[1].loc).map(([c, x]) => ({ categoria: c, local: R2(x.loc), usd: R2(x.usd), pct: tot ? R2((x.loc / tot) * 100) : 0, n: x.n }));
+    };
+    const rows = txs.map((t) => {
+      const c = cv.get(t), sign = t.type === 'gasto' ? -1 : 1;
+      return {
+        fecha: t.date, dia: weekday(t.date), hora: t.time || '', grupo: group(t),
+        tipo: t.type === 'gasto' ? 'Gasto' : t.type === 'ingreso' ? 'Ingreso' : 'Transferencia',
+        categoria: t.type === 'transferencia' ? 'Transferencia' : t.category || '',
+        detalle: t.note && t.note !== t.category ? t.note : '',
+        cuenta: t.type === 'transferencia' ? `${accName(t)} -> ${accOf(t.toAccountId)?.name || ''}` : accName(t),
+        moneda: curOfTx(t), monto: Number(t.amount) || 0,
+        llega: t.type === 'transferencia' && t.toAmount ? Number(t.toAmount) : null, monedaLlega: t.type === 'transferencia' ? accOf(t.toAccountId)?.currency || '' : '',
+        tcOperacion: t.fxRate ? R2(t.fxRate) : null,
+        montoLocal: R2(sign * c.loc), montoUSD: R2(sign * c.usd), tc: c.tc.r ? R2(c.tc.r) : null, tcEstimado: c.est ? 'Sí' : '',
+        fijo: t.recurringId ? 'Sí' : '', programado: t.scheduledId ? 'Sí' : '',
+      };
+    });
+    // Día por día
     const days = [];
-    for (let d = 1; d <= Number(lastD.slice(8, 10)); d++) {
+    for (let d = 1; d <= nDays; d++) {
       const iso = `${m}-${String(d).padStart(2, '0')}`;
       const dayTx = txs.filter((t) => t.date === iso);
-      const spent = dayTx.filter(isVariable).reduce((s, t) => s + txUSD(t), 0);
-      const all = dayTx.filter((t) => t.type === 'gasto' && !nonFlow(t)).reduce((s, t) => s + txUSD(t), 0);
-      const inc = dayTx.filter((t) => t.type === 'ingreso' && !nonFlow(t)).reduce((s, t) => s + txUSD(t), 0);
       const bud = S.dayBudgets?.[iso]?.v;
-      days.push({ fecha: iso, dia: weekday(iso), variable: L(spent), gastos: L(all), ingresos: L(inc), presupuesto: bud != null ? L(bud) : null, n: dayTx.length });
+      days.push({ fecha: iso, dia: weekday(iso), variable: R2(sum(dayTx.filter(isVariable))), gastos: R2(sum(dayTx.filter((t) => ownFlow(t) && t.type === 'gasto'))),
+        ingresos: R2(sum(dayTx.filter((t) => ownFlow(t) && t.type === 'ingreso'))), familia: R2(sum(dayTx.filter((t) => t.familyPaid))),
+        presupuesto: bud != null ? R2(convertAt(bud, 'USD', cur, iso).v) : null, n: dayTx.length });
     }
-    // Inversiones: precio y valor de cada activo, cada día
-    const invDaily = [];
-    const holdRows = [];
+    // Días sin registros (5 o más seguidos, desde que empezaste a registrar)
+    const firstRec = reportMonths().first || start;
+    const monthQuality = [];
+    let gapStart = null;
+    for (let d = 1; d <= nDays + 1; d++) {
+      const iso = d <= nDays ? `${m}-${String(d).padStart(2, '0')}` : null;
+      const empty = iso && iso >= firstRec && !txs.some((t) => t.date === iso);
+      if (empty && !gapStart) gapStart = iso;
+      if (!empty && gapStart) {
+        const prev = addDays(iso || addDays(lastD, 1), -1), len = Math.round((Date.parse(prev) - Date.parse(gapStart)) / 864e5) + 1;
+        if (len >= 5) monthQuality.push(`No hay movimientos registrados entre el ${fmtDate(gapStart)} y el ${fmtDate(prev)} (${len} días).`);
+        gapStart = null;
+      }
+    }
+    // El saldo de una cuenta bajó sin movimientos (corrección de saldo sin ajuste)
+    for (const x of (S.balanceLog || []).filter((b) => b.date?.startsWith(m) && b.delta < 0)) {
+      const acc = accOf(x.accountId);
+      const lastTx = S.transactions.filter((t) => (t.accountId === x.accountId || t.toAccountId === x.accountId) && t.date < x.date).map((t) => t.date).sort().pop();
+      monthQuality.push(`El saldo de ${acc?.name || 'una cuenta'} bajó ${fmtIn(-x.delta, x.currency || acc?.currency)}${lastTx ? ` entre el ${fmtDate(lastTx)} y el ${fmtDate(x.date)}` : ` el ${fmtDate(x.date)}`} sin movimientos registrados. ¿Querés agregarlos?`);
+    }
+    if (adjusts.length) monthQuality.push(`${adjusts.length} movimiento(s) de "Ajuste de saldo": plata que entró o salió sin registrar el detalle.`);
+    if (fxEst) monthQuality.push(`${fxEst} movimiento(s) en otra moneda usan un tipo de cambio estimado (no había dato guardado de ese día).`);
+    // Inversiones: cantidad sólo desde las compras (o el saldo inicial), precio de cada día o "sin precio"
+    const invDaily = [], holdRows = [];
+    let noPrice = 0;
     for (const h of S.holdings) {
-      let prev = null, first = null, last = null;
-      for (let d = 1; d <= Number(lastD.slice(8, 10)); d++) {
+      const tradesM = (h.trades || []).filter((x) => x.date?.startsWith(m));
+      let prevP = null, prevD = null, first = null, last = null, sinPrecio = 0;
+      for (let d = 1; d <= nDays; d++) {
         const iso = `${m}-${String(d).padStart(2, '0')}`;
         const q = qtyAt(h, iso);
+        if (!(q > 0) && !tradesM.some((x) => x.date === iso)) { prevP = null; continue; }
         const pr = priceOn(h, iso);
-        if (!pr) continue; // días sin precio (acciones antes de que se guardara): no se inventan
+        if (!pr) { noPrice++; sinPrecio++; }
         const p = pr?.p ?? null;
-        const ch = p != null && prev != null ? round2((p / prev - 1) * 100) : null;
-        invDaily.push({ fecha: iso, activo: h.symbol, cantidad: q, precio: p != null ? Math.round(p * 100) / 100 : null, variacion: ch, valorUSD: p != null ? U(q * p) : null, valorLocal: p != null ? L(q * p) : null, fuente: pr?.src || 'Sin dato' });
-        if (p != null) { if (first == null) first = { d: iso, p }; last = { d: iso, p }; prev = p; }
+        const ch = p != null && prevP != null && prevD === addDays(iso, -1) ? R2((p / prevP - 1) * 100) : null;
+        invDaily.push({ fecha: iso, activo: h.symbol, cantidad: q, precio: p != null ? Math.round(p * 100) / 100 : null, variacion: ch,
+          valorUSD: p != null ? R2(q * p) : null, valorLocal: p != null ? R2(convertAt(q * p, 'USD', cur, iso).v) : null, fuente: pr?.src || 'Sin precio' });
+        if (p != null) { if (!first) first = { d: iso, p, q }; last = { d: iso, p, q }; prevP = p; prevD = iso; }
       }
-      const qEnd = qtyAt(h, lastD), qStart = qtyAt(h, addDays(`${m}-01`, -1));
-      if (!qEnd && !qStart && !(h.trades || []).some((x) => x.date?.startsWith(m))) continue;
-      holdRows.push({ activo: h.symbol, nombre: h.name || '', tipo: ASSET_TYPES[h.assetType] || h.assetType, plataforma: h.platform || '', cantidadInicio: qStart, cantidadFin: qEnd,
+      const qEnd = qtyAt(h, lastD), qStart = qtyAt(h, addDays(start, -1));
+      if (!qEnd && !qStart && !tradesM.length) continue;
+      const buys = tradesM.filter((x) => x.side === 'compra').reduce((s, x) => s + x.qty * x.price + (x.fee || 0), 0);
+      const sells = tradesM.filter((x) => x.side === 'venta').reduce((s, x) => s + x.qty * x.price - (x.fee || 0), 0);
+      // Rendimiento del mes: desde el valor al inicio del mes o desde la compra (lo más reciente), descontando lo que compraste/vendiste
+      const vStart = first ? (qStart > 0 ? qStart * first.p : 0) : null, vEnd = last ? qEnd * last.p : null;
+      const gain = vStart != null && vEnd != null ? vEnd - vStart - buys + sells : null;
+      const base = qStart > 0 ? vStart : buys;
+      holdRows.push({ activo: h.symbol, nombre: h.name || '', tipo: ASSET_TYPES[h.assetType] || h.assetType, plataforma: h.platform || '',
+        desde: first?.d || '', cantidadInicio: qStart, cantidadFin: qEnd, compradoUSD: R2(buys), vendidoUSD: R2(sells),
         precioInicio: first ? Math.round(first.p * 100) / 100 : null, precioFin: last ? Math.round(last.p * 100) / 100 : null,
-        variacion: first && last ? round2((last.p / first.p - 1) * 100) : null, valorFinUSD: last ? U(qEnd * last.p) : null, valorFinLocal: last ? L(qEnd * last.p) : null,
-        precioPromedio: Number(h.avgCost) || null });
+        variacionPrecio: first && last ? R2((last.p / first.p - 1) * 100) : null,
+        gananciaMesUSD: gain != null ? R2(gain) : null, rendimientoMes: gain != null && base > 0 ? R2((gain / base) * 100) : null,
+        precioPromedio: Number(h.avgCost) || null, rendimientoCompra: Number(h.avgCost) > 0 && last ? R2((last.p / Number(h.avgCost) - 1) * 100) : null,
+        valorFinUSD: vEnd != null ? R2(vEnd) : null, valorFinLocal: vEnd != null ? R2(convertAt(vEnd, 'USD', cur, lastD).v) : null,
+        nota: [undatedBase(h) && `${fmtNum(baseQty(h))} sin fecha de compra (no contados)`, tradesM.some((x) => x.src === 'importado') && 'incluye cantidades importadas', !last && 'sin precio en el mes', last && sinPrecio && `${sinPrecio} día(s) sin precio`].filter(Boolean).join('; ') });
     }
-    const trades = S.holdings.flatMap((h) => (h.trades || []).filter((x) => x.date?.startsWith(m)).map((x) => ({ fecha: x.date, activo: h.symbol, operacion: x.side === 'compra' ? 'Compra' : 'Venta', cantidad: x.qty, precio: x.price, totalUSD: U(x.qty * x.price) }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
-    const portfolio = hist.map((r) => ({ fecha: r.date, patrimonio: L(r.netWorth), liquidez: L(r.liquid), inversiones: L(r.inv), deuda: L(r.debt || 0) }));
+    if (noPrice) monthQuality.push(`${noPrice} día(s) de inversiones sin precio guardado (acciones/ETF de días en que no se actualizaron los precios).`);
+    const trades = S.holdings.flatMap((h) => (h.trades || []).filter((x) => x.date?.startsWith(m)).map((x) => ({ fecha: x.date, activo: h.symbol, operacion: x.side === 'compra' ? 'Compra' : 'Venta',
+      cantidad: x.qty, precio: x.price, comision: x.fee || 0, totalUSD: R2(x.qty * x.price + (x.side === 'compra' ? 1 : -1) * (x.fee || 0)), origen: x.src === 'importado' ? 'Importado (estimado)' : 'Registrado' }))).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    // Préstamos: lo que prestaste/te prestaron y cuánto falta al final del mes
+    const loans = (S.loans || []).filter((l) => l.date <= lastD).map((l) => {
+      const paid = (l.payments || []).filter((p) => p.date <= lastD).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const paidM = (l.payments || []).filter((p) => p.date?.startsWith(m)).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      return { persona: l.person, tipo: l.dir === 'preste' ? 'Le presté (por cobrar)' : 'Me prestaron (por pagar)', fecha: l.date, monto: Number(l.amount) || 0, moneda: l.currency,
+        devueltoEnElMes: R2(paidM), devueltoTotal: R2(paid), falta: R2(Math.max(0, (Number(l.amount) || 0) - paid)), vence: l.dueDate || '', nuevoEsteMes: l.date.startsWith(m) ? 'Sí' : '' };
+    }).filter((l) => l.falta > 0.005 || l.devueltoEnElMes > 0 || l.nuevoEsteMes);
+    const owedToYou = loans.filter((l) => l.tipo.startsWith('Le')).reduce((s, l) => s + convertAt(l.falta, l.moneda, cur, lastD).v, 0);
+    const youOwe = loans.filter((l) => l.tipo.startsWith('Me')).reduce((s, l) => s + convertAt(l.falta, l.moneda, cur, lastD).v, 0);
+    // Saldos de cada cuenta al final de cada día: el saldo de hoy menos todo lo que pasó después
+    const balRows = [];
+    for (const a of S.accounts) {
+      for (let d = 1; d <= nDays; d++) {
+        const iso = `${m}-${String(d).padStart(2, '0')}`;
+        let b = Number(a.balance) || 0;
+        for (const t of S.transactions) if (t.date > iso) for (const [acc, delta] of txEffects(t)) if (acc === a) b -= delta;
+        for (const x of S.balanceLog || []) if (x.accountId === a.id && x.date > iso) b -= a.type === 'credito' ? -x.delta : x.delta;
+        balRows.push({ fecha: iso, cuenta: a.name, moneda: a.currency, saldo: R2(b), saldoLocal: R2(convertAt(a.type === 'credito' ? -b : b, a.currency, cur, iso).v),
+          estimado: a.apyAccrue ? 'Sí (los intereses diarios no son movimientos)' : '' });
+      }
+    }
+    const hist = (S.history || []).filter((r) => r.date.startsWith(m));
+    const biggest = gastos.filter((t) => !t.adjust).sort((a, b) => cv.get(b).loc - cv.get(a).loc)[0];
+    const sIn = sum(ingresos), sOut = sum(gastos), sFam = sum(fam);
     out.push({
       m, nombre: `${monthLabel(m, 'long').replace(/^\w/, (c) => c.toUpperCase())} ${m.slice(0, 4)}`, completo: end < today,
       resumen: {
-        ingresos: L(ms.income), gastos: L(ms.expense), ahorro: L(ms.income - ms.expense), tasa: ms.income ? round2(((ms.income - ms.expense) / ms.income) * 100) : null,
-        familia: L(fam), costoReal: L(ms.expense + fam), fijos: L(fixed), variables: L(variable), promedioDiario: L(variable / daysElapsed),
-        movimientos: txs.length, diasConRegistro: daysWith, dias: daysElapsed, mayorGasto: biggest ? `${biggest.note || biggest.category} (${fmtIn(L(txUSD(biggest)), cur)}, ${biggest.date})` : '',
-        categoriaTop: Object.entries(ms.byCat).sort((a, b) => b[1] - a[1])[0]?.[0] || '',
-        patrimonioInicio: hist[0] ? L(hist[0].netWorth) : null, patrimonioFin: hist.length ? L(hist[hist.length - 1].netWorth) : null,
+        ingresos: R2(sIn), gastos: R2(sOut), ahorro: R2(sIn - sOut), tasa: sIn ? R2(((sIn - sOut) / sIn) * 100) : null,
+        familia: R2(sFam), costoReal: R2(sOut + sFam), fijos: R2(sum(fixed)), variables: R2(sum(variable)), promedioDiario: R2(sum(variable) / nDays),
+        transferencias: transfers.length, transferido: R2(sum(transfers)),
+        invCompras: R2(trades.filter((x) => x.operacion === 'Compra').reduce((s, x) => s + x.totalUSD, 0)), invVentas: R2(trades.filter((x) => x.operacion === 'Venta').reduce((s, x) => s + x.totalUSD, 0)),
+        invRendimientos: R2(sum(invIncome)), prestado: R2(sum(loanTxs.filter((t) => t.loanKind === 'start' && t.type === 'gasto'))),
+        cobrado: R2(sum(loanTxs.filter((t) => t.loanKind === 'pay' && t.type === 'ingreso'))), porCobrar: R2(owedToYou), porPagar: R2(youOwe),
+        ajustes: R2(sum(adjusts.filter((t) => t.type === 'gasto')) - sum(adjusts.filter((t) => t.type === 'ingreso'))),
+        movimientos: txs.length, diasConRegistro: new Set(txs.map((t) => t.date)).size, dias: nDays,
+        mayorGasto: biggest ? `${biggest.note || biggest.category} (${fmtIn(R2(cv.get(biggest).loc), cur)}, ${biggest.date})` : '',
+        categoriaTop: byCat(gastos)[0]?.categoria || '',
+        patrimonioInicio: hist[0] ? R2(fromUSD(hist[0].netWorth, cur)) : null, patrimonioFin: hist.length ? R2(fromUSD(hist[hist.length - 1].netWorth, cur)) : null,
+        tcEstimados: fxEst,
       },
-      gastosCat: cats(ms.byCat, ms.expense), ingresosCat: cats(ms.incomeCats, ms.income), movimientos: rows, dias: days,
-      inversiones: holdRows, operaciones: trades, invDiario: invDaily, patrimonio: portfolio,
+      gastosCat: byCat(gastos), ingresosCat: byCat(ingresos), movimientos: rows, dias: days,
+      familia: rows.filter((r) => r.grupo === 'Pagado por la familia'), transferencias: rows.filter((r) => r.grupo === 'Transferencia'),
+      invMovs: rows.filter((r) => r.grupo === 'Inversión'), prestamosMov: rows.filter((r) => r.grupo === 'Préstamo'), prestamos: loans,
+      inversiones: holdRows, operaciones: trades, invDiario: invDaily, saldos: balRows,
+      patrimonio: hist.map((r) => ({ fecha: r.date, patrimonio: R2(fromUSD(r.netWorth, cur)), liquidez: R2(fromUSD(r.liquid, cur)), inversiones: R2(fromUSD(r.inv, cur)), deuda: R2(fromUSD(r.debt || 0, cur)) })),
+      revisar: monthQuality,
     });
   }
   return {
-    meses: out, moneda: cur, simbolo: curLabel(cur), tipoCambio: rate(cur), generado: new Date().toLocaleString('es-AR'), primerRegistro: reportMonths().first,
-    cuentas: S.accounts.map((a) => ({ cuenta: a.name, tipo: ACCOUNT_TYPES[a.type]?.label || a.type, moneda: a.currency, saldo: Number(a.balance) || 0, saldoLocal: L(toUSD(a.balance, a.currency)) })),
-    fijos: S.recurring.map((r) => ({ nombre: r.name, tipo: r.type === 'ingreso' ? 'Ingreso' : 'Gasto', monto: Number(r.amount) || 0, moneda: r.currency, dia: r.day || 'Sin día fijo', categoria: r.category, seRepite: repeats(r) ? 'Sí' : 'No', seguro: r.type === 'ingreso' ? (isSure(r) ? 'Sí' : 'A veces') : '' })),
+    meses: out, moneda: cur, simbolo: curLabel(cur), tipoCambio: rate(cur), generado: new Date().toLocaleString('es-AR'), primerRegistro: reportMonths().first, revisar: quality,
+    cuentas: S.accounts.map((a) => ({ cuenta: a.name, tipo: ACCOUNT_TYPES[a.type]?.label || a.type, moneda: a.currency, saldo: Number(a.balance) || 0, saldoLocal: R2(fromUSD(toUSD(a.balance, a.currency), cur)) })),
+    fijos: S.recurring.map((r) => ({ nombre: r.name, tipo: r.type === 'ingreso' ? 'Ingreso' : 'Gasto', monto: Number(r.amount) || 0, moneda: r.currency, dia: r.day || 'Sin día fijo', categoria: r.category, seRepite: repeats(r) ? 'Sí' : 'No', seguro: r.type === 'ingreso' ? (isSure(r) ? 'Sí' : 'A veces (el monto real puede variar)') : '' })),
     metas: S.goals.map((g) => ({ meta: g.name, objetivo: Number(g.target) || 0, moneda: g.currency, fecha: g.date || '' })),
   };
 }
@@ -3991,12 +4181,13 @@ async function buildReport(fromM, toM, onStep) {
 const addDays = (iso, k) => isoOf(Date.parse(iso + 'T12:00:00') + k * 864e5);
 
 const REPORT_NOTES = [
-  'Los montos en la moneda local están convertidos con el tipo de cambio de hoy.',
-  'Gastos = lo que salió de tus cuentas (sin transferencias, inversiones ni préstamos).',
-  '"Lo pagó tu familia" son gastos que tu familia pagó directo por vos: no salen de tus cuentas, pero muestran el costo real de tu mes.',
-  'Fijo = gasto o ingreso de todos los meses. Programado = gasto de una sola vez con fecha. Variable = gasto del día a día.',
-  'Presupuesto del día = lo que la app te mostró en "Hoy podés gastar" ese día (sólo desde que se guarda).',
-  'Inversiones: la cantidad de cada día sale de tus compras y ventas registradas; los precios de cripto y oro son de CoinGecko y los de acciones, de los días en que abriste la app.',
+  'Cada movimiento se convierte con el tipo de cambio de SU fecha (guardado por la app cada día). Si no había dato cerca de esa fecha, se usa el más cercano y queda marcado como estimado.',
+  'Grupos: Propio = tus gastos e ingresos. Pagado por la familia = no sale de tus cuentas. Transferencia = plata entre tus cuentas (no es gasto ni ingreso). Inversión = compras, ventas, intereses y dividendos (no son gasto ni ingreso normal). Préstamo = lo que prestás o te prestan (no es gasto: es plata por cobrar o por pagar). Ajuste de saldo = plata que entró o salió sin registrar el detalle.',
+  'Fijo = de todos los meses. Programado = de una sola vez con fecha. Día a día (variable) = el resto de tus gastos propios.',
+  'Presupuesto del día = lo que la app mostró en "Hoy podés gastar" ese día (sólo desde que se guarda).',
+  'Inversiones: la cantidad de cada día sale SÓLO de las compras y ventas registradas (y del saldo inicial desde su fecha). Precios de cripto y oro: CoinGecko. Acciones y ETF: precios guardados por la app; los días sin dato dicen "Sin precio".',
+  'Rendimiento del mes = desde el valor al inicio del mes o desde la compra (lo más reciente), descontando compras y ventas del mes. Rendimiento desde la compra = precio promedio de compra contra el precio al final del mes.',
+  'Saldos de cuentas día por día = el saldo de hoy menos los movimientos posteriores a ese día.',
 ];
 
 /* ---- PDF ---- */
@@ -4010,51 +4201,86 @@ async function reportPDF(R) {
   const sym = R.simbolo;
   const n = (v, d = 2) => (v == null || Number.isNaN(v) ? '-' : Number(v).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d }));
   const money = (v) => (v == null ? '-' : `${sym} ${n(v)}`);
+  const pct = (v) => (v == null ? '-' : `${n(v)}%`);
   let y = M;
-  const title = (t, size = 13) => { if (y > 760) { doc.addPage(); y = M; } doc.setFont('helvetica', 'bold'); doc.setFontSize(size); doc.text(pdfTxt(t), M, y); y += size + 6; doc.setFont('helvetica', 'normal'); };
-  const para = (t, size = 9) => { doc.setFontSize(size); const lines = doc.splitTextToSize(pdfTxt(t), W - 2 * M); if (y + lines.length * (size + 3) > 800) { doc.addPage(); y = M; } doc.text(lines, M, y); y += lines.length * (size + 3) + 4; };
+  const title = (t, size = 13) => { if (y > 760) { doc.addPage(); y = M; } doc.setFont('helvetica', 'bold'); doc.setFontSize(size); doc.setTextColor(0); doc.text(pdfTxt(t), M, y); y += size + 6; doc.setFont('helvetica', 'normal'); };
+  const para = (t, size = 9, color = 0) => { doc.setFontSize(size); doc.setTextColor(color); const lines = doc.splitTextToSize(pdfTxt(t), W - 2 * M); if (y + lines.length * (size + 3) > 800) { doc.addPage(); y = M; } doc.text(lines, M, y); y += lines.length * (size + 3) + 4; doc.setTextColor(0); };
+  const note = (t) => para(`* ${t}`, 8, 110);
   const table = (head, body, opts = {}) => {
-    if (!body.length) { para('(sin datos)'); return; }
+    if (!body.length) { para('(sin datos)', 8, 120); return; }
     doc.autoTable({ startY: y, head: [head.map(pdfTxt)], body: body.map((r) => r.map(pdfTxt)), margin: { left: M, right: M }, styles: { fontSize: 7.5, cellPadding: 3 }, headStyles: { fillColor: [42, 120, 214] }, theme: 'striped', ...opts });
-    y = doc.lastAutoTable.finalY + 14;
+    y = doc.lastAutoTable.finalY + 12;
   };
+  const movTable = (list) => table(['Fecha', 'Hora', 'Tipo', 'Categoría', 'Detalle', 'Cuenta', 'Monto', sym, 'TC est.'],
+    list.map((t) => [t.fecha, t.hora, t.tipo, t.categoria, t.detalle, t.cuenta, `${n(t.monto)}${t.moneda === R.moneda ? '' : ` ${t.moneda}`}`, n(t.montoLocal), t.tcEstimado]), { columnStyles: { 4: { cellWidth: 85 } } });
   title('Informe financiero - MyFinance', 18);
   para(`Período: ${R.meses[0].nombre} a ${R.meses[R.meses.length - 1].nombre}. Generado el ${R.generado}. Empezaste a registrar el ${fmtDate(R.primerRegistro)}.`);
-  para(`Moneda: ${R.moneda} (${sym}). Tipo de cambio usado: ${sym} ${n(R.tipoCambio)} por 1 USD.`);
+  para(`Moneda: ${R.moneda} (${sym}). Tipo de cambio de hoy: ${sym} ${n(R.tipoCambio)} por 1 USD (cada movimiento usa el de su fecha).`);
   title('Resumen por mes');
-  table(['Mes', 'Ingresos', 'Gastos', 'Ahorro', 'Tasa', 'Pagó familia', 'Costo real'], R.meses.map((x) => [x.nombre, money(x.resumen.ingresos), money(x.resumen.gastos), money(x.resumen.ahorro), x.resumen.tasa == null ? '-' : `${n(x.resumen.tasa, 1)}%`, money(x.resumen.familia), money(x.resumen.costoReal)]));
+  table(['Mes', 'Ingresos', 'Gastos', 'Ahorro', 'Tasa', 'Pagó familia', 'Por cobrar'], R.meses.map((x) => [x.nombre, money(x.resumen.ingresos), money(x.resumen.gastos), money(x.resumen.ahorro), pct(x.resumen.tasa), money(x.resumen.familia), money(x.resumen.porCobrar)]));
+  if (R.revisar.length || R.meses.some((x) => x.revisar.length)) {
+    title('Para revisar');
+    for (const t of R.revisar) para(`- ${t}`, 8.5);
+    for (const x of R.meses) for (const t of x.revisar) para(`- ${x.nombre}: ${t}`, 8.5);
+  }
   title('Cuentas (saldo de hoy)');
   table(['Cuenta', 'Tipo', 'Moneda', 'Saldo', `En ${sym}`], R.cuentas.map((a) => [a.cuenta, a.tipo, a.moneda, n(a.saldo), money(a.saldoLocal)]));
   if (R.fijos.length) { title('Ingresos y gastos fijos'); table(['Nombre', 'Tipo', 'Monto', 'Moneda', 'Día', 'Categoría', 'Se repite', 'Seguro'], R.fijos.map((f) => [f.nombre, f.tipo, n(f.monto), f.moneda, f.dia, f.categoria, f.seRepite, f.seguro])); }
   if (R.metas.length) { title('Metas'); table(['Meta', 'Objetivo', 'Moneda', 'Para'], R.metas.map((g) => [g.meta, n(g.objetivo), g.moneda, g.fecha])); }
   title('Notas para el análisis');
-  for (const t of REPORT_NOTES) para(`- ${t}`);
+  for (const t of REPORT_NOTES) para(`- ${t}`, 8.5);
   for (const x of R.meses) {
     doc.addPage(); y = M;
     const r = x.resumen;
     title(`${x.nombre}${x.completo ? '' : ' (mes en curso)'}`, 16);
     table(['Dato', 'Valor'], [
-      ['Ingresos', money(r.ingresos)], ['Gastos', money(r.gastos)], ['Ahorro', money(r.ahorro)], ['Tasa de ahorro', r.tasa == null ? '-' : `${n(r.tasa, 1)}%`],
-      ['Lo pagó tu familia', money(r.familia)], ['Costo real del mes (gastos + familia)', money(r.costoReal)], ['Gastos fijos y programados', money(r.fijos)], ['Gastos del día a día', money(r.variables)],
-      ['Promedio diario (día a día)', money(r.promedioDiario)], ['Movimientos registrados', String(r.movimientos)], ['Días con registros', `${r.diasConRegistro} de ${r.dias}`],
+      ['Ingresos propios', money(r.ingresos)], ['Gastos propios', money(r.gastos)], ['Ahorro', money(r.ahorro)], ['Tasa de ahorro', pct(r.tasa)],
+      ['Pagado por la familia', money(r.familia)], ['Costo real del mes (gastos + familia)', money(r.costoReal)],
+      ['Gastos fijos y programados', money(r.fijos)], ['Gastos del día a día', money(r.variables)], ['Promedio diario (día a día)', money(r.promedioDiario)],
+      ['Transferencias entre tus cuentas', `${r.transferencias} (${money(r.transferido)}) - no son gasto ni ingreso`],
+      ['Inversiones: compras / ventas (USD)', `US$ ${n(r.invCompras)} / US$ ${n(r.invVentas)}`], ['Intereses y dividendos', money(r.invRendimientos)],
+      ['Préstamos: prestado / cobrado en el mes', `${money(r.prestado)} / ${money(r.cobrado)}`], ['Por cobrar / por pagar al final del mes', `${money(r.porCobrar)} / ${money(r.porPagar)}`],
+      ['Ajustes de saldo (salió sin detalle)', money(r.ajustes)], ['Movimientos registrados', String(r.movimientos)], ['Días con registros', `${r.diasConRegistro} de ${r.dias}`],
       ['Mayor gasto', r.mayorGasto || '-'], ['Categoría con más gasto', r.categoriaTop || '-'], ['Patrimonio al inicio / al final', `${money(r.patrimonioInicio)} / ${money(r.patrimonioFin)}`],
     ], { columnStyles: { 0: { cellWidth: 200 } } });
-    title('Gastos por categoría', 11);
+    if (r.tcEstimados) note(`${r.tcEstimados} movimiento(s) en otra moneda con tipo de cambio estimado.`);
+    if (x.revisar.length) { title('Para revisar', 11); for (const t of x.revisar) para(`- ${t}`, 8.5); }
+    title('Gastos propios por categoría', 11);
     table(['Categoría', `Total ${sym}`, 'USD', '%', 'Movimientos'], x.gastosCat.map((c) => [c.categoria, n(c.local), n(c.usd), `${n(c.pct, 1)}%`, String(c.n)]));
-    if (x.ingresosCat.length) { title('Ingresos por categoría', 11); table(['Categoría', `Total ${sym}`, 'USD', '%'], x.ingresosCat.map((c) => [c.categoria, n(c.local), n(c.usd), `${n(c.pct, 1)}%`])); }
+    if (x.ingresosCat.length) { title('Ingresos propios por categoría', 11); table(['Categoría', `Total ${sym}`, 'USD', '%'], x.ingresosCat.map((c) => [c.categoria, n(c.local), n(c.usd), `${n(c.pct, 1)}%`])); }
     title('Día por día', 11);
-    table(['Fecha', 'Día', `Día a día ${sym}`, `Todos los gastos ${sym}`, `Ingresos ${sym}`, `Presupuesto del día ${sym}`, 'Mov.'], x.dias.map((d) => [d.fecha, d.dia, n(d.variable), n(d.gastos), n(d.ingresos), d.presupuesto == null ? '-' : n(d.presupuesto), String(d.n)]));
-    title('Todos los movimientos', 11);
-    table(['Fecha', 'Hora', 'Tipo', 'Categoría', 'Detalle', 'Cuenta', 'Monto', `${sym}`, 'Marca'], x.movimientos.map((t) => [t.fecha, t.hora, t.tipo, t.categoria, t.detalle, t.cuenta, `${n(t.monto)} ${t.moneda === R.moneda ? '' : t.moneda}`, n(t.montoLocal), [t.fijo && 'fijo', t.programado && 'programado', t.familia && 'familia', t.inversion && 'inversión', t.prestamo && 'préstamo'].filter(Boolean).join(', ')]),
-      { columnStyles: { 4: { cellWidth: 90 } } });
-    if (x.inversiones.length || x.operaciones.length) {
-      title('Inversiones del mes', 11);
-      table(['Activo', 'Tipo', 'Cant. inicio', 'Cant. fin', 'Precio inicio', 'Precio fin', 'Variación', 'Valor fin USD', `Valor fin ${sym}`], x.inversiones.map((h) => [h.activo, h.tipo, n(h.cantidadInicio, 6), n(h.cantidadFin, 6), n(h.precioInicio), n(h.precioFin), h.variacion == null ? '-' : `${n(h.variacion)}%`, n(h.valorFinUSD), n(h.valorFinLocal)]));
-      if (x.operaciones.length) { title('Compras y ventas', 11); table(['Fecha', 'Activo', 'Operación', 'Cantidad', 'Precio USD', 'Total USD'], x.operaciones.map((o) => [o.fecha, o.activo, o.operacion, n(o.cantidad, 6), n(o.precio), n(o.totalUSD)])); }
-      title('Inversiones día por día', 11);
-      table(['Fecha', 'Activo', 'Cantidad', 'Precio USD', 'Variación día', 'Valor USD', `Valor ${sym}`, 'Fuente'], x.invDiario.map((d) => [d.fecha, d.activo, n(d.cantidad, 6), n(d.precio), d.variacion == null ? '-' : `${n(d.variacion)}%`, n(d.valorUSD), n(d.valorLocal), d.fuente]));
+    table(['Fecha', 'Día', `Día a día ${sym}`, `Gastos propios ${sym}`, `Ingresos ${sym}`, `Familia ${sym}`, `Presup. del día ${sym}`, 'Mov.'], x.dias.map((d) => [d.fecha, d.dia, n(d.variable), n(d.gastos), n(d.ingresos), n(d.familia), d.presupuesto == null ? '-' : n(d.presupuesto), String(d.n)]));
+    note('Presupuesto del día: sólo de los días en que la app lo guardó.');
+    title('Gastos e ingresos propios', 11);
+    movTable(x.movimientos.filter((t) => t.grupo === 'Propio' || t.grupo === 'Ajuste de saldo'));
+    if (x.familia.length) { title('Pagado por tu familia', 11); movTable(x.familia); }
+    if (x.transferencias.length) {
+      title('Transferencias entre tus cuentas', 11);
+      table(['Fecha', 'De -> a', 'Sale', 'Llega', 'TC usado'], x.transferencias.map((t) => [t.fecha, t.cuenta, `${n(t.monto)} ${t.moneda}`, t.llega != null ? `${n(t.llega)} ${t.monedaLlega}` : `${n(t.monto)} ${t.moneda}`, t.tcOperacion != null ? n(t.tcOperacion) : '-']));
     }
-    if (x.patrimonio.length) { title('Tu patrimonio día por día', 11); table(['Fecha', `Patrimonio ${sym}`, `Liquidez ${sym}`, `Inversiones ${sym}`, `Deuda ${sym}`], x.patrimonio.map((p) => [p.fecha, n(p.patrimonio), n(p.liquidez), n(p.inversiones), n(p.deuda)])); }
+    if (x.inversiones.length || x.operaciones.length || x.invMovs.length) {
+      title('Inversiones del mes', 11);
+      table(['Activo', 'Desde', 'Cant. inicio', 'Cant. fin', 'Precio ini.', 'Precio fin', 'Rend. mes', 'Ganancia mes USD', 'Rend. desde compra', 'Valor fin USD'],
+        x.inversiones.map((h) => [h.activo, h.desde, n(h.cantidadInicio, 6), n(h.cantidadFin, 6), n(h.precioInicio), n(h.precioFin), pct(h.rendimientoMes), n(h.gananciaMesUSD), pct(h.rendimientoCompra), n(h.valorFinUSD)]));
+      for (const h of x.inversiones.filter((h) => h.nota)) note(`${h.activo}: ${h.nota}.`);
+      if (x.operaciones.length) { title('Compras y ventas', 11); table(['Fecha', 'Activo', 'Operación', 'Cantidad', 'Precio USD', 'Comisión', 'Total USD', 'Origen'], x.operaciones.map((o) => [o.fecha, o.activo, o.operacion, n(o.cantidad, 6), n(o.precio), n(o.comision), n(o.totalUSD), o.origen])); }
+      if (x.invMovs.length) { title('Movimientos de inversión (plata que entró o salió)', 11); movTable(x.invMovs); }
+      title('Inversiones día por día', 11);
+      table(['Fecha', 'Activo', 'Cantidad', 'Precio USD', 'Var. día', 'Valor USD', `Valor ${sym}`, 'Fuente'], x.invDiario.map((d) => [d.fecha, d.activo, n(d.cantidad, 6), n(d.precio), d.variacion == null ? '-' : `${n(d.variacion)}%`, n(d.valorUSD), n(d.valorLocal), d.fuente]));
+      note('Sólo desde la fecha de compra (o del saldo inicial). "Sin precio" = ese día no hay precio guardado.');
+    }
+    if (x.prestamos.length || x.prestamosMov.length) {
+      title('Préstamos', 11);
+      table(['Persona', 'Tipo', 'Fecha', 'Monto', 'Devuelto en el mes', 'Falta', 'Vence'], x.prestamos.map((l) => [l.persona, l.tipo, l.fecha, `${n(l.monto)} ${l.moneda}`, n(l.devueltoEnElMes), `${n(l.falta)} ${l.moneda}`, l.vence || '-']));
+      note('Prestar no es un gasto: es plata por cobrar. Las devoluciones parciales se descuentan de "Falta".');
+    }
+    const accs = [...new Set(x.saldos.map((s) => s.cuenta))];
+    if (accs.length) {
+      title('Saldos de tus cuentas', 11);
+      table(['Cuenta', 'Moneda', 'Al inicio del mes', 'Al final', `Final en ${sym}`, 'Estimado'], accs.map((c) => { const l = x.saldos.filter((s) => s.cuenta === c); return [c, l[0].moneda, n(l[0].saldo), n(l[l.length - 1].saldo), n(l[l.length - 1].saldoLocal), l[0].estimado ? 'Sí' : '']; }));
+      note('Calculados desde el saldo de hoy restando los movimientos posteriores. El día por día está en el Excel.');
+    }
+    if (x.patrimonio.length) { title('Tu patrimonio (días en que se guardó)', 11); table(['Fecha', `Patrimonio ${sym}`, `Liquidez ${sym}`, `Inversiones ${sym}`, `Deuda ${sym}`], x.patrimonio.map((p) => [p.fecha, n(p.patrimonio), n(p.liquidez), n(p.inversiones), n(p.deuda)])); }
   }
   const pages = doc.getNumberOfPages();
   for (let i = 1; i <= pages; i++) { doc.setPage(i); doc.setFontSize(7); doc.setTextColor(140); doc.text(`MyFinance - página ${i} de ${pages}`, W - M, 820, { align: 'right' }); }
@@ -4069,28 +4295,41 @@ async function reportXLSX(R) {
   const sym = R.simbolo;
   const add = (name, rows) => {
     const ws = X.utils.json_to_sheet(rows.length ? rows : [{ '(sin datos)': '' }]);
-    ws['!cols'] = Object.keys(rows[0] || { x: 1 }).map((k) => ({ wch: Math.min(40, Math.max(10, k.length + 2, ...rows.slice(0, 200).map((r) => String(r[k] ?? '').length + 1))) }));
+    ws['!cols'] = Object.keys(rows[0] || { x: 1 }).map((k) => ({ wch: Math.min(48, Math.max(10, k.length + 2, ...rows.slice(0, 200).map((r) => String(r[k] ?? '').length + 1))) }));
     X.utils.book_append_sheet(wb, ws, name);
   };
-  add('Resumen', R.meses.map((x) => ({ Mes: x.nombre, 'Mes completo': x.completo ? 'Sí' : 'En curso', [`Ingresos ${sym}`]: x.resumen.ingresos, [`Gastos ${sym}`]: x.resumen.gastos, [`Ahorro ${sym}`]: x.resumen.ahorro, 'Tasa de ahorro %': x.resumen.tasa,
-    [`Pagó la familia ${sym}`]: x.resumen.familia, [`Costo real ${sym}`]: x.resumen.costoReal, [`Fijos y programados ${sym}`]: x.resumen.fijos, [`Día a día ${sym}`]: x.resumen.variables, [`Promedio diario ${sym}`]: x.resumen.promedioDiario,
-    Movimientos: x.resumen.movimientos, 'Días con registros': x.resumen.diasConRegistro, 'Días del mes': x.resumen.dias, 'Mayor gasto': x.resumen.mayorGasto, 'Categoría con más gasto': x.resumen.categoriaTop,
-    [`Patrimonio inicio ${sym}`]: x.resumen.patrimonioInicio, [`Patrimonio fin ${sym}`]: x.resumen.patrimonioFin })));
-  add('Movimientos', R.meses.flatMap((x) => x.movimientos.map((t) => ({ Mes: x.nombre, Fecha: t.fecha, Día: t.dia, Hora: t.hora, Tipo: t.tipo, Categoría: t.categoria, Detalle: t.detalle, Cuenta: t.cuenta, Moneda: t.moneda, Monto: t.monto,
-    [`Monto ${sym} (+ingreso / -gasto)`]: t.montoLocal, 'Monto USD': t.montoUSD, Fijo: t.fijo, Programado: t.programado, 'Pagó la familia': t.familia, Inversión: t.inversion, Préstamo: t.prestamo }))));
-  add('Por categoría', R.meses.flatMap((x) => [...x.gastosCat.map((c) => ({ Mes: x.nombre, Tipo: 'Gasto', ...c })), ...x.ingresosCat.map((c) => ({ Mes: x.nombre, Tipo: 'Ingreso', ...c }))]
-    .map((c) => ({ Mes: c.Mes, Tipo: c.Tipo, Categoría: c.categoria, [`Total ${sym}`]: c.local, 'Total USD': c.usd, '%': c.pct, Movimientos: c.n }))));
-  add('Día por día', R.meses.flatMap((x) => x.dias.map((d) => ({ Mes: x.nombre, Fecha: d.fecha, Día: d.dia, [`Día a día ${sym}`]: d.variable, [`Todos los gastos ${sym}`]: d.gastos, [`Ingresos ${sym}`]: d.ingresos, [`Presupuesto del día ${sym}`]: d.presupuesto, Movimientos: d.n }))));
-  add('Inversiones', R.meses.flatMap((x) => x.inversiones.map((h) => ({ Mes: x.nombre, Activo: h.activo, Nombre: h.nombre, Tipo: h.tipo, Plataforma: h.plataforma, 'Cantidad inicio': h.cantidadInicio, 'Cantidad fin': h.cantidadFin,
-    'Precio inicio USD': h.precioInicio, 'Precio fin USD': h.precioFin, 'Variación %': h.variacion, 'Valor fin USD': h.valorFinUSD, [`Valor fin ${sym}`]: h.valorFinLocal, 'Precio promedio de compra USD': h.precioPromedio }))));
+  const mov = (x, t) => ({ Mes: x.nombre, Fecha: t.fecha, Día: t.dia, Hora: t.hora, Grupo: t.grupo, Tipo: t.tipo, Categoría: t.categoria, Detalle: t.detalle, Cuenta: t.cuenta, Moneda: t.moneda, Monto: t.monto,
+    [`Monto ${sym} (+entra / -sale)`]: t.montoLocal, 'Monto USD': t.montoUSD, [`TC del día (${sym}/USD)`]: t.tc, 'TC estimado': t.tcEstimado, Fijo: t.fijo, Programado: t.programado });
+  add('Resumen', R.meses.map((x) => { const r = x.resumen; return { Mes: x.nombre, 'Mes completo': x.completo ? 'Sí' : 'En curso',
+    [`Ingresos propios ${sym}`]: r.ingresos, [`Gastos propios ${sym}`]: r.gastos, [`Ahorro ${sym}`]: r.ahorro, 'Tasa de ahorro %': r.tasa,
+    [`Pagado por la familia ${sym}`]: r.familia, [`Costo real ${sym}`]: r.costoReal, [`Fijos y programados ${sym}`]: r.fijos, [`Día a día ${sym}`]: r.variables, [`Promedio diario ${sym}`]: r.promedioDiario,
+    Transferencias: r.transferencias, [`Transferido ${sym}`]: r.transferido, 'Inversión: compras USD': r.invCompras, 'Inversión: ventas USD': r.invVentas, [`Intereses y dividendos ${sym}`]: r.invRendimientos,
+    [`Prestado ${sym}`]: r.prestado, [`Cobrado ${sym}`]: r.cobrado, [`Por cobrar ${sym}`]: r.porCobrar, [`Por pagar ${sym}`]: r.porPagar, [`Ajustes de saldo ${sym}`]: r.ajustes,
+    Movimientos: r.movimientos, 'Días con registros': r.diasConRegistro, 'Días del mes': r.dias, 'Mayor gasto': r.mayorGasto, 'Categoría con más gasto': r.categoriaTop,
+    [`Patrimonio inicio ${sym}`]: r.patrimonioInicio, [`Patrimonio fin ${sym}`]: r.patrimonioFin, 'Movimientos con TC estimado': r.tcEstimados }; }));
+  add('Para revisar', [...R.revisar.map((t) => ({ Mes: 'Todo el período', Aviso: t })), ...R.meses.flatMap((x) => x.revisar.map((t) => ({ Mes: x.nombre, Aviso: t })))]);
+  add('Movimientos', R.meses.flatMap((x) => x.movimientos.map((t) => mov(x, t))));
+  add('Gastos propios', R.meses.flatMap((x) => x.movimientos.filter((t) => (t.grupo === 'Propio' || t.grupo === 'Ajuste de saldo') && t.tipo === 'Gasto').map((t) => mov(x, t))));
+  add('Pagado por familia', R.meses.flatMap((x) => x.familia.map((t) => mov(x, t))));
+  add('Transferencias', R.meses.flatMap((x) => x.transferencias.map((t) => ({ Mes: x.nombre, Fecha: t.fecha, 'De -> a': t.cuenta, Sale: t.monto, 'Moneda sale': t.moneda, Llega: t.llega ?? t.monto, 'Moneda llega': t.monedaLlega || t.moneda, 'TC de la operación': t.tcOperacion, Detalle: t.detalle }))));
+  add('Por categoría', R.meses.flatMap((x) => [...x.gastosCat.map((c) => ({ ...c, t: 'Gasto propio' })), ...x.ingresosCat.map((c) => ({ ...c, t: 'Ingreso propio' }))]
+    .map((c) => ({ Mes: x.nombre, Tipo: c.t, Categoría: c.categoria, [`Total ${sym}`]: c.local, 'Total USD': c.usd, '%': c.pct, Movimientos: c.n }))));
+  add('Día por día', R.meses.flatMap((x) => x.dias.map((d) => ({ Mes: x.nombre, Fecha: d.fecha, Día: d.dia, [`Día a día ${sym}`]: d.variable, [`Gastos propios ${sym}`]: d.gastos, [`Ingresos propios ${sym}`]: d.ingresos, [`Pagado por familia ${sym}`]: d.familia, [`Presupuesto del día ${sym}`]: d.presupuesto, Movimientos: d.n }))));
+  add('Inversiones', R.meses.flatMap((x) => x.inversiones.map((h) => ({ Mes: x.nombre, Activo: h.activo, Nombre: h.nombre, Tipo: h.tipo, Plataforma: h.plataforma, 'Primer día con precio': h.desde,
+    'Cantidad inicio': h.cantidadInicio, 'Cantidad fin': h.cantidadFin, 'Comprado en el mes USD': h.compradoUSD, 'Vendido en el mes USD': h.vendidoUSD, 'Precio inicio USD': h.precioInicio, 'Precio fin USD': h.precioFin,
+    'Variación del precio %': h.variacionPrecio, 'Ganancia del mes USD': h.gananciaMesUSD, 'Rendimiento del mes %': h.rendimientoMes, 'Precio promedio de compra USD': h.precioPromedio,
+    'Rendimiento desde la compra %': h.rendimientoCompra, 'Valor fin USD': h.valorFinUSD, [`Valor fin ${sym}`]: h.valorFinLocal, Nota: h.nota }))));
   add('Inversiones diario', R.meses.flatMap((x) => x.invDiario.map((d) => ({ Fecha: d.fecha, Activo: d.activo, Cantidad: d.cantidad, 'Precio USD': d.precio, 'Variación día %': d.variacion, 'Valor USD': d.valorUSD, [`Valor ${sym}`]: d.valorLocal, Fuente: d.fuente }))));
-  add('Compras y ventas', R.meses.flatMap((x) => x.operaciones.map((o) => ({ Fecha: o.fecha, Activo: o.activo, Operación: o.operacion, Cantidad: o.cantidad, 'Precio USD': o.precio, 'Total USD': o.totalUSD }))));
+  add('Compras y ventas', R.meses.flatMap((x) => x.operaciones.map((o) => ({ Fecha: o.fecha, Activo: o.activo, Operación: o.operacion, Cantidad: o.cantidad, 'Precio USD': o.precio, 'Comisión USD': o.comision, 'Total USD': o.totalUSD, Origen: o.origen }))));
+  add('Mov. de inversión', R.meses.flatMap((x) => x.invMovs.map((t) => mov(x, t))));
+  add('Préstamos', R.meses.flatMap((x) => x.prestamos.map((l) => ({ Mes: x.nombre, Persona: l.persona, Tipo: l.tipo, Fecha: l.fecha, Monto: l.monto, Moneda: l.moneda, 'Devuelto en el mes': l.devueltoEnElMes, 'Devuelto total': l.devueltoTotal, 'Falta (fin de mes)': l.falta, Vence: l.vence }))));
+  add('Saldos diarios', R.meses.flatMap((x) => x.saldos.map((s) => ({ Fecha: s.fecha, Cuenta: s.cuenta, Moneda: s.moneda, Saldo: s.saldo, [`Saldo en ${sym}`]: s.saldoLocal, Estimado: s.estimado }))));
   add('Patrimonio diario', R.meses.flatMap((x) => x.patrimonio.map((p) => ({ Fecha: p.fecha, [`Patrimonio ${sym}`]: p.patrimonio, [`Liquidez ${sym}`]: p.liquidez, [`Inversiones ${sym}`]: p.inversiones, [`Deuda ${sym}`]: p.deuda }))));
   add('Cuentas', R.cuentas.map((a) => ({ Cuenta: a.cuenta, Tipo: a.tipo, Moneda: a.moneda, 'Saldo de hoy': a.saldo, [`En ${sym}`]: a.saldoLocal })));
   add('Fijos', R.fijos.map((f) => ({ Nombre: f.nombre, Tipo: f.tipo, Monto: f.monto, Moneda: f.moneda, Día: f.dia, Categoría: f.categoria, 'Se repite': f.seRepite, Seguro: f.seguro })));
   add('Notas', [
     { Nota: `Informe de ${R.meses[0].nombre} a ${R.meses[R.meses.length - 1].nombre}, generado el ${R.generado}.` },
-    { Nota: `Empezaste a registrar el ${fmtDate(R.primerRegistro)}. Moneda ${R.moneda}; tipo de cambio ${R.tipoCambio} por 1 USD.` },
+    { Nota: `Empezaste a registrar el ${fmtDate(R.primerRegistro)}. Moneda ${R.moneda}; tipo de cambio de hoy ${R.tipoCambio} por 1 USD.` },
     ...REPORT_NOTES.map((t) => ({ Nota: t })),
   ]);
   const data = X.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -4639,8 +4878,12 @@ function holdingForm(h) {
       { name: 'name', label: 'Nombre', value: h.name, placeholder: 'Opcional' },
       { name: 'assetType', label: 'Tipo', type: 'select', value: h.assetType, options: Object.entries(ASSET_TYPES) },
       { name: 'platform', label: 'Dónde lo tenés', value: h.platform, placeholder: 'Binance, broker…' },
-      { name: 'quantity', label: 'Cantidad', type: 'number', value: h.quantity, hint: 'Acciones, unidades o monedas' },
+      { name: 'quantity', label: 'Cantidad', type: 'number', value: h.quantity, hint: 'Acciones, unidades o monedas. Se aceptan fracciones (0,1450).' },
       { name: 'avgCost', label: 'Precio promedio de compra (USD)', type: 'number', value: h.avgCost, blankZero: true, placeholder: 'Opcional' },
+      // Lo que ya tenías sin registrar la compra: ¿desde cuándo? (así el informe no lo muestra en días anteriores)
+      { name: 'initDate', label: '¿Desde qué fecha tenés esta cantidad?', type: 'date', value: h.initial?.date || (isNew ? todayISO() : ''), full: true,
+        hint: 'Es tu "saldo inicial": poné la fecha en que lo compraste. Las compras y ventas nuevas registralas con Compra/Venta.',
+        showIf: (v) => (v.quantity || 0) - (isNew ? 0 : netTrades(h)) > 1e-9 },
       { name: 'coingeckoId', label: 'ID de CoinGecko', value: h.coingeckoId, placeholder: 'bitcoin, pax-gold…', hint: 'Para precio automático de cripto/oro.', showIf: (v) => v.assetType === 'cripto' || v.assetType === 'oro' },
       { name: 'price', label: 'Precio actual (USD)', type: 'number', value: h.price, blankZero: true, hint: 'Se pisa al actualizar si hay precio automático.' },
     ],
@@ -4658,6 +4901,13 @@ function holdingForm(h) {
         coingeckoId: (v.assetType === 'cripto' || v.assetType === 'oro') ? v.coingeckoId.toLowerCase() : '',
       };
       if ((v.price || 0) !== (Number(h.price) || 0)) Object.assign(changes, { price: v.price || 0, priceUpdated: new Date().toISOString(), priceSource: 'manual', change24h: null });
+      // Saldo inicial: lo que no sale de compras registradas necesita una fecha
+      const base = (v.quantity || 0) - (isNew ? 0 : netTrades(h));
+      if (base > 1e-9) {
+        if (v.initDate && v.initDate > todayISO()) return 'La fecha no puede ser futura.';
+        if (isNew && !v.initDate) return 'Poné desde qué fecha tenés esta cantidad.';
+        if (v.initDate) changes.initial = { date: v.initDate, price: v.avgCost || null };
+      } else if (!isNew && h.initial) changes.initial = null;
       if (isNew) S.holdings.push({ id: uid(), change24h: null, priceUpdated: null, priceSource: '', trades: [], price: 0, ...changes });
       else Object.assign(h, changes);
       snapshot(); save(); render();
@@ -4666,51 +4916,97 @@ function holdingForm(h) {
   });
 }
 
+// Compra o venta: se puede escribir la CANTIDAD o el MONTO en USD (el otro se calcula con el precio).
+// Acepta fracciones (0,1450). La comisión se suma al costo (y se resta de lo que cobrás al vender).
 function tradeForm(h) {
   const accOpts = [['', '— No mover dinero de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${a.currency})`])];
+  const p0 = Number(h.price) || '';
   openForm({
     title: `Compra / venta de ${h.symbol}`,
     fields: [
       { name: 'side', label: 'Operación', type: 'select', value: 'compra', options: [['compra', 'Compra'], ['venta', 'Venta']] },
       { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
-      { name: 'qty', label: 'Cantidad', type: 'number', required: true, placeholder: 'ej. 0,5' },
-      { name: 'price', label: 'Precio por unidad (USD)', type: 'number', value: h.price || '', required: true },
+      { name: 'price', label: 'Precio por unidad (USD)', type: 'number', value: p0, required: true, full: true },
+      { name: 'qty', label: `Cantidad (${h.symbol})`, type: 'number', placeholder: 'ej. 0,1450', hint: 'Se aceptan fracciones.' },
+      { name: 'total', label: 'Monto (USD)', type: 'number', placeholder: 'ej. 100', hint: 'Escribí la cantidad o el monto: el otro se calcula.' },
+      { name: 'fee', label: 'Comisión (USD, opcional)', type: 'number', blankZero: true, placeholder: '0', full: true },
       { name: 'accountId', label: 'Cuenta de donde sale / a donde entra el dinero', type: 'select', options: accOpts, full: true,
         hint: 'Opcional. Si elegís una, se descuenta (compra) o acredita (venta) en esa cuenta.' },
+      { type: 'html', html: '<div id="tradeHint" class="fx-hint"></div>' },
     ],
     submitLabel: 'Registrar',
+    onInput: (form, v, changed) => {
+      // Lo último que escribiste manda: cantidad → monto, o monto → cantidad
+      if ((changed === 'qty' || changed === 'price') && v.qty > 0 && v.price > 0 && form.dataset.last !== 'total') form.elements.total.value = numInput(round2(v.qty * v.price));
+      if ((changed === 'total' || (changed === 'price' && form.dataset.last === 'total')) && v.total > 0 && v.price > 0) form.elements.qty.value = numInput(Math.round((v.total / v.price) * 1e8) / 1e8);
+      if (changed === 'qty' || changed === 'total') form.dataset.last = changed;
+      const qty = parseNum(form.elements.qty.value), total = parseNum(form.elements.total.value), fee = v.fee || 0;
+      $('#tradeHint').innerHTML = qty > 0 && v.price > 0
+        ? `${fmtNum(qty)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(qty * v.price), 2)}</b>${fee ? ` ${v.side === 'compra' ? '+' : '−'} comisión US$ ${fmtNum(fee, 2)} = <b>US$ ${fmtNum(round2(qty * v.price + (v.side === 'compra' ? fee : -fee)), 2)}</b>` : ''}`
+        : total > 0 && !(v.price > 0) ? 'Escribí el precio para calcular la cantidad.' : '';
+    },
     onSubmit: (v) => {
-      if (!(v.qty > 0)) return 'La cantidad tiene que ser mayor a 0.';
       if (!(v.price > 0)) return 'El precio tiene que ser mayor a 0.';
+      let qty = v.qty > 0 ? v.qty : v.total > 0 ? Math.round((v.total / v.price) * 1e8) / 1e8 : 0;
+      if (!(qty > 0)) return 'Escribí la cantidad o el monto en USD.';
+      // Cantidad × precio tiene que dar el monto (si escribiste los dos)
+      if (v.qty > 0 && v.total > 0 && Math.abs(v.qty * v.price - v.total) > Math.max(0.02, v.total * 0.005)) {
+        return `No cierra: ${fmtNum(v.qty)} × US$ ${fmtNum(v.price, 2)} = US$ ${fmtNum(round2(v.qty * v.price), 2)}, no US$ ${fmtNum(v.total, 2)}. Corregí uno de los dos.`;
+      }
+      const fee = Math.max(0, v.fee || 0);
       const q = Number(h.quantity) || 0;
-      if (v.side === 'venta' && v.qty > q + 1e-12) return `Sólo tenés ${fmtNum(q)} ${h.symbol}.`;
+      if (v.side === 'venta' && qty > q + 1e-12) return `Sólo tenés ${fmtNum(q)} ${h.symbol}.`;
       const acc = v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
-      const amount = acc ? convert(v.qty * v.price, 'USD', acc.currency) : null;
-      if (acc && amount == null) return NO_RATE;
-      const prevAvg = Number(h.avgCost) || 0;
-      if (v.side === 'compra') {
-        const newQ = Math.round((q + v.qty) * 1e10) / 1e10;
-        h.avgCost = ((q * (Number(h.avgCost) || 0)) + v.qty * v.price) / newQ;
-        h.quantity = newQ;
-      } else {
-        h.quantity = Math.round(Math.max(0, q - v.qty) * 1e10) / 1e10;
+      if (acc && convert(1, 'USD', acc.currency) == null) return NO_RATE;
+      // ¿Monto raro? (mucho más que tu saldo o que tus compras de siempre): se pregunta antes de guardar
+      const total = qty * v.price;
+      const past = S.holdings.flatMap((x) => x.trades || []).map((x) => x.qty * x.price).filter((x) => x > 0).sort((a, b) => a - b);
+      const typical = past.length >= 2 ? past[Math.floor(past.length / 2)] : null;
+      const saldo = acc ? toUSD(acc.balance, acc.currency) : null;
+      const big = v.side === 'compra' && ((saldo != null && total > Math.max(saldo, 0) * 1.5 + 1) || (typical && total > typical * 10));
+      if (big) {
+        setTimeout(async () => {
+          const asUsd = Math.round((qty / v.price) * 1e8) / 1e8;
+          const ch = await chooseDlg('¿Está bien el monto?',
+            `${fmtNum(qty)} ${h.symbol} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(total), 2)}</b>${saldo != null ? `, y en ${esc(acc.name)} tenés US$ ${fmtNum(round2(saldo), 2)}` : typical ? `, mucho más que tus compras de siempre (≈ US$ ${fmtNum(round2(typical), 2)})` : ''}.<br><br>¿Quisiste decir <b>US$ ${fmtNum(qty, 2)}</b> en lugar de ${fmtNum(qty)} unidades?`,
+            [['usd', `Sí: US$ ${fmtNum(qty, 2)} (${fmtNum(asUsd)} ${h.symbol})`], ['units', `No: son ${fmtNum(qty)} unidades`]]);
+          if (ch === 'usd') saveTrade(h, { ...v, qty: asUsd, fee, acc });
+          else if (ch === 'units') saveTrade(h, { ...v, qty, fee, acc });
+        }, 80);
+        return;
       }
-      h.trades = h.trades || [];
-      const tradeId = uid();
-      h.trades.push({ id: tradeId, date: v.date, side: v.side, qty: v.qty, price: v.price, prevAvg: prevAvg });
-      if (acc) {
-        const tx = {
-          id: uid(), created: new Date().toISOString(), date: v.date, type: v.side === 'compra' ? 'gasto' : 'ingreso',
-          accountId: acc.id, amount, category: v.side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
-          note: `${v.side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(v.qty)} ${h.symbol}`, investment: true, holdingId: h.id, tradeId,
-        };
-        S.transactions.push(tx);
-        applyTx(tx, 1);
-      }
-      snapshot(); save(); render();
-      toast(`${v.side === 'compra' ? 'Compra' : 'Venta'} de ${h.symbol} registrada.`);
+      saveTrade(h, { ...v, qty, fee, acc });
     },
   });
+  $('#dlgForm').dataset.last = '';
+}
+
+function saveTrade(h, { side, date, qty, price, fee, acc }) {
+  const q = Number(h.quantity) || 0;
+  const prevAvg = Number(h.avgCost) || 0;
+  const r10 = (x) => Math.round(x * 1e10) / 1e10;
+  if (side === 'compra') {
+    const newQ = r10(q + qty);
+    h.avgCost = ((q * prevAvg) + qty * price + fee) / newQ; // la comisión es parte del costo real
+    h.quantity = newQ;
+  } else {
+    h.quantity = r10(Math.max(0, q - qty));
+  }
+  h.trades = h.trades || [];
+  const tradeId = uid();
+  h.trades.push({ id: tradeId, date, side, qty, price, fee: fee || 0, prevAvg });
+  if (acc) {
+    const usd = side === 'compra' ? qty * price + fee : qty * price - fee;
+    const tx = {
+      id: uid(), created: new Date().toISOString(), date, type: side === 'compra' ? 'gasto' : 'ingreso',
+      accountId: acc.id, amount: round2(convert(usd, 'USD', acc.currency)), category: side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
+      note: `${side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(qty)} ${h.symbol}${fee ? ` (comisión US$ ${fmtNum(fee, 2)})` : ''}`, investment: true, holdingId: h.id, tradeId,
+    };
+    S.transactions.push(tx);
+    applyTx(tx, 1);
+  }
+  snapshot(); save(); render();
+  toast(`${side === 'compra' ? 'Compra' : 'Venta'} de ${fmtNum(qty)} ${h.symbol} registrada.`);
 }
 
 // Deshace una compra/venta (al borrar su movimiento): devuelve la cantidad y el precio promedio de antes
@@ -4739,6 +5035,12 @@ function importHoldings(text) {
     const platform = String(r.platform || r.plataforma || '').trim();
     let h = S.holdings.find((x) => x.symbol === symbol && (!platform || !x.platform || x.platform === platform));
     if (h) {
+      // La diferencia con lo que tenías queda como compra/venta de hoy (marcada "importado"): así el historial
+      // no cambia hacia atrás y el informe sabe desde cuándo tenés cada cantidad
+      const diff = Math.round((qty - (Number(h.quantity) || 0)) * 1e10) / 1e10;
+      if (Math.abs(diff) > 1e-10) {
+        (h.trades = h.trades || []).push({ id: uid(), date: todayISO(), side: diff > 0 ? 'compra' : 'venta', qty: Math.abs(diff), price: Number(h.price) || avg || 0, fee: 0, prevAvg: Number(h.avgCost) || 0, src: 'importado' });
+      }
       h.quantity = qty;
       if (avg) h.avgCost = avg;
       if (platform) h.platform = platform;
@@ -4748,6 +5050,7 @@ function importHoldings(text) {
       S.holdings.push({
         id: uid(), symbol, name: r.name || r.nombre || '', assetType: cg ? (cg.includes('gold') ? 'oro' : 'cripto') : (r.type || 'accion'),
         platform, quantity: qty, avgCost: avg, price: 0, change24h: null, priceUpdated: null, priceSource: '', coingeckoId: cg, trades: [],
+        initial: { date: todayISO(), price: avg || null, src: 'importado' }, // saldo inicial desde hoy (no se sabe la fecha real de compra)
       });
       added++;
     }
@@ -4817,14 +5120,40 @@ function accountForm(a) {
 
 function balanceForm(a) {
   const isCredit = a.type === 'credito';
+  const cur0 = Number(a.balance) || 0;
   openForm({
     title: `${isCredit ? 'Deuda' : 'Saldo'} de ${a.name}`,
     fields: [
       { name: 'balance', label: `${isCredit ? 'Deuda actual' : 'Saldo actual'} (${a.currency})`, type: 'number', value: a.balance, full: true,
         hint: 'Usalo para corregir el saldo y que coincida con tu banco/app.' },
+      { type: 'html', html: '<div id="balHint" class="fx-hint"></div>' },
+      { name: 'asTx', label: 'Registrar la diferencia como un movimiento de ajuste', type: 'checkbox', value: true, full: true,
+        hint: 'Así queda en tus movimientos y en el informe. Desmarcalo si sólo querés corregir el número.',
+        showIf: (v) => Math.abs((v.balance || 0) - cur0) > 0.005 },
     ],
-    // balanceSetAt: si corregís el saldo a mano en un dispositivo, el otro lo respeta al sincronizar
-    onSubmit: (v) => { a.balance = v.balance || 0; a.balanceSetAt = new Date().toISOString(); snapshot(); save(); render(); },
+    onInput: (form, v) => {
+      const diff = round2((v.balance || 0) - cur0);
+      $('#balHint').innerHTML = Math.abs(diff) > 0.005
+        ? `La app calculaba <b class="money">${fmtIn(cur0, a.currency)}</b>. ${(isCredit ? diff > 0 : diff < 0) ? 'Salieron' : 'Entraron'} <b class="money">${fmtIn(Math.abs(diff), a.currency)}</b> que no están registrados.` : '';
+    },
+    onSubmit: (v) => {
+      const next = v.balance || 0, diff = round2(next - cur0);
+      if (Math.abs(diff) > 0.005) {
+        const out = isCredit ? diff > 0 : diff < 0; // salió plata (o aumentó la deuda)
+        if (v.asTx) {
+          const tx = { id: uid(), created: new Date().toISOString(), type: out ? 'gasto' : 'ingreso', date: todayISO(), time: nowTime(), accountId: a.id,
+            amount: Math.abs(diff), category: out ? 'Otros gastos' : 'Otros ingresos', note: 'Ajuste de saldo', adjust: true };
+          S.transactions.push(tx); applyTx(tx, 1);
+        } else {
+          a.balance = next;
+          a.balanceSetAt = new Date().toISOString(); // si corregís el saldo a mano en un dispositivo, el otro lo respeta al sincronizar
+          // Para el informe: el saldo cambió sin movimientos registrados
+          S.balanceLog.push({ id: uid(), accountId: a.id, date: todayISO(), delta: out ? -Math.abs(diff) : Math.abs(diff), currency: a.currency });
+          if (S.balanceLog.length > 500) S.balanceLog.shift();
+        }
+      }
+      snapshot(); save(); render();
+    },
   });
 }
 
@@ -4910,7 +5239,10 @@ function transferForm(fromId, t = null) {
   const accOpts = accs.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]);
   const curOf = (id) => accs.find((a) => a.id === id)?.currency;
   const pairKey = (a, b) => `${curOf(a)}>${curOf(b)}`;
-  const rateFor = (a, b) => S.settings.lastFx?.[pairKey(a, b)] || marketFx(curOf(a), curOf(b));
+  // Para una fecha pasada se propone el tipo de cambio de ESE día; para hoy, el último que usaste
+  const marketFxAt = (c1, c2, date) => { const one = convertAt(1, c1, c2, date).v; return one > 0 ? fxPair(c1, c2).rate(1, one) : null; };
+  const rateFor = (a, b, date) => (date && date !== todayISO() ? marketFxAt(curOf(a), curOf(b), date) : null)
+    || S.settings.lastFx?.[pairKey(a, b)] || marketFx(curOf(a), curOf(b));
   const r0 = t?.fxRate || rateFor(from0, to0);
   openForm({
     title: t ? 'Editar transferencia' : 'Pasar plata entre cuentas',
@@ -4932,11 +5264,11 @@ function transferForm(fromId, t = null) {
     onInput: (form, v, changed) => {
       const c1 = curOf(v.from), c2 = curOf(v.to);
       const P = fxPair(c1, c2);
-      if (changed === 'from' || changed === 'to') {
+      if (changed === 'from' || changed === 'to' || (changed === 'date' && !t)) {
         form.querySelector('[data-field="amount"] label').textContent = `Monto que sale (${curLabel(c1)})`;
         form.querySelector('[data-field="rate"] label').textContent = `Tipo de cambio que te dieron (${P.label})`;
-        const r = rateFor(v.from, v.to);
-        if (c1 !== c2 && r) { form.elements.rate.value = numInput(round2(r)); v.rate = round2(r); }
+        const r = rateFor(v.from, v.to, v.date);
+        if (c1 !== c2 && r) { form.elements.rate.value = numInput(round2(r)); v.rate = round2(r); if (changed === 'date') changed = 'rate'; }
       }
       if (c1 === c2) { $('#fxHint').innerHTML = ''; return; }
       // Escribiste lo que te llegó → calculo el tipo de cambio; si no, calculo lo que llega
@@ -5330,6 +5662,8 @@ const ACTIONS = {
   },
   importHoldings: () => importHoldings($('#importText').value),
   repFmt: (fmt) => { S.settings.repFmt = fmt; save(false); render(); },
+  fixSuggest: (i) => { const s = fixedSuggestions()[Number(i)]; if (s) recurringForm(null, { type: 'gasto', name: s.name, amount: s.amount, currency: s.currency, accountId: s.accountId, category: s.category }); },
+  fixDismiss: (i) => { const s = fixedSuggestions()[Number(i)]; if (!s) return; S.settings.fixDismissed = [...(S.settings.fixDismissed || []), s.key].slice(-100); save(false); render(); },
   reportMake: () => makeReport(),
   backup: () => backup(),
   addBudget: () => budgetForm(),
