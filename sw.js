@@ -1,6 +1,6 @@
 // Service worker: permite abrir la app sin conexión.
 // Primero intenta la red (para recibir actualizaciones) y si no hay conexión usa la copia guardada.
-const CACHE = 'mis-finanzas-v30';
+const CACHE = 'mis-finanzas-v31';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png', './icons/logo-96.png',

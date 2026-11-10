@@ -225,6 +225,7 @@ function migrate(s) {
   if (!s.dayBudgets || typeof s.dayBudgets !== 'object' || Array.isArray(s.dayBudgets)) s.dayBudgets = {};
   if (!s.priceLog || typeof s.priceLog !== 'object' || Array.isArray(s.priceLog)) s.priceLog = {};
   if (!Array.isArray(s.balanceLog)) s.balanceLog = [];
+  if (!s.priceHist || typeof s.priceHist !== 'object' || Array.isArray(s.priceHist)) s.priceHist = {};
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
   }
@@ -615,6 +616,7 @@ async function refreshAllInner({ silent = false } = {}) {
   render();
   btn.disabled = false;
   refreshing = false;
+  syncPriceHistory();
   if (!silent || notes.length) toast(`Actualizado: ${updated} precio(s).` + (notes.length ? ' ' + notes.slice(0, 3).join(' · ') : ''), notes.length ? 6000 : 2500);
 }
 
@@ -2916,6 +2918,7 @@ function mergeRemote(R) {
   S.dayBudgets = mergeDayBudgets(S.dayBudgets, R.dayBudgets);
   // Precios guardados día por día y correcciones de saldo: se juntan los de los dos dispositivos
   for (const [d, px] of Object.entries(R.priceLog || {})) S.priceLog[d] = { ...px, ...(S.priceLog?.[d] || {}) };
+  S.priceHist = { ...(R.priceHist || {}), ...(S.priceHist || {}) };
   const seenFix = new Set((S.balanceLog || []).map((x) => x.id));
   for (const x of R.balanceLog || []) if (!seenFix.has(x.id)) S.balanceLog.push(x);
   S.budgets = { ...(R.budgets || {}), ...(S.budgets || {}) };
@@ -3962,25 +3965,54 @@ function qtyAt(h, date) {
   return Math.max(0, Math.round((base + netTrades(h, date)) * 1e10) / 1e10);
 }
 
-// Precio de cada día de cada cripto (CoinGecko, gratis). { coingeckoId: { 'AAAA-MM-DD': precio USD } }
-async function cryptoDaily(fromISO, toISO, onStep) {
-  const ids = [...new Set(S.holdings.map((h) => (h.coingeckoId || '').trim().toLowerCase()).filter(Boolean))];
-  const out = {};
-  const minFrom = Date.now() - 364 * 864e5; // la versión gratis da hasta un año para atrás
-  const from = Math.max(minFrom, Date.parse(fromISO + 'T00:00:00')) / 1000;
-  const to = Math.min(Date.now(), Date.parse(toISO + 'T23:59:59')) / 1000;
-  if (to <= from) return out;
-  for (const [i, id] of ids.entries()) {
-    onStep?.(`Bajando precios de ${id}…`);
-    try {
-      const j = await getJSON(`https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart/range?vs_currency=usd&from=${Math.floor(from)}&to=${Math.floor(to)}`, 20000);
-      const days = {};
-      for (const [ms, p] of j.prices || []) days[isoOf(ms)] = p; // queda el último precio de cada día
-      out[id] = days;
-    } catch (e) { console.warn(e); }
-    if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 1200)); // sin apurar a CoinGecko
-  }
-  return out;
+/* Historial de precios de cripto y oro (CoinGecko, gratis): desde la primera compra de cada activo hasta hoy.
+   Se guarda en priceLog (un precio por día) para el informe diario y el rendimiento del mes.
+   Sólo se baja lo que falta (S.priceHist recuerda qué rango ya está). La versión gratis da hasta 365 días atrás. */
+const firstHoldDate = (h) => [...(h.trades || []).map((t) => t.date), h.initial?.date].filter(Boolean).sort()[0] || null;
+let priceHistRun = null, priceHistAgain = false;
+function syncPriceHistory({ onStep } = {}) {
+  if (priceHistRun) { priceHistAgain = true; return priceHistRun; } // si ya está bajando, vuelve a mirar al terminar
+  priceHistRun = (async () => {
+    let changed = false;
+    do {
+      priceHistAgain = false;
+      const today = todayISO(), minFrom = isoOf(Date.now() - 364 * 864e5);
+      const hist = S.priceHist || (S.priceHist = {});
+      const jobs = [];
+      for (const h of S.holdings) {
+        const id = (h.coingeckoId || '').trim().toLowerCase(), first = firstHoldDate(h);
+        if (!id || !first) continue;
+        const key = `${id}|${h.symbol}`, need = first < minFrom ? minFrom : first, cov = hist[key];
+        const ranges = !cov ? [[need, today]] : [...(need < cov.from ? [[need, cov.from]] : []), ...(cov.to < today ? [[cov.to, today]] : [])];
+        if (ranges.length) jobs.push({ h, id, key, need, ranges });
+      }
+      for (const [i, j] of jobs.entries()) {
+        onStep?.(`Bajando precios de ${j.h.symbol}…`);
+        let ok = true;
+        for (const [a, b] of j.ranges) {
+          try {
+            const from = Math.floor(Date.parse(a + 'T00:00:00') / 1000), to = Math.floor(Math.min(Date.now(), Date.parse(b + 'T23:59:59')) / 1000);
+            const res = await getJSON(`https://api.coingecko.com/api/v3/coins/${encodeURIComponent(j.id)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`, 20000);
+            const days = {};
+            for (const [ms, p] of res.prices || []) if (p > 0) days[isoOf(ms)] = p; // queda el último precio de cada día
+            for (const [d, p] of Object.entries(days)) logPrices(d, { [j.h.symbol]: p });
+            if (Object.keys(days).length) changed = true; else ok = false;
+          } catch (e) { ok = false; console.warn(e); }
+          await new Promise((r) => setTimeout(r, 1200)); // sin apurar a CoinGecko
+        }
+        if (ok) { const c = hist[j.key]; hist[j.key] = { from: c && c.from < j.need ? c.from : j.need, to: today, at: new Date().toISOString() }; }
+      }
+    } while (priceHistAgain);
+    if (changed) save(false);
+    return changed;
+  })().catch((e) => { console.warn(e); return false; }).finally(() => { priceHistRun = null; });
+  return priceHistRun;
+}
+// Si cambia el ID de CoinGecko (o el símbolo), los precios guardados de ese activo se vuelven a bajar completos
+function resetPriceHistory(h) {
+  for (const k of Object.keys(S.priceHist || {})) if (k.endsWith(`|${h.symbol}`)) delete S.priceHist[k];
+  // (los precios viejos de ese activo eran de otra moneda: se borran para que no se mezclen)
+  for (const d of Object.keys(S.priceLog || {})) if (S.priceLog[d]?.[h.symbol] != null) delete S.priceLog[d][h.symbol];
 }
 
 // Todos los datos del informe, mes por mes.
@@ -3992,7 +4024,8 @@ async function buildReport(fromM, toM, onStep) {
   const months = reportMonths().months.filter((m) => m >= fromM && m <= toM);
   const firstDay = `${months[0]}-01`, lastM = months[months.length - 1];
   const lastDay = `${lastM}-${String(daysInMonth(lastM)).padStart(2, '0')}`;
-  const crypto = S.holdings.some((h) => h.coingeckoId) ? await cryptoDaily(firstDay, lastDay < today ? lastDay : today, onStep) : {};
+  // Antes de armar el informe se completa el historial de precios guardado (cripto y oro desde su primera compra)
+  if (S.holdings.some((h) => h.coingeckoId)) await syncPriceHistory({ onStep });
   onStep?.('Ordenando tus movimientos…');
   const histByDay = Object.fromEntries((S.history || []).map((r) => [r.date, r]));
   const accOf = (id) => S.accounts.find((a) => a.id === id);
@@ -4009,10 +4042,8 @@ async function buildReport(fromM, toM, onStep) {
     : t.investment || isInvIncome(t) ? 'Inversión' : t.adjust ? 'Ajuste de saldo' : 'Propio');
   const ownFlow = (t) => t.type !== 'transferencia' && !nonFlow(t); // gastos e ingresos propios (incluye ajustes)
   const priceOn = (h, d) => {
-    const id = (h.coingeckoId || '').trim().toLowerCase();
-    if (id && crypto[id]?.[d] != null) return { p: crypto[id][d], src: 'CoinGecko' };
     const px = S.priceLog?.[d]?.[h.symbol] ?? histByDay[d]?.px?.[h.symbol];
-    if (px != null) return { p: px, src: 'Guardado por la app' };
+    if (px != null) return { p: px, src: h.coingeckoId ? 'CoinGecko' : 'Guardado por la app' };
     if (d === today && Number(h.price)) return { p: Number(h.price), src: 'Guardado por la app' };
     return null;
   };
@@ -4967,6 +4998,7 @@ function addHoldingForm(state = { n: 1, vals: {} }) {
       changeTrades(h, () => trades, [], { resetGap: true });
       snapshot(); save(); render();
       toast(`${symbol}: ${trades.length} compra${trades.length > 1 ? 's' : ''} registrada${trades.length > 1 ? 's' : ''} ✓`);
+      syncPriceHistory();
       if (cg || !h.price) refreshAll({ silent: true });
     },
   });
@@ -5022,10 +5054,13 @@ function holdingForm(h) {
         if (isNew && !v.initDate) return 'Poné desde qué fecha tenés esta cantidad.';
         if (v.initDate) changes.initial = { date: v.initDate, price: v.avgCost || null };
       } else if (!isNew && h.initial) changes.initial = null;
+      // Otro ID de CoinGecko (u otro símbolo): sus precios guardados se vuelven a bajar desde la primera compra
+      if (!isNew && (changes.coingeckoId !== (h.coingeckoId || '') || changes.symbol !== h.symbol)) resetPriceHistory(h);
       if (isNew) S.holdings.push({ id: uid(), change24h: null, priceUpdated: null, priceSource: '', trades: [], price: 0, ...changes });
       else Object.assign(h, changes);
       snapshot(); save(); render();
       if (changes.coingeckoId && !(Number(changes.price) || Number(h.price))) refreshAll({ silent: true });
+      syncPriceHistory();
     },
   });
 }
@@ -5110,6 +5145,7 @@ function saveTrade(h, { side, date, qty, price, fee, acc }) {
   }
   snapshot(); save(); render();
   toast(`${side === 'compra' ? 'Compra' : 'Venta'} de ${fmtNum(qty)} ${h.symbol} registrada.`);
+  syncPriceHistory(); // si la compra es de antes, se bajan los precios desde esa fecha
 }
 
 // Lo que mueve en tu cuenta una compra (sale plata, con la comisión) o una venta (entra, menos la comisión)
@@ -5218,6 +5254,7 @@ function tradeEditForm(h, t) {
       }
       snapshot(); save(); render();
       toast(`${tradeLabel(next)} de ${h.symbol} corregida ✓`);
+      syncPriceHistory();
     },
   });
 }
@@ -5446,6 +5483,7 @@ function importHoldings(text) {
       }
       snapshot(); save();
       toast(`Importado: ${added} compra(s) en ${groups.length} activo(s)${dupN ? ` · ${dupN} repetida(s) no se cargaron` : ''}.`, 4500);
+      syncPriceHistory();
       setTimeout(() => { go('inversiones'); refreshAll({ silent: true }); }, 50);
     },
   });
@@ -6360,6 +6398,7 @@ function welcome() {
   if (accrueInterest()) save(false);
   processRecurring();
   render();
+  setTimeout(() => syncPriceHistory(), 4000); // historial de precios de cripto y oro que falte
   if (!existed && !FileSync.handle && !CloudSync.enabled()) { save(false); Lock.then(welcome); refreshAll({ silent: true }); return; }
   maybeMonthClose();
   const last = S.settings.lastRefresh ? Date.parse(S.settings.lastRefresh) : 0;
