@@ -842,3 +842,17 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .imp-lot > span:nth-child(2) { color: var(--text-2); }
 .imp-result { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
 .imp-result:empty { display: none; }
+
+/* "Otros": qué fue + nota, y tus categorías */
+.q-cat-new { border: 1px dashed var(--border); background: none; }
+.q-cat-new .q-cat-ico { color: var(--accent); }
+.q-need::placeholder { color: var(--warn-ink); }
+:root:not([data-theme="light"]) .q-need::placeholder { color: #e0a62a; }
+.q-memo { width: 100%; min-height: 64px; resize: vertical; border-radius: 12px; font-family: inherit; font-size: 15px; padding: 10px 12px; border: 1px solid var(--border); background: var(--surface); }
+#dlgForm textarea[name="memo"] { font-family: inherit; font-size: 15px; min-height: 64px; }
+.cat-preview { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.cat-preview .q-cat-ico { color: var(--accent); }
+.others-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--grid); display: flex; flex-direction: column; gap: 6px; }
+.others-box .calc-row > span { display: flex; flex-direction: column; min-width: 0; }
+.others-memo { font-size: 12.5px; color: var(--muted); }
+.tile .status { white-space: normal; max-width: 100%; }
