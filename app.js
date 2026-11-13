@@ -408,8 +408,8 @@ function totals() {
   // Préstamos: lo que te deben suma, lo que debés resta
   let lent = 0, owed = 0;
   for (const l of S.loans || []) {
-    const rem = loanRemaining(l);
-    if (l.closed || rem <= 0) continue;
+    const rem = loanBalance(l); // (con cuotas: el capital que falta)
+    if (l.closed || loanRemaining(l) <= 0) continue;
     if (l.dir === 'preste') lent += toUSD(rem, l.currency); else owed += toUSD(rem, l.currency);
   }
   // netWorth = lo que tenés hoy (lo prestado todavía no volvió); netWorthWithLent = si te devuelven todo
@@ -1993,6 +1993,16 @@ function planHTML(a) {
     <p class="muted small" style="margin:6px 0 0;text-align:center">Se agregan arriba como topes, para que veas si te pasás.</p>`;
 }
 
+// Topes que acumulan: lo que no gastaste de un mes pasa al siguiente, desde el mes en que lo activaste.
+// Si un mes te pasás, se descuenta de lo acumulado (sin bajar de 0). En USD.
+function budgetCarry(cat, b, month = currentMonth()) {
+  if (!b?.roll) return 0;
+  const lim = toUSD(b.amount, b.currency);
+  let carry = 0;
+  for (let m = b.since || month; m < month; m = addMonths(m, 1)) carry = Math.max(0, carry + lim - (monthStats(m).byCat[cat] || 0));
+  return carry;
+}
+
 function budgetHTML(txs) {
   const month = currentMonth();
   const ms = monthStats(month, txs);
@@ -2003,7 +2013,8 @@ function budgetHTML(txs) {
     return `<div class="empty">Todavía no tenés topes. Tocá <b>+ Tope</b> para ponerle un máximo por mes a una categoría.</div>`;
   }
   return `<div class="list">${entries.map(([c, b]) => {
-    const lim = toUSD(b.amount, b.currency);
+    const carry = budgetCarry(c, b, month);
+    const lim = toUSD(b.amount, b.currency) + carry;
     const spent = ms.byCat[c] || 0;
     // Gastos fijos (se pagan una vez al mes) no se proyectan
     const proj = FIXED.has(c) ? spent : (spent / day) * dim;
@@ -2013,7 +2024,7 @@ function budgetHTML(txs) {
     return `<div class="budget-row">
       <div class="budget-top"><b>${esc(c)}</b> ${statusPill(st)}<span class="spacer"></span>
         <button class="btn sm ghost icon-only" data-action="editBudget" data-id="${esc(c)}" title="Editar tope" aria-label="Editar tope">${icon('settings', 16)}</button></div>
-      <div class="small"><b class="money">${fmtIn(fromUSD(spent, b.currency), b.currency)}</b> <span class="muted">de <span class="money">${fmtIn(b.amount, b.currency)}</span></span></div>
+      <div class="small"><b class="money">${fmtIn(fromUSD(spent, b.currency), b.currency)}</b> <span class="muted">de <span class="money">${fmtIn(fromUSD(lim, b.currency), b.currency)}</span>${carry > 0.004 ? ` (${fmtIn(b.amount, b.currency)} + <span class="money">${fmtIn(fromUSD(carry, b.currency), b.currency)}</span> que te sobró)` : b.roll ? ' · acumula' : ''}</span></div>
       <div class="meter"><div class="${st.tone}" style="width:${used}%"></div></div>
       <div class="muted small money">${spent >= lim ? `Te pasaste ${fmtIn(fromUSD(spent - lim, b.currency), b.currency)}` : `Te quedan ${fmtIn(fromUSD(lim - spent, b.currency), b.currency)}`}${FIXED.has(c) || spent >= lim ? '' : ` · a este ritmo llegás a ${fmtIn(fromUSD(proj, b.currency), b.currency)}`}</div>
     </div>`;
@@ -2145,13 +2156,16 @@ function budgetForm(cat) {
       cat ? { type: 'html', html: '' } : { name: 'cat', label: 'Categoría', type: 'select', full: true, options: catsOf('gasto').filter((c) => !used.has(c)).map((c) => [c, c]) },
       { name: 'amount', label: `Tope por mes (${cur})`, type: 'number', full: true, required: true,
         value: b ? round2(fromUSD(toUSD(b.amount, b.currency), cur)) : '' },
+      { name: 'roll', label: 'Lo que no gaste pasa al mes siguiente', type: 'checkbox', full: true, value: !!b?.roll,
+        hint: 'Ej. tope de Bs 300 y gastaste 250: el mes que viene tenés Bs 350. Si te pasás, se descuenta de lo que tenías guardado.' },
       ...(cat ? [{ name: 'remove', label: 'Eliminar este tope', type: 'checkbox', full: true }] : []),
     ],
     onSubmit: (v) => {
       const c = cat || v.cat;
       if (cat && v.remove) { delete S.budgets[cat]; save(); render(); toast(`Tope de ${cat} eliminado`); return; }
       if (!c) return 'Ya tenés presupuesto para todas las categorías.';
-      if (!(v.amount > 0)) { delete S.budgets[c]; } else S.budgets[c] = { amount: v.amount, currency: cur };
+      // "Acumular" empieza a contar desde el mes en que lo activás (no se suma lo que sobró antes)
+      if (!(v.amount > 0)) { delete S.budgets[c]; } else S.budgets[c] = { amount: v.amount, currency: cur, ...(v.roll ? { roll: true, since: b?.roll && b.since ? b.since : currentMonth() } : {}) };
       save(); render();
     },
   });
@@ -2229,8 +2243,10 @@ function planNumbers() {
     avgVariable = (soFar / now.getDate()) * daysInMonth(currentMonth());
     avgExtra = 0;
   }
-  const maxSaving = recInc + interest - recOut;
-  return { recInc, recOut, interest, avgVariable, avgExtra, maxSaving, projectedSaving: maxSaving + avgExtra - avgVariable };
+  // Cuotas de préstamos que debés (mientras falte pagar): salen todos los meses como un fijo
+  const loanOut = (S.loans || []).filter((l) => l.dir === 'debo' && !l.closed).reduce((s, l) => { const lp = loanPlan(l); return s + (lp && lp.left > 0.005 ? toUSD(Math.min(lp.cuota, lp.left), l.currency) : 0); }, 0);
+  const maxSaving = recInc + interest - recOut - loanOut;
+  return { recInc, recOut, loanOut, interest, avgVariable, avgExtra, maxSaving, projectedSaving: maxSaving + avgExtra - avgVariable };
 }
 
 function goalMath(g, P) {
@@ -3516,7 +3532,14 @@ function upcomingItems(days = 30) {
   }
   for (const l of S.loans || []) {
     const rem = loanRemaining(l);
-    if (l.closed || rem <= 0 || !l.dueDate || l.dueDate > end) continue;
+    if (l.closed || rem <= 0) continue;
+    // En cuotas: la próxima cuota sin pagar
+    const nx = loanPlan(l)?.next;
+    if (nx) {
+      if (nx.date <= end) out.push({ date: nx.date, name: l.dir === 'preste' ? `${l.person}: cuota ${nx.k}` : `Cuota ${nx.k} a ${l.person}`, amount: nx.amount, currency: l.currency, type: l.dir === 'preste' ? 'ingreso' : 'gasto', kind: 'Préstamo', loanId: l.id, overdue: nx.date < today });
+      continue;
+    }
+    if (!l.dueDate || l.dueDate > end) continue;
     out.push({ date: l.dueDate, name: l.dir === 'preste' ? `${l.person} te devuelve` : `Devolverle a ${l.person}`, amount: rem, currency: l.currency, type: l.dir === 'preste' ? 'ingreso' : 'gasto', kind: 'Préstamo', loanId: l.id, overdue: l.dueDate < today });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
@@ -3566,7 +3589,7 @@ function monthCloseHTML(m) {
     if ((s.income || s.expense) && (record == null || s.income - s.expense > record)) record = s.income - s.expense;
   }
   const cats = Object.entries(ms.byCat).sort((a, b) => b[1] - a[1]);
-  const over = Object.entries(S.budgets).filter(([c, b]) => (ms.byCat[c] || 0) > toUSD(b.amount, b.currency));
+  const over = Object.entries(S.budgets).filter(([c, b]) => (ms.byCat[c] || 0) > toUSD(b.amount, b.currency) + budgetCarry(c, b, m));
   const days = [...activeDays()].filter((d) => d.startsWith(m)).length;
   const st = savingsStatus(rateM);
   const lines = [];
@@ -3604,7 +3627,34 @@ function maybeMonthClose() {
 
 /* ---------------- Préstamos ---------------- */
 
-const loanRemaining = (l) => round2((Number(l.amount) || 0) - (l.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0));
+/* Préstamos en cuotas (opcional): cantidad de cuotas mensuales, interés anual y fecha de la primera cuota.
+   Cuota fija (sistema francés, como en los bancos); con 0% de interés es monto ÷ cuotas.
+   Los préstamos sin cuotas siguen igual que siempre: un monto y pagos sueltos. */
+const loanPaid = (l) => (l.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+const plusMonths = (iso, k) => { const m = addMonths(iso.slice(0, 7), k); return `${m}-${String(Math.min(+iso.slice(8, 10), daysInMonth(m))).padStart(2, '0')}`; };
+function loanPlan(l) {
+  const n = Math.round(Number(l.cuotas) || 0);
+  const P = Number(l.amount) || 0;
+  if (n < 2 || !(P > 0)) return null;
+  const i = (Number(l.rate) || 0) / 100 / 12;
+  const cuota = round2(i > 0 ? (P * i) / (1 - (1 + i) ** -n) : P / n);
+  const total = round2(cuota * n);
+  const first = l.firstDue || plusMonths(l.date || todayISO(), 1);
+  const dateOf = (k) => plusMonths(first, k); // k = 0 → primera cuota
+  const paid = loanPaid(l);
+  const paidN = Math.min(n, Math.floor((paid + 0.005) / cuota));
+  const left = round2(Math.max(0, total - paid));
+  const next = paidN < n && left > 0.005 ? { k: paidN + 1, date: dateOf(paidN), amount: round2(Math.min(cuota, left)) } : null;
+  // Capital que falta (sin los intereses que todavía no corrieron): para el patrimonio
+  let bal = P;
+  for (let k = 0; k < paidN; k++) bal = bal * (1 + i) - cuota;
+  const principalLeft = round2(Math.max(0, bal - (paid - paidN * cuota)));
+  return { n, rate: Number(l.rate) || 0, cuota, total, interest: round2(total - P), paid, paidN, left, next, dateOf, principalLeft };
+}
+// Lo que falta pagar o cobrar (con intereses, si tiene cuotas)
+const loanRemaining = (l) => { const p = loanPlan(l); return p ? p.left : round2((Number(l.amount) || 0) - loanPaid(l)); };
+// Lo que cuenta en tu patrimonio: el capital que falta (los intereses futuros todavía no son deuda)
+const loanBalance = (l) => { const p = loanPlan(l); return p ? (p.left > 0.005 ? p.principalLeft : 0) : loanRemaining(l); };
 
 // Mueve plata de una cuenta por un préstamo, sin contarlo como gasto ni ingreso
 function loanTx(l, kind, amount, accountId, date) {
@@ -3621,8 +3671,18 @@ function loanTx(l, kind, amount, accountId, date) {
   return tx;
 }
 
-function createLoan({ dir, person, amount, currency, date, dueDate, accountId, note }) {
-  const l = { id: uid(), dir, person, amount, currency, date: date || todayISO(), dueDate: dueDate || '', accountId: accountId || '', note: note || '', payments: [], closed: false };
+// Datos de cuotas que vienen del formulario (vacío = préstamo sin cuotas, como siempre)
+const loanTerms = (v) => (Number(v.cuotas) >= 2 ? { cuotas: Math.round(Number(v.cuotas)), rate: Number(v.rate) > 0 ? Number(v.rate) : 0, firstDue: v.firstDue || '' } : { cuotas: undefined, rate: undefined, firstDue: undefined });
+
+// "12 cuotas de Bs 450 · total Bs 5.400 (intereses Bs 400) · última: …"
+function loanPreviewHTML(v) {
+  const p = loanPlan({ amount: v.amount, cuotas: v.cuotas, rate: v.rate, date: v.date, firstDue: v.firstDue, payments: [] });
+  return p ? `${p.n} cuotas de <b class="money">${fmtIn(p.cuota, v.currency)}</b> · total <b class="money">${fmtIn(p.total, v.currency)}</b>${p.interest > 0.004 ? ` (intereses <span class="money">${fmtIn(p.interest, v.currency)}</span>)` : ' (sin interés)'} · última: ${fmtDate(p.dateOf(p.n - 1))}` : '';
+}
+
+function createLoan({ dir, person, amount, currency, date, dueDate, accountId, note, cuotas, rate, firstDue }) {
+  const l = { id: uid(), dir, person, amount, currency, date: date || todayISO(), dueDate: dueDate || '', accountId: accountId || '', note: note || '', payments: [], closed: false,
+    ...(Number(cuotas) >= 2 ? loanTerms({ cuotas, rate, firstDue }) : {}) };
   S.loans.push(l);
   if (accountId) loanTx(l, 'start', amount, accountId, l.date);
   return l;
@@ -3639,12 +3699,21 @@ function loanForm(l) {
       { name: 'amount', label: 'Monto', type: 'number', value: l.amount, required: true },
       { name: 'currency', label: 'Moneda', type: 'select', value: l.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
       { name: 'date', label: 'Fecha', type: 'date', value: l.date },
-      { name: 'dueDate', label: 'Fecha para devolver (opcional)', type: 'date', value: l.dueDate },
+      { name: 'cuotas', label: 'Cuotas por mes (opcional)', type: 'number', value: l.cuotas || '', placeholder: 'Vacío = se devuelve de una o en partes sueltas',
+        hint: 'Ej. 12 = se paga en 12 cuotas mensuales.' },
+      { name: 'rate', label: 'Interés anual %', type: 'number', value: l.rate || '', placeholder: '0 = sin interés', showIf: (v) => v.cuotas >= 2 },
+      { name: 'firstDue', label: 'Primera cuota', type: 'date', value: l.firstDue || plusMonths(l.date || todayISO(), 1), showIf: (v) => v.cuotas >= 2 },
+      { type: 'html', html: `<div id="loanPreview" class="small muted">${loanPreviewHTML(l)}</div>` },
+      { name: 'dueDate', label: 'Fecha para devolver (opcional)', type: 'date', value: l.dueDate, showIf: (v) => !(v.cuotas >= 2) },
       ...(isNew ? [{ name: 'accountId', label: '¿De qué cuenta salió / a cuál entró?', type: 'select', value: l.accountId, full: true,
         options: [['', '— No mover plata de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`])] }] : []),
       { name: 'note', label: 'Nota', value: l.note, full: true, placeholder: 'Opcional' },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este préstamo (revierte lo que movió en tus cuentas)', type: 'checkbox', full: true }]),
     ],
+    // Mientras escribís: cuánto es cada cuota y cuánto pagás en total
+    onInput: (form, v) => {
+      const box = form.querySelector('#loanPreview'); if (box) box.innerHTML = loanPreviewHTML(v);
+    },
     onSubmit: (v) => {
       if (v.remove) {
         for (const t of S.transactions.filter((x) => x.loanId === l.id)) applyTx(t, -1);
@@ -3655,6 +3724,8 @@ function loanForm(l) {
         snapshot(); save(); render(); return;
       }
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      if (v.cuotas != null && v.cuotas !== 0 && !(Number.isInteger(v.cuotas) && v.cuotas >= 2 && v.cuotas <= 360)) return 'Las cuotas tienen que ser un número entero de 2 a 360 (o dejalo vacío).';
+      if (v.cuotas >= 2 && v.rate != null && !(v.rate >= 0 && v.rate <= 200)) return 'El interés tiene que estar entre 0 y 200% anual.';
       const person = v.person.replace(/^\w/, (c) => c.toUpperCase());
       if (isNew) createLoan({ ...v, person });
       else {
@@ -3668,7 +3739,9 @@ function loanForm(l) {
           S.transactions = S.transactions.filter((t) => t !== start);
           tombstone(start.id);
         }
-        Object.assign(l, { dir: v.dir, person, amount: v.amount, currency: v.currency, date: v.date, dueDate: v.dueDate, note: v.note, closed: loanRemaining({ ...l, amount: v.amount }) <= 0 });
+        const terms = loanTerms(v);
+        Object.assign(l, { dir: v.dir, person, amount: v.amount, currency: v.currency, date: v.date, dueDate: terms.cuotas ? '' : v.dueDate, note: v.note, ...terms });
+        l.closed = loanRemaining(l) <= 0.005;
         if (moved && start) loanTx(l, 'start', v.amount, start.accountId, l.date);
       }
       snapshot(); save(); render();
@@ -3678,11 +3751,15 @@ function loanForm(l) {
 
 function loanPayForm(l) {
   const rem = loanRemaining(l);
+  const p = loanPlan(l);
   openForm({
     title: l.dir === 'preste' ? `¿Cuánto te devolvió ${l.person}?` : `Devolverle a ${l.person}`,
     fields: [
-      { type: 'html', html: `<div class="muted small">Falta: <b class="money">${fmtIn(rem, l.currency)}</b> de ${fmtIn(l.amount, l.currency)}</div>` },
-      { name: 'amount', label: `Monto (${curLabel(l.currency)})`, type: 'number', value: rem, required: true },
+      { type: 'html', html: p?.next
+        ? `<div class="muted small">Cuota <b>${p.next.k} de ${p.n}</b> (vence el ${fmtDate(p.next.date)}) · falta <b class="money">${fmtIn(rem, l.currency)}</b> de ${fmtIn(p.total, l.currency)}${p.interest > 0.004 ? ' con intereses' : ''}</div>`
+        : `<div class="muted small">Falta: <b class="money">${fmtIn(rem, l.currency)}</b> de ${fmtIn(l.amount, l.currency)}</div>` },
+      // En cuotas viene la cuota; si pagás más o menos, se descuenta igual de lo que falta
+      { name: 'amount', label: `Monto (${curLabel(l.currency)})`, type: 'number', value: p?.next ? p.next.amount : rem, required: true },
       { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
       { name: 'accountId', label: l.dir === 'preste' ? '¿A qué cuenta entró?' : '¿De qué cuenta salió?', type: 'select', value: l.accountId || S.accounts.find((a) => a.type === 'efectivo')?.id, full: true,
         options: [['', '— No mover plata de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`])] },
@@ -3707,17 +3784,25 @@ function loansHTML() {
   const owed = open.filter((l) => l.dir === 'debo').reduce((s, l) => s + toUSD(loanRemaining(l), l.currency), 0);
   const row = (l) => {
     const rem = loanRemaining(l);
+    const p = loanPlan(l);
     const overdue = !l.closed && l.dueDate && l.dueDate < todayISO();
+    const nOver = !l.closed && p?.next && p.next.date < todayISO();
+    // En cuotas: cuál toca, cuándo y cuánto; cuántas pagaste y el interés
+    const when = p ? `${p.next ? ` · cuota ${p.next.k} de ${p.n}: <span class="money">${fmtIn(p.next.amount, l.currency)}</span> el <span class="${nOver ? 'down' : ''}">${fmtDate(p.next.date)}${nOver ? ' (vencida)' : ''}</span>` : ` · ${p.n} cuotas pagadas`}${p.rate ? ` · ${fmtNum(p.rate, 2)}% anual` : ''}`
+      : l.dueDate ? ` · devolver: <span class="${overdue ? 'down' : ''}">${fmtDate(l.dueDate)}${overdue ? ' (vencido)' : ''}</span>` : '';
+    const of = p ? p.total : Number(l.amount);
     return `<div class="list-row act">
       <span class="acc-ico sm ${l.dir === 'preste' ? 'in' : ''}">${icon('handshake', 16)}</span>
       <div class="grow"><div class="name">${esc(l.person)} <span class="muted small">· ${l.dir === 'preste' ? 'te debe' : 'le debés'}</span></div>
-        <div class="meta">${fmtDate(l.date)}${l.dueDate ? ` · devolver: <span class="${overdue ? 'down' : ''}">${fmtDate(l.dueDate)}${overdue ? ' (vencido)' : ''}</span>` : ''}${l.note ? ` · ${esc(l.note)}` : ''}</div></div>
-      <div class="val"><div class="money ${l.dir === 'preste' ? 'up' : 'down'}">${fmtIn(rem, l.currency)}</div>${rem !== Number(l.amount) ? `<div class="meta money">de ${fmtIn(l.amount, l.currency)}</div>` : ''}</div>
+        <div class="meta">${fmtDate(l.date)}${when}${l.note ? ` · ${esc(l.note)}` : ''}</div>
+        ${p && !l.closed ? `<div class="meter" style="margin-top:6px"><div class="good" style="width:${Math.min(100, (p.paid / p.total) * 100)}%"></div></div>` : ''}</div>
+      <div class="val"><div class="money ${l.dir === 'preste' ? 'up' : 'down'}">${fmtIn(rem, l.currency)}</div>${Math.abs(rem - of) > 0.004 ? `<div class="meta money">de ${fmtIn(of, l.currency)}</div>` : ''}</div>
       ${l.closed ? '<span class="status good">Saldado</span>' : `<button class="btn sm primary" data-action="loanPay" data-id="${l.id}">${l.dir === 'preste' ? 'Me devolvió' : 'Devolví'}</button>`}
       <button class="btn sm ghost icon-only" data-action="loanEdit" data-id="${l.id}" title="Editar">${icon('settings', 16)}</button></div>`;
   };
   return `<section class="card" id="prestamos"><div class="card-head"><h2>Préstamos</h2><button class="btn sm" data-action="loanAdd">+ Préstamo</button></div>
     ${open.length || closed.length ? `<div class="fx-row" style="margin-bottom:6px"><span>Te deben</span><b class="money up">${fmtMoney(lent)}</b><span class="spacer"></span><span>Debés</span><b class="money down">${fmtMoney(owed)}</b></div>` : ''}
+    ${open.some((l) => loanPlan(l)?.interest > 0.004) ? '<div class="small muted" style="margin-bottom:6px">Con intereses incluidos. En tu patrimonio cuenta sólo el capital que falta.</div>' : ''}
     <div class="list">${open.map(row).join('') || '<div class="empty">Anotá lo que prestás o te prestan para que no se olvide. Tip: en el chat podés decir "le presté 50 a Juan".</div>'}</div>
     ${closed.length ? `<details class="small" style="margin-top:8px"><summary class="muted">Saldados (${closed.length})</summary><div class="list">${closed.map(row).join('')}</div></details>` : ''}
   </section>`;
@@ -4616,8 +4701,11 @@ async function buildReport(fromM, toM, onStep) {
     const loans = (S.loans || []).filter((l) => l.date <= lastD).map((l) => {
       const paid = (l.payments || []).filter((p) => p.date <= lastD).reduce((s, p) => s + (Number(p.amount) || 0), 0);
       const paidM = (l.payments || []).filter((p) => p.date?.startsWith(m)).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      // En cuotas: lo que falta es sobre el total con intereses, y "Vence" dice las cuotas y el interés
+      const lp = loanPlan(l), tot = lp ? lp.total : Number(l.amount) || 0;
       return { persona: l.person, tipo: l.dir === 'preste' ? 'Le presté (por cobrar)' : 'Me prestaron (por pagar)', fecha: l.date, monto: Number(l.amount) || 0, moneda: l.currency,
-        devueltoEnElMes: R2(paidM), devueltoTotal: R2(paid), falta: R2(Math.max(0, (Number(l.amount) || 0) - paid)), vence: l.dueDate || '', nuevoEsteMes: l.date.startsWith(m) ? 'Sí' : '' };
+        devueltoEnElMes: R2(paidM), devueltoTotal: R2(paid), falta: R2(Math.max(0, tot - paid)),
+        vence: lp ? `${lp.n} cuotas de ${fmtNum(lp.cuota, 2)} desde ${lp.dateOf(0)}${lp.rate ? ` · ${fmtNum(lp.rate, 2)}% anual (total ${fmtNum(lp.total, 2)})` : ' · sin interés'}` : l.dueDate || '', nuevoEsteMes: l.date.startsWith(m) ? 'Sí' : '' };
     }).filter((l) => l.falta > 0.005 || l.devueltoEnElMes > 0 || l.nuevoEsteMes);
     const owedToYou = loans.filter((l) => l.tipo.startsWith('Le')).reduce((s, l) => s + convertAt(l.falta, l.moneda, cur, lastD).v, 0);
     const youOwe = loans.filter((l) => l.tipo.startsWith('Me')).reduce((s, l) => s + convertAt(l.falta, l.moneda, cur, lastD).v, 0);
@@ -4989,18 +5077,27 @@ function spendPlan() {
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(leftOf(r), r.currency), 0);
   // Gastos programados: los de este mes (pagados o no) y los vencidos sin pagar
   const sched = sum(txs.filter((t) => t.type === 'gasto' && t.scheduledId)) + schedDueThisMonth().reduce((s, x) => s + toUSD(x.amount, x.currency), 0);
+  // Cuotas de préstamos que DEBÉS y vencen este mes (pagadas o no): cuentan como un gasto fijo
+  const loanDue = (S.loans || []).filter((l) => l.dir === 'debo').reduce((s, l) => {
+    const lp = loanPlan(l);
+    if (!lp) return s;
+    let amt = 0;
+    for (let k = 0; k < lp.n; k++) if (lp.dateOf(k).startsWith(month)) amt += lp.cuota;
+    const paidM = (l.payments || []).filter((x) => x.date?.startsWith(month)).reduce((a, x) => a + (Number(x.amount) || 0), 0);
+    return s + toUSD(Math.min(amt, lp.left + paidM), l.currency);
+  }, 0);
   // Ahorro: lo que necesita por mes CADA meta con fecha, sumado. Sin metas con fecha: el % que elegiste
   const goals = S.goals.map((g) => ({ g, need: goalMath(g, P).needed })).filter((x) => x.need != null).map((x) => ({ name: x.g.name, need: Math.max(0, x.need) }));
   const rate = Number(S.settings.saveRate ?? 10);
   const save = goals.length ? goals.reduce((s, x) => s + x.need, 0) : Math.max(0, income * rate / 100);
-  const budget = income - fixed - sched - save;
+  const budget = income - fixed - sched - loanDue - save;
   const spentBefore = sum(txs.filter((t) => isVariable(t) && t.date < today));
   const spentToday = sum(txs.filter((t) => isVariable(t) && t.date === today));
   const daysLeft = daysInMonth(month) - new Date().getDate() + 1;
   const perDay = (budget - spentBefore) / daysLeft;
   const spent = spentBefore + spentToday;
   // monthLeft < 0 = ya gastaste más de lo que tenías para todo el mes
-  return { income, fixed, sched, save, budget, rate, goals, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
+  return { income, fixed, sched, loanDue, save, budget, rate, goals, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
 }
 
 /* ---------------- "Acumulado sin gastar" ----------------
@@ -5061,7 +5158,7 @@ function dailySaved() {
 // Lo que te cuesta un mes "normal": tus gastos fijos + lo que gastás en promedio en el día a día (USD)
 function monthlyCostUSD() {
   const P = planNumbers();
-  return P.recOut + P.avgVariable;
+  return P.recOut + P.loanOut + P.avgVariable;
 }
 
 // Fondo de emergencia: UNA sola cuenta para Mi plan, Consejos y "Te alcanza para".
@@ -5192,6 +5289,7 @@ function spendInfo() {
         ${row('Te entra este mes', L(p.income))}
         ${row('− Fijos', L(p.fixed))}
         ${p.sched > 0 ? row('− Programados', L(p.sched)) : ''}
+        ${p.loanDue > 0 ? row('− Cuotas de préstamos', L(p.loanDue)) : ''}
         ${p.goals.length ? p.goals.map((x) => row(`− Ahorro para "${esc(x.name)}"`, L(x.need))).join('') : row(`− Ahorro (${p.rate}%)`, L(p.save))}
         ${row('= Para gastar este mes', L(p.budget), 'total')}
         ${overMonth ? `
@@ -6619,7 +6717,7 @@ const ACTIONS = {
     if (!p?.rows.length) return;
     const cur = S.settings.localCurrency;
     // Una meta de 0 (ej. intereses) no es un presupuesto: es "no pagar más"
-    for (const r of p.rows) if (r.newV > 0.5) S.budgets[r.c] = { amount: roundNice(fromUSD(r.newV, cur)), currency: cur };
+    for (const r of p.rows) if (r.newV > 0.5) S.budgets[r.c] = { ...(S.budgets[r.c] || {}), amount: roundNice(fromUSD(r.newV, cur)), currency: cur };
     save(); render();
     ($('#sheetDlg').open && sheetView ? $('#sheet') : window).scrollTo({ top: 0, behavior: 'smooth' });
     toast('Listo: esos montos quedaron como topes del mes.');
