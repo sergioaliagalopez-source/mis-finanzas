@@ -1227,6 +1227,7 @@ function recurringRowHTML(r, month) {
   } else if (tx) status = `<span class="status good">${icon('check', 14)} ${r.type === 'ingreso' ? 'Entró' : 'Pagado'} el ${fmtDate(tx.date).slice(0, 5)}</span>`;
   else if (!on) status = isCur ? `<button class="btn sm" data-action="payRecurring" data-id="${r.id}">Registrar este mes</button>` : '';
   else if (!dueIn(r, month)) status = `<span class="status neutral">Le toca en ${monthName(r.month)}</span>`;
+  else if (month < currentMonth()) status = (r.skip || []).includes(month) ? '<span class="status neutral">Salteado</span>' : '<span class="status warning">No registrado</span>';
   else if (r.day) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
   else if (isCur) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`;
   else status = '<span class="status warning">No registrado</span>';
@@ -1250,7 +1251,13 @@ function recurringHTML(month) {
       La app lo tiene en cuenta para decirte cuánto podés gastar.</div>${presets}`;
   }
   const byType = (list) => [...list].sort((a, b) => (a.type === b.type ? 0 : a.type === 'ingreso' ? -1 : 1));
-  const on = byType(S.recurring.filter(repeats)), off = byType(S.recurring.filter((r) => !repeats(r)));
+  // Otro mes: sólo los fijos que correspondían ese mes (o que tuvieron un movimiento)
+  const isCur = month === currentMonth();
+  const shown = (r) => isCur || S.transactions.some((t) => t.recurringId === r.id && t.date?.startsWith(month)) || (repeats(r) && (!r.startMonth || r.startMonth <= month) && dueIn(r, month));
+  const on = byType(S.recurring.filter((r) => repeats(r) && shown(r))), off = byType(S.recurring.filter((r) => !repeats(r) && shown(r)));
+  if (!isCur) {
+    return `<div class="list">${[...on, ...off].map((r) => recurringRowHTML(r, month)).join('') || '<div class="empty">No había fijos en este mes.</div>'}</div>`;
+  }
   // (los semanales y anuales se pasan a lo que son por mes en promedio)
   const inc = on.filter((r) => r.type === 'ingreso').reduce((s, r) => s + toUSD(monthlyEq(r), r.currency), 0);
   const out = on.filter((r) => r.type === 'gasto').reduce((s, r) => s + toUSD(monthlyEq(r), r.currency), 0);
@@ -1465,16 +1472,62 @@ function schedRowHTML(s) {
   </div>`;
 }
 
-function schedHTML() {
-  const pend = schedPending();
-  const paid = (S.scheduled || []).filter(schedTx).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
-  if (!pend.length && !paid.length) {
+/* Historial por mes (Programados y Fijos): ‹ Mes › arriba, totales del mes y la lista "Por mes" para saltar a otro */
+// (el mes elegido dura mientras la app está abierta: al volver a abrirla arranca en el mes actual)
+const periodMonth = { sched: '', fix: '' };
+const capMonth = (m) => { const l = monthLabel(m, 'long'); return `${l[0].toUpperCase()}${l.slice(1)} ${m.slice(0, 4)}`; };
+function periodNavHTML(key, month, min, max) {
+  return `<div class="month-nav period-nav">
+    <button class="q-icon" data-action="periodShift" data-id="${key}|-1" aria-label="Mes anterior" ${month <= min ? 'disabled' : ''}>${icon('left', 20)}</button>
+    <b>${capMonth(month)}</b>
+    <button class="q-icon" data-action="periodShift" data-id="${key}|1" aria-label="Mes siguiente" ${month >= max ? 'disabled' : ''}>${icon('right', 20)}</button></div>
+    ${month !== currentMonth() && currentMonth() >= min && currentMonth() <= max ? `<button class="link-btn period-back" data-action="periodSet" data-id="${key}|${currentMonth()}">Volver a ${monthLabel(currentMonth(), 'long')}</button>` : ''}`;
+}
+// rows: [{ m, n, usd, warn }] → lista de meses tocable
+function periodListHTML(key, month, rows, what) {
+  if (rows.length < 2) return '';
+  const L = (usd) => fmtIn(fromUSD(usd, S.settings.localCurrency), S.settings.localCurrency);
+  return `<div class="rec-sub">Por mes</div><div class="list period-list">${rows.map((x) => `<button class="list-row act period-row ${x.m === month ? 'on' : ''}" data-action="periodSet" data-id="${key}|${x.m}">
+    <div class="grow"><div class="name">${capMonth(x.m)}</div><div class="meta">${x.meta || `${x.n} ${what}${x.n === 1 ? '' : 's'}`}${x.warn ? ` · <span class="warn-text">${x.warn}</span>` : ''}</div></div>
+    <span class="money">${L(x.usd)}</span></button>`).join('')}</div>`;
+}
+
+function schedHTML(month = periodMonth.sched || currentMonth()) {
+  const all = S.scheduled || [];
+  if (!all.length) {
     return '<div class="empty" style="padding:8px 0 4px">Cargá gastos de una sola vez que ya sabés que vienen (ej. tu turno en la fraternidad el jueves 19). La app los descuenta de "Hoy podés gastar" el mes en que caen.</div>';
   }
-  const due = schedDueThisMonth().reduce((t, s) => t + toUSD(s.amount, s.currency), 0);
-  return `<div class="list">${pend.map(schedRowHTML).join('') || '<div class="empty">No tenés gastos programados pendientes.</div>'}</div>
-    ${due > 0 ? `<div class="small muted" style="margin-top:10px">Este mes se reservan <b class="money">${fmtIn(fromUSD(due, S.settings.localCurrency), S.settings.localCurrency)}</b> de tu presupuesto para estos pagos.</div>` : ''}
-    ${paid.length ? `<div class="rec-sub">Ya pagados</div><div class="list">${paid.map(schedRowHTML).join('')}</div>` : ''}`;
+  const cur = currentMonth(), local = S.settings.localCurrency;
+  const L = (usd) => fmtIn(fromUSD(usd, local), local);
+  const months = [...new Set([cur, ...all.map((s) => s.date.slice(0, 7))])].sort();
+  const min = months[0], max = months[months.length - 1];
+  month = month < min ? min : month > max ? max : month;
+  // Pagado: lo que pagaste de verdad (puede ser distinto a lo programado); pendiente: lo programado
+  const usdOf = (s) => { const tx = schedTx(s); return tx ? txUSD(tx) : toUSD(s.amount, s.currency); };
+  const sumOf = (list) => list.reduce((t, s) => t + usdOf(s), 0);
+  const inMonth = all.filter((s) => s.date.startsWith(month)).sort((a, b) => a.date.localeCompare(b.date));
+  const paid = inMonth.filter(schedTx), pend = inMonth.filter((s) => !schedTx(s));
+  // En el mes actual también: lo vencido de meses anteriores y lo que viene más adelante
+  const lateBefore = month === cur ? schedPending().filter((s) => s.date < `${cur}-01`) : [];
+  const later = month === cur ? schedPending().filter((s) => s.date.slice(0, 7) > cur) : [];
+  const due = month === cur ? schedDueThisMonth().reduce((t, s) => t + toUSD(s.amount, s.currency), 0) : 0;
+  const rows = months.filter((m) => all.some((s) => s.date.startsWith(m))).reverse().slice(0, 12).map((m) => {
+    const list = all.filter((s) => s.date.startsWith(m));
+    const late = list.filter((s) => !schedTx(s) && s.date < todayISO()).length;
+    return { m, n: list.length, usd: sumOf(list), warn: late ? `${late} sin pagar` : '' };
+  });
+  return `${periodNavHTML('sched', month, min, max)}
+    <div class="month-sum">
+      <div><span>${month > cur ? 'Programado' : 'Total del mes'}</span><b class="money">${L(sumOf(inMonth))}</b></div>
+      <div><span>Pagado</span><b class="money up">${L(sumOf(paid))}</b></div>
+      <div><span>${month < cur ? 'Sin pagar' : 'Falta'}</span><b class="money ${month < cur && pend.length ? 'down' : ''}">${L(sumOf(pend))}</b></div>
+    </div>
+    ${lateBefore.length ? `<div class="rec-sub">Vencidos de meses anteriores</div><div class="list">${lateBefore.map(schedRowHTML).join('')}</div>` : ''}
+    <div class="rec-sub">${month === cur ? 'Este mes' : capMonth(month)}</div>
+    <div class="list">${inMonth.map(schedRowHTML).join('') || '<div class="empty">No hay gastos programados en este mes.</div>'}</div>
+    ${due > 0 ? `<div class="small muted" style="margin-top:10px">Este mes se reservan <b class="money">${L(due)}</b> de tu presupuesto para lo que falta pagar.</div>` : ''}
+    ${later.length ? `<div class="rec-sub">Más adelante</div><div class="list">${later.map(schedRowHTML).join('')}</div>` : ''}
+    ${periodListHTML('sched', month, rows, 'gasto')}`;
 }
 /* ---------------- Movimientos ---------------- */
 
@@ -1646,7 +1699,55 @@ function viewFijos() {
       <button class="btn sm primary" data-action="fixSuggest" data-id="${i}">Hacer fijo</button>
       <button class="btn sm ghost icon-only" data-action="fixDismiss" data-id="${i}" title="No sugerir más" aria-label="No sugerir más">${icon('x', 16)}</button></div>`).join('')}</div></section>` : ''}
   <section class="card"><div class="card-head"><span class="muted small">Lo que entra o sale todos los meses</span><button class="btn sm primary" data-action="addRecurring">+ Fijo</button></div>
-    ${recurringHTML(currentMonth())}</section>`;
+    ${S.recurring.length ? fixPeriodHTML() : ''}
+    ${recurringHTML(fixMonthNow())}
+    ${S.recurring.length ? fixHistoryHTML() : ''}</section>`;
+}
+
+// Mes que estás mirando en Fijos (entre el primer mes con fijos y el actual)
+function fixBounds() {
+  const cur = currentMonth();
+  const starts = [...S.recurring.map((r) => r.startMonth), ...S.transactions.filter((t) => t.recurringId).map((t) => t.date?.slice(0, 7))].filter(Boolean);
+  return { min: [cur, ...starts].sort()[0], max: cur };
+}
+function fixMonthNow() {
+  const { min, max } = fixBounds(), m = periodMonth.fix || max;
+  return m < min ? min : m > max ? max : m;
+}
+// Lo que un fijo esperaba ese mes y no se registró (semanal: por cada semana que falta)
+function fixMissing(r, m) {
+  if (!repeats(r) || !dueIn(r, m) || (r.startMonth && r.startMonth > m)) return 0;
+  if (freqOf(r) === 'semanal') return weekDates(r, m).filter((d) => d >= (r.startDate || '') && !weekTx(r, d) && !(r.skip || []).includes(d)).length * (Number(r.amount) || 0);
+  return recurringTx(r, m) || (r.skip || []).includes(m) ? 0 : Number(r.amount) || 0;
+}
+function fixMonthStats(m) {
+  const txs = S.transactions.filter((t) => t.recurringId && t.date?.startsWith(m));
+  const inc = txs.filter((t) => t.type === 'ingreso').reduce((s, t) => s + txUSD(t), 0);
+  const out = txs.filter((t) => t.type === 'gasto').reduce((s, t) => s + txUSD(t), 0);
+  const miss = S.recurring.filter((r) => r.type === 'gasto').map((r) => ({ r, usd: toUSD(fixMissing(r, m), r.currency) })).filter((x) => x.usd > 0);
+  return { inc, out, nOut: txs.filter((t) => t.type === 'gasto').length, miss, missUSD: miss.reduce((s, x) => s + x.usd, 0) };
+}
+function fixPeriodHTML() {
+  const { min, max } = fixBounds(), m = fixMonthNow(), st = fixMonthStats(m);
+  const L = (usd) => fmtIn(fromUSD(usd, S.settings.localCurrency), S.settings.localCurrency);
+  const past = m < currentMonth();
+  return `${periodNavHTML('fix', m, min, max)}
+    <div class="month-sum">
+      <div><span>Entró</span><b class="money up">${L(st.inc)}</b></div>
+      <div><span>Pagaste</span><b class="money">${L(st.out)}</b></div>
+      <div><span>${past ? 'Sin registrar' : 'Falta pagar'}</span><b class="money ${past && st.missUSD > 0 ? 'down' : ''}">${L(st.missUSD)}</b></div>
+    </div>`;
+}
+function fixHistoryHTML() {
+  const { min, max } = fixBounds(), m = fixMonthNow();
+  const L = (usd) => fmtIn(fromUSD(usd, S.settings.localCurrency), S.settings.localCurrency);
+  const rows = [];
+  for (let k = max; k >= min && rows.length < 12; k = addMonths(k, -1)) {
+    const st = fixMonthStats(k);
+    if (!st.nOut && !st.inc && !st.miss.length) continue;
+    rows.push({ m: k, usd: st.out, meta: `pagaste ${st.nOut} · entró ${L(st.inc)}`, warn: st.miss.length ? `${st.miss.length} ${k < currentMonth() ? 'sin registrar' : `por pagar`}` : '' });
+  }
+  return periodListHTML('fix', m, rows, 'pago');
 }
 
 // Gastos que se repiten todos los meses con monto parecido (ej. seguro, suscripción del banco) y todavía no son fijos
@@ -5161,20 +5262,49 @@ function spendPlan() {
     && (freqOf(r) === 'semanal' || (!recurringTx(r, month) && !(r.day && (r.skip || []).includes(month)))));
   const leftOf = (r) => (freqOf(r) !== 'semanal' ? Number(r.amount) || 0
     : weekDates(r, month).filter((d) => d >= today && d >= (r.startDate || '') && !weekTx(r, d) && !(r.skip || []).includes(d)).length * (Number(r.amount) || 0));
-  const income = sum(txs.filter((t) => t.type === 'ingreso')) + pendingRules('ingreso').filter(countsInPlan).reduce((s, r) => s + toUSD(leftOf(r), r.currency), 0);
-  // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
-  const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(leftOf(r), r.currency), 0);
+  // Detalle de cada parte (para "¿Cómo se calcula?"): los totales salen de sumar estas mismas listas
+  // state: 'ok' = ya entró / ya pagado · 'pend' = falta · 'late' = venció sin pagar · 'skip' = no se cuenta (no suma)
+  const items = { income: [], fixed: [], sched: [], loans: [] };
+  const ruleName = (id) => S.recurring.find((r) => r.id === id)?.name;
+  const weeksLeft = (r) => (freqOf(r) === 'semanal' ? Math.round(leftOf(r) / (Number(r.amount) || 1)) : 0);
+  // Lo que ya pasó en el mes (los fijos semanales se juntan: "Cuota ×2")
+  const grouped = (list, nameOf) => {
+    const m = new Map();
+    for (const t of list) {
+      const k = t.recurringId || t.scheduledId || t.id;
+      const g = m.get(k) || { name: nameOf(t), usd: 0, n: 0, date: t.date, state: 'ok' };
+      g.usd += txUSD(t); g.n++; if (t.date > g.date) g.date = t.date;
+      m.set(k, g);
+    }
+    return [...m.values()];
+  };
+  items.income.push(...grouped(txs.filter((t) => t.type === 'ingreso'), (t) => ruleName(t.recurringId) || t.note || t.category));
+  for (const r of pendingRules('ingreso')) {
+    const usd = toUSD(leftOf(r), r.currency);
+    if (!(usd > 0)) continue;
+    items.income.push(countsInPlan(r) ? { name: r.name, usd, state: 'pend', weeks: weeksLeft(r) } : { name: r.name, usd, state: 'skip' });
+  }
+  items.fixed.push(...grouped(txs.filter((t) => t.type === 'gasto' && t.recurringId), (t) => ruleName(t.recurringId) || t.note || t.category));
+  for (const r of pendingRules('gasto')) { const usd = toUSD(leftOf(r), r.currency); if (usd > 0) items.fixed.push({ name: r.name, usd, state: 'pend', weeks: weeksLeft(r) }); }
   // Gastos programados: los de este mes (pagados o no) y los vencidos sin pagar
-  const sched = sum(txs.filter((t) => t.type === 'gasto' && t.scheduledId)) + schedDueThisMonth().reduce((s, x) => s + toUSD(x.amount, x.currency), 0);
+  items.sched.push(...grouped(txs.filter((t) => t.type === 'gasto' && t.scheduledId), (t) => (S.scheduled || []).find((x) => x.id === t.scheduledId)?.name || t.note || t.category));
+  for (const x of schedDueThisMonth()) items.sched.push({ name: x.name, usd: toUSD(x.amount, x.currency), state: x.date < today ? 'late' : 'pend', date: x.date });
   // Cuotas de préstamos que DEBÉS y vencen este mes (pagadas o no): cuentan como un gasto fijo
-  const loanDue = (S.loans || []).filter((l) => l.dir === 'debo').reduce((s, l) => {
+  for (const l of (S.loans || []).filter((x) => x.dir === 'debo')) {
     const lp = loanPlan(l);
-    if (!lp) return s;
-    let amt = 0;
-    for (let k = 0; k < lp.n; k++) if (lp.dateOf(k).startsWith(month)) amt += lp.cuota;
+    if (!lp) continue;
+    let amt = 0, n = 0;
+    for (let k = 0; k < lp.n; k++) if (lp.dateOf(k).startsWith(month)) { amt += lp.cuota; n++; }
     const paidM = (l.payments || []).filter((x) => x.date?.startsWith(month)).reduce((a, x) => a + (Number(x.amount) || 0), 0);
-    return s + toUSD(Math.min(amt, lp.left + paidM), l.currency);
-  }, 0);
+    const usd = toUSD(Math.min(amt, lp.left + paidM), l.currency);
+    if (usd > 0 || n) items.loans.push({ name: `Cuota a ${l.person}`, usd, n, state: paidM + 0.005 >= Math.min(amt, lp.left + paidM) ? 'ok' : 'pend' });
+  }
+  const total = (list) => list.filter((x) => x.state !== 'skip').reduce((s, x) => s + x.usd, 0);
+  const income = total(items.income);
+  // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
+  const fixed = total(items.fixed);
+  const sched = total(items.sched);
+  const loanDue = total(items.loans);
   // Ahorro: lo que necesita por mes CADA meta con fecha, sumado. Sin metas con fecha: el % que elegiste
   const goals = S.goals.map((g) => ({ g, need: goalMath(g, P).needed })).filter((x) => x.need != null).map((x) => ({ name: x.g.name, need: Math.max(0, x.need) }));
   const rate = Number(S.settings.saveRate ?? 10);
@@ -5186,7 +5316,7 @@ function spendPlan() {
   const perDay = (budget - spentBefore) / daysLeft;
   const spent = spentBefore + spentToday;
   // monthLeft < 0 = ya gastaste más de lo que tenías para todo el mes
-  return { income, fixed, sched, loanDue, save, budget, rate, goals, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
+  return { income, fixed, sched, loanDue, items, save, budget, rate, goals, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
 }
 
 /* ---------------- "Acumulado sin gastar" ----------------
@@ -5357,6 +5487,17 @@ function spendInfo() {
   const row = (a, b, c = '') => `<div class="calc-row ${c}"><span>${a}</span><b class="money">${b}</b></div>`;
   const incomes = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso');
   const overMonth = p.monthLeft < 0;
+  // Una fila que se toca y muestra de qué está hecha (qué ya pasó y qué falta)
+  const detRow = (label, usd, list, kind = 'gasto') => {
+    if (!list.length) return row(label, L(usd));
+    const st = (x) => x.state === 'ok' ? `<small class="up">✓ ${kind === 'ingreso' ? 'entró' : 'pagado'}${x.n > 1 ? ` ×${x.n}` : ''}${x.date ? ` el ${fmtDate(x.date).slice(0, 5)}` : ''}</small>`
+      : x.state === 'late' ? `<small class="warn-text">venció el ${fmtDate(x.date).slice(0, 5)}, sin pagar</small>`
+      : x.state === 'skip' ? '<small class="muted">no se cuenta hasta que entre</small>'
+      : `<small class="muted">${x.weeks ? `falta${x.weeks > 1 ? 'n' : ''} ${x.weeks} ${x.weeks > 1 ? 'veces' : 'vez'}` : x.date ? `vence el ${fmtDate(x.date).slice(0, 5)}` : kind === 'ingreso' ? 'falta que entre' : 'falta pagar'}</small>`;
+    const order = { late: 0, pend: 1, ok: 2, skip: 3 };
+    return `<details class="calc-det"><summary class="calc-row"><span>${label} <span class="calc-n">${list.filter((x) => x.state !== 'skip').length}</span></span><b class="money">${L(usd)}</b></summary>
+      <div class="calc-items">${[...list].sort((a, b) => order[a.state] - order[b.state] || b.usd - a.usd).map((x) => `<div class="calc-item ${x.state === 'skip' ? 'skip' : ''}"><span>${esc(x.name)} ${st(x)}</span><span class="money">${L(x.usd)}</span></div>`).join('')}</div></details>`;
+  };
   openForm({
     title: '¿Cómo se calcula?',
     fields: [
@@ -5366,10 +5507,10 @@ function spendInfo() {
         label: `${r.name} · ${fmtIn(r.amount, r.currency)}${freqUnit(r)} · ${isSure(r) ? 'seguro' : 'a veces'}${recurringTx(r, currentMonth()) ? ' (ya entró: se cuenta)' : ''}`,
       })),
       { type: 'html', html: `<div class="calc">
-        ${row('Te entra este mes', L(p.income))}
-        ${row('− Fijos', L(p.fixed))}
-        ${p.sched > 0 ? row('− Programados', L(p.sched)) : ''}
-        ${p.loanDue > 0 ? row('− Cuotas de préstamos', L(p.loanDue)) : ''}
+        ${detRow('Te entra este mes', p.income, p.items.income, 'ingreso')}
+        ${detRow('− Fijos', p.fixed, p.items.fixed)}
+        ${p.sched > 0 ? detRow('− Programados', p.sched, p.items.sched) : ''}
+        ${p.loanDue > 0 ? detRow('− Cuotas de préstamos', p.loanDue, p.items.loans) : ''}
         ${p.goals.length ? p.goals.map((x) => row(`− Ahorro para "${esc(x.name)}"`, L(x.need))).join('') : row(`− Ahorro (${p.rate}%)`, L(p.save))}
         ${row('= Para gastar este mes', L(p.budget), 'total')}
         ${overMonth ? `
@@ -6768,6 +6909,9 @@ const ACTIONS = {
     if (t.investment) return txForm(null, t);
     quickEntry(null, t);
   },
+  // ‹ Mes › de Programados y Fijos (data-id "sched|-1" o "fix|2026-10")
+  periodShift: (id) => { const [k, d] = id.split('|'); periodMonth[k] = addMonths(periodMonth[k] || currentMonth(), Number(d)); render(); },
+  periodSet: (id) => { const [k, m] = id.split('|'); periodMonth[k] = m; render(); },
   monthShift: (d) => {
     const m = addMonths(S.settings.txMonth || currentMonth(), Number(d));
     if (m > currentMonth()) return;
