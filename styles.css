@@ -856,3 +856,28 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .others-box .calc-row > span { display: flex; flex-direction: column; min-width: 0; }
 .others-memo { font-size: 12.5px; color: var(--muted); }
 .tile .status { white-space: normal; max-width: 100%; }
+
+/* Mi plan */
+.plan-profile .plan-level { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 24px; }
+.plan-profile.conservador .plan-level { color: var(--c3); }
+.plan-profile.moderado .plan-level { color: var(--accent); }
+.plan-profile.arriesgado .plan-level { color: var(--c2); }
+.quiz-q { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
+.quiz-q:last-child { border-bottom: 0; }
+.quiz-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.quiz-opt { position: relative; display: flex; align-items: center; min-height: 44px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); font-size: 14px; cursor: pointer; }
+.quiz-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.quiz-opt:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); color: var(--text); font-weight: 600; }
+.plan-range { width: 100%; margin: 10px 0 6px; accent-color: var(--c3); }
+.plan-split { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; flex-wrap: wrap; }
+.plan-split span { display: inline-flex; align-items: center; gap: 6px; }
+.plan-row2 { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.plan-stack { height: 16px; margin: 0; }
+.plan-classes { margin-top: 8px; }
+.plan-classes select { width: auto; max-width: 150px; }
+.plan-note { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.plan-note span { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.plan-note textarea { font-family: inherit; font-size: 15px; min-height: 76px; line-height: 1.4; }
+.plan-step.done span { text-decoration: line-through; color: var(--muted); }
+.plan-add { display: flex; gap: 8px; margin-top: 10px; }
+.plan-add input { flex: 1; min-width: 0; }

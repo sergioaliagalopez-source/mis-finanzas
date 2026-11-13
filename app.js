@@ -28,6 +28,7 @@ const ICONS = {
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
   pie: '<path d="M21 12A9 9 0 1 1 12 3"/><path d="M12 3a9 9 0 0 1 9 9h-9z"/>',
   party: '<path d="M4 20l4.5-11.5 7 7z"/><path d="M13 3.5v2.5M19 9.5h2M17 6l1.8-1.8M11.5 8.5c1.2-1.2 3-1.2 4 0M15.5 12.5c1.2-1 2.8-.8 3.5.2"/>',
+  shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v3h16v-3"/>',
   dollar: '<path d="M12 2.5v19"/><path d="M17 6.5c-.8-1.3-2.6-2-5-2-2.8 0-4.5 1.3-4.5 3.3 0 4.7 9.5 2.4 9.5 7.4 0 2-1.8 3.3-5 3.3-2.4 0-4.2-.8-5-2.2"/>',
@@ -174,6 +175,7 @@ const MORE_GROUPS = [
     ['cuentas', 'Cuentas', 'wallet', 'Saldos y tarjetas'],
     ['prestamos', 'Préstamos', 'handshake', 'Lo que prestás o debés'],
     ['inversiones', 'Inversiones', 'trending', 'Cripto, oro, acciones'],
+    ['miplan', 'Mi plan', 'shield', 'Perfil, plan y notas'],
     ['dolar', 'Dólar', 'dollar', 'Tipo de cambio'],
   ]],
   ['Entender tus números', [
@@ -990,6 +992,7 @@ function viewInversiones() {
     ${tile('Ganancia / pérdida', t.cost ? `<span class="${cls(gp)}">${fmtMoney(gp, { sign: true })}</span>` : '—', t.cost ? fmtPct((gp / t.cost) * 100) : 'Cargá el precio promedio para verla')}
     ${tile('Precios actualizados', `<span style="font-size:16px">${fmtDateTime(S.settings.lastRefresh)}</span>`, 'Tocá Actualizar para refrescar')}
   </div>
+  <a href="#" class="link-row" data-action="go" data-id="miplan">${icon('shield', 18)}<span>Mi plan</span><span class="spacer"></span><span class="muted small">${planProfile() ? `Perfil ${PLAN_LEVELS[planProfile().level].name.toLowerCase()}${planOf().target != null && planAlloc().pctFija != null ? ` · hoy ${fmtNum(planAlloc().pctFija, 0)}/${fmtNum(100 - planAlloc().pctFija, 0)}` : ''}` : 'Definí tu perfil'}</span>${icon('right', 18)}</a>
   <section class="card">
     <div class="card-head"><h2>Mis posiciones</h2>
       <div class="toolbar"><button class="btn" data-action="go" data-id="ajustes" data-anchor="importar">Importar desde mi chat</button>
@@ -2956,6 +2959,8 @@ function mergeRemote(R) {
   }
   S.checkins = [...new Set([...(S.checkins || []), ...(R.checkins || [])])];
   S.dayBudgets = mergeDayBudgets(S.dayBudgets, R.dayBudgets);
+  // Mi plan: gana la versión editada más tarde
+  if ((R.plan?.u || '') > (S.plan?.u || '')) S.plan = JSON.parse(JSON.stringify(R.plan));
   // Precios guardados día por día y correcciones de saldo: se juntan los de los dos dispositivos
   for (const [d, px] of Object.entries(R.priceLog || {})) S.priceLog[d] = { ...px, ...(S.priceLog?.[d] || {}) };
   S.priceHist = { ...(R.priceHist || {}), ...(S.priceHist || {}) };
@@ -3600,6 +3605,151 @@ function loansHTML() {
     <div class="list">${open.map(row).join('') || '<div class="empty">Anotá lo que prestás o te prestan para que no se olvide. Tip: en el chat podés decir "le presté 50 a Juan".</div>'}</div>
     ${closed.length ? `<details class="small" style="margin-top:8px"><summary class="muted">Saldados (${closed.length})</summary><div class="list">${closed.map(row).join('')}</div></details>` : ''}
   </section>`;
+}
+
+/* ---------------- Mi plan: perfil de inversor, plan de cartera, notas y pasos ----------------
+   El perfil sale de 6 preguntas + el reparto que elegís (renta fija / variable), no de leer las notas.
+   Es una guía para vos, no asesoramiento financiero. */
+
+const PLAN_QUIZ = [
+  ['¿Para cuándo vas a necesitar esta plata?', ['En menos de 1 año', 'En 1 a 3 años', 'En 3 a 5 años', 'En más de 5 años']],
+  ['Si tus inversiones caen 20% en un mes, ¿qué hacés?', ['Vendo todo', 'Vendo una parte', 'Espero sin tocar nada', 'Compro más']],
+  ['¿Qué preferís?', ['Ganar poco pero seguro', 'Un poco más, con pocos altibajos', 'Más, aunque suba y baje', 'Lo máximo, aunque a veces pierda mucho']],
+  ['¿Cuánto sabés de inversiones?', ['Nada', 'Lo básico', 'Bastante', 'Mucho']],
+  ['Si perdieras esta plata, ¿afecta tu día a día?', ['Mucho', 'Algo', 'Poco', 'Nada']],
+  ['¿Tenés un fondo de emergencia (plata para 3 a 6 meses de gastos)?', ['No', 'Menos de 3 meses', 'Sí, de 3 a 6 meses', 'Más de 6 meses']],
+];
+const PLAN_LEVELS = {
+  conservador: { name: 'Conservador', icon: 'shield', text: 'Priorizás no perder. Te queda bien más renta fija (60–80%): depósitos a plazo fijo, Meru, ahorros con rendimiento.', range: [0, 40] },
+  moderado: { name: 'Moderado', icon: 'pie', text: 'Buscás crecer sin grandes sustos. Un reparto típico es 40–60% en renta variable y el resto en renta fija.', range: [30, 70] },
+  arriesgado: { name: 'Arriesgado', icon: 'trending', text: 'Aceptás caídas fuertes para crecer más a largo plazo. Suele ser 70–100% en renta variable. Lo clave: tener un fondo de emergencia aparte y no vender en pánico.', range: [60, 100] },
+};
+const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'FDUSD', 'TUSD', 'USDP', 'PYUSD']);
+const planOf = () => S.plan || (S.plan = {});
+const touchPlan = () => { planOf().u = new Date().toISOString(); };
+const levelOf = (x) => (x == null ? null : x < 0.4 ? 'conservador' : x < 0.68 ? 'moderado' : 'arriesgado');
+
+// Perfil: 60% las respuestas, 40% el reparto que elegiste (si falta uno, se usa el otro)
+function planProfile() {
+  const P = planOf(), ans = P.quiz || {};
+  const answered = PLAN_QUIZ.filter((_, i) => ans[i] != null).length;
+  const quiz = answered === PLAN_QUIZ.length ? PLAN_QUIZ.reduce((s, _, i) => s + ans[i], 0) / (PLAN_QUIZ.length * 3) : null;
+  const v = P.target != null ? (100 - P.target) / 100 : null; // target = % en renta fija
+  if (quiz == null && v == null) return null;
+  const score = quiz != null && v != null ? 0.6 * quiz + 0.4 * v : quiz ?? v;
+  return { level: levelOf(score), score, quiz, quizLevel: levelOf(quiz), planLevel: levelOf(v), answered, variable: v != null ? Math.round(v * 100) : null };
+}
+
+// Qué cuenta como renta fija y qué como variable (lo podés cambiar en cada cosa)
+function planItems() {
+  const cls = planOf().classes || {};
+  const items = [];
+  for (const h of S.holdings) {
+    const usd = holdingValue(h);
+    if (!(usd > 0)) continue;
+    const def = STABLES.has(h.symbol) ? 'fija' : 'variable';
+    items.push({ id: h.id, name: h.symbol, kind: ASSET_TYPES[h.assetType] || '', usd, def, cls: cls[h.id] || def });
+  }
+  for (const a of S.accounts) {
+    if (a.type === 'credito') continue;
+    const usd = toUSD(a.balance, a.currency);
+    if (!(usd > 0)) continue;
+    const def = effectiveApy(a) > 0 ? 'fija' : 'fuera'; // cuentas con rendimiento (ej. Meru) = renta fija; la plata para gastar no cuenta
+    items.push({ id: a.id, name: a.name, kind: ACCOUNT_TYPES[a.type]?.label || '', usd, def, cls: cls[a.id] || def });
+  }
+  return items;
+}
+function planAlloc() {
+  const items = planItems();
+  const fija = items.filter((x) => x.cls === 'fija').reduce((s, x) => s + x.usd, 0);
+  const variable = items.filter((x) => x.cls === 'variable').reduce((s, x) => s + x.usd, 0);
+  const total = fija + variable;
+  return { items, fija, variable, total, pctFija: total > 0 ? (fija / total) * 100 : null };
+}
+
+const planBar = (fija) => `<div class="stack plan-stack">${fija > 0 ? `<div style="flex:${fija};background:var(--c3)"></div>` : ''}${fija < 100 ? `<div style="flex:${100 - fija};background:var(--c2)"></div>` : ''}</div>`;
+
+function viewMiPlan() {
+  const P = planOf(), pr = planProfile(), al = planAlloc();
+  const target = P.target ?? null, ans = P.quiz || {};
+  const L = pr && PLAN_LEVELS[pr.level];
+  const steps = P.steps || [];
+  const done = steps.filter((s) => s.done).length;
+  // Cómo vas: tu reparto real contra tu plan
+  let compare = '';
+  if (al.total > 0) {
+    const real = al.pctFija;
+    const diff = target != null ? real - target : null;
+    const move = target != null ? Math.abs(al.fija - (target / 100) * al.total) : 0;
+    compare = `<div class="plan-row2"><span class="muted small">Tu plan</span>${target != null ? planBar(target) : '<div class="small muted">Elegí tu reparto arriba.</div>'}<span class="small">${target != null ? `${target}% fija · ${100 - target}% variable` : ''}</span></div>
+      <div class="plan-row2"><span class="muted small">Hoy</span>${planBar(real)}<span class="small"><b>${fmtNum(real, 0)}% fija · ${fmtNum(100 - real, 0)}% variable</b> · <span class="money">${fmtMoney(al.total)}</span></span></div>
+      ${diff == null ? '' : Math.abs(diff) < 5
+        ? `<div class="safe-line ok">${icon('check', 16)}<span>Vas según tu plan (diferencia de ${fmtNum(Math.abs(diff), 0)}%).</span></div>`
+        : `<div class="safe-line bad">${icon('alert', 16)}<span>${diff < 0 ? `Estás <b>${fmtNum(-diff, 0)}% más arriesgado</b> que tu plan` : `Estás <b>${fmtNum(diff, 0)}% más conservador</b> que tu plan`}. Para volver: pasá unos <b class="money">${fmtMoney(move)}</b> de renta ${diff < 0 ? 'variable a fija' : 'fija a variable'}, o hacé tus próximas compras en renta ${diff < 0 ? 'fija' : 'variable'}.</span></div>`}`;
+  } else compare = '<div class="small muted">Cuando tengas inversiones o una cuenta con rendimiento (ej. Meru), acá ves tu reparto real.</div>';
+  const clsOpts = (x) => [['fija', 'Renta fija'], ['variable', 'Renta variable'], ['fuera', 'No cuenta']].map(([v, l]) => `<option value="${v}" ${x.cls === v ? 'selected' : ''}>${l}</option>`).join('');
+  const note = (k, label, ph) => `<label class="plan-note"><span>${label}</span><textarea data-plan-note="${k}" rows="3" placeholder="${esc(ph)}">${esc(P.notes?.[k] || '')}</textarea></label>`;
+  return `
+  <section class="card plan-profile ${pr ? pr.level : ''}">
+    <div class="muted small">Tu perfil de inversor</div>
+    ${pr ? `<div class="plan-level">${icon(L.icon, 22)}<b>${L.name}</b></div>
+      <p class="small" style="margin:4px 0 0;color:var(--text-2)">${L.text}</p>
+      ${pr.quizLevel && pr.planLevel && pr.quizLevel !== pr.planLevel ? `<div class="safe-line bad">${icon('alert', 16)}<span>Por tus respuestas sos <b>${PLAN_LEVELS[pr.quizLevel].name.toLowerCase()}</b>, pero tu plan de ${pr.variable}% en renta variable es de un perfil <b>${PLAN_LEVELS[pr.planLevel].name.toLowerCase()}</b>. Revisá si tu plan va con vos.</span></div>` : ''}
+      ${pr.quiz == null ? `<div class="small muted" style="margin-top:6px">Calculado sólo con tu reparto. Respondé las preguntas para que sea más preciso.</div>` : ''}`
+    : '<p class="small" style="margin:6px 0 0;color:var(--text-2)">Respondé las preguntas y elegí tu reparto para saber si sos <b>conservador</b>, <b>moderado</b> o <b>arriesgado</b>.</p>'}
+  </section>
+
+  <details class="more-box" ${pr?.quiz == null ? 'open' : ''}>
+    <summary>${pr?.quiz == null ? `Preguntas (${pr?.answered || 0} de ${PLAN_QUIZ.length})` : 'Cambiar mis respuestas'}</summary>
+    <div class="more-inner"><section class="card">${PLAN_QUIZ.map(([q, opts], i) => `<div class="quiz-q"><b>${i + 1}. ${q}</b>
+      <div class="quiz-opts">${opts.map((o, j) => `<label class="quiz-opt"><input type="radio" name="pq_${i}" value="${j}" ${ans[i] === j ? 'checked' : ''}><span>${o}</span></label>`).join('')}</div></div>`).join('')}</section></div>
+  </details>
+
+  <section class="card">
+    <div class="card-head" style="margin-bottom:8px"><h2>${icon('pie', 18)} Mi plan de cartera</h2></div>
+    <label for="planFija" class="small" style="color:var(--text-2)">¿Cómo querés repartir lo que invertís?</label>
+    <input type="range" id="planFija" min="0" max="100" step="5" value="${target ?? 50}" class="plan-range">
+    <div class="plan-split"><span><i class="swatch" style="background:var(--c3)"></i> Renta fija <b id="planFijaVal">${target ?? 50}%</b></span><span><i class="swatch" style="background:var(--c2)"></i> Renta variable <b id="planVarVal">${100 - (target ?? 50)}%</b></span></div>
+    ${target == null ? '<div class="small muted">Mové la barra para guardar tu plan.</div>' : ''}
+    <div class="small muted" style="margin-top:6px">Renta fija: ahorro con rendimiento, depósitos a plazo, stablecoins. Renta variable: acciones, ETF, cripto (y oro, si querés).</div>
+  </section>
+
+  <section class="card">
+    <div class="card-head" style="margin-bottom:8px"><h2>${icon('chart', 18)} Cómo vas</h2></div>
+    ${compare}
+    ${al.items.length ? `<details class="plan-classes"><summary class="small">Qué cuenta como fija o variable</summary>
+      <div class="list">${al.items.map((x) => `<div class="list-row"><div class="grow"><div class="name">${esc(x.name)}</div><div class="meta">${esc(x.kind)} · <span class="money">${fmtMoney(x.usd)}</span></div></div>
+        <select data-plan-class="${x.id}" aria-label="Clase de ${esc(x.name)}">${clsOpts(x)}</select></div>`).join('')}</div></details>` : ''}
+  </section>
+
+  <section class="card">
+    <div class="card-head" style="margin-bottom:8px"><h2>${icon('book', 18)} Mis notas</h2></div>
+    ${note('ahorro', 'Mi plan de ahorro', 'ej. Ahorro el 20% de lo que me entra el día que cobro, antes de gastar.')}
+    ${note('inversion', 'Mi plan de inversión', 'ej. 20% renta fija en Meru, 80% renta variable: 50% VOO, 20% BTC, 10% oro (PAXG).')}
+    ${note('riesgo', 'Cómo manejo el riesgo', 'ej. Si el mercado cae, no vendo: compro un poco más cada mes. Reviso mi cartera una vez por mes.')}
+    <div class="small muted">Se guarda solo mientras escribís.</div>
+  </section>
+
+  <section class="card">
+    <div class="card-head" style="margin-bottom:6px"><h2>${icon('check', 18)} Los pasos que sigo</h2>${steps.length ? `<span class="muted small">${done} de ${steps.length}</span>` : ''}</div>
+    <div class="list">${steps.map((s) => `<div class="list-row plan-step ${s.done ? 'done' : ''}"><label class="check-line grow"><input type="checkbox" data-plan-step="${s.id}" ${s.done ? 'checked' : ''}><span>${esc(s.text)}</span></label>
+      <button class="btn sm ghost icon-only" data-action="planStepDel" data-id="${s.id}" title="Borrar" aria-label="Borrar">${icon('x', 16)}</button></div>`).join('')}</div>
+    <div class="plan-add"><input type="text" id="planStepNew" placeholder="ej. Comprar VOO todos los meses el día 5" autocomplete="off"><button class="btn primary" data-action="planStepAdd">Agregar</button></div>
+  </section>
+  <p class="muted small" style="margin:0">Es una guía para ordenar tu plan, no asesoramiento financiero profesional.</p>`;
+}
+
+// Para el informe: tu plan, tu perfil y cómo vas
+function planReport() {
+  const P = planOf(), pr = planProfile(), al = planAlloc();
+  return {
+    perfil: pr ? PLAN_LEVELS[pr.level].name : '', perfilRespuestas: pr?.quizLevel ? PLAN_LEVELS[pr.quizLevel].name : '',
+    objetivoFija: P.target ?? null, realFija: al.pctFija != null ? round2(al.pctFija) : null, totalUSD: round2(al.total),
+    items: al.items.map((x) => ({ nombre: x.name, tipo: x.kind, clase: x.cls === 'fija' ? 'Renta fija' : x.cls === 'variable' ? 'Renta variable' : 'No cuenta', usd: round2(x.usd) })),
+    notas: [['Mi plan de ahorro', P.notes?.ahorro], ['Mi plan de inversión', P.notes?.inversion], ['Cómo manejo el riesgo', P.notes?.riesgo]].filter(([, t]) => t),
+    pasos: (P.steps || []).map((s) => ({ paso: s.text, hecho: s.done ? 'Sí' : 'No' })),
+    respuestas: PLAN_QUIZ.map(([q, o], i) => [q, P.quiz?.[i] != null ? o[P.quiz[i]] : '']).filter(([, a]) => a),
+  };
 }
 
 /* ---------------- Tus categorías ----------------
@@ -4324,6 +4474,7 @@ async function buildReport(fromM, toM, onStep) {
     cuentas: S.accounts.map((a) => ({ cuenta: a.name, tipo: ACCOUNT_TYPES[a.type]?.label || a.type, moneda: a.currency, saldo: Number(a.balance) || 0, saldoLocal: R2(fromUSD(toUSD(a.balance, a.currency), cur)) })),
     fijos: S.recurring.map((r) => ({ nombre: r.name, tipo: r.type === 'ingreso' ? 'Ingreso' : 'Gasto', monto: Number(r.amount) || 0, moneda: r.currency, dia: r.day || 'Sin día fijo', categoria: r.category, seRepite: repeats(r) ? 'Sí' : 'No', seguro: r.type === 'ingreso' ? (isSure(r) ? 'Sí' : 'A veces (el monto real puede variar)') : '' })),
     metas: S.goals.map((g) => ({ meta: g.name, objetivo: Number(g.target) || 0, moneda: g.currency, fecha: g.date || '' })),
+    plan: planReport(),
   };
 }
 
@@ -4376,6 +4527,20 @@ async function reportPDF(R) {
   table(['Cuenta', 'Tipo', 'Moneda', 'Saldo', `En ${sym}`], R.cuentas.map((a) => [a.cuenta, a.tipo, a.moneda, n(a.saldo), money(a.saldoLocal)]));
   if (R.fijos.length) { title('Ingresos y gastos fijos'); table(['Nombre', 'Tipo', 'Monto', 'Moneda', 'Día', 'Categoría', 'Se repite', 'Seguro'], R.fijos.map((f) => [f.nombre, f.tipo, n(f.monto), f.moneda, f.dia, f.categoria, f.seRepite, f.seguro])); }
   if (R.metas.length) { title('Metas'); table(['Meta', 'Objetivo', 'Moneda', 'Para'], R.metas.map((g) => [g.meta, n(g.objetivo), g.moneda, g.fecha])); }
+  if (R.plan.perfil || R.plan.objetivoFija != null || R.plan.notas.length || R.plan.pasos.length) {
+    const p = R.plan;
+    title('Mi plan (perfil, reparto y notas)');
+    table(['Dato', 'Valor'], [
+      ['Perfil de inversor', p.perfil || '-'], ['Perfil según las respuestas', p.perfilRespuestas || '-'],
+      ['Plan: renta fija / variable', p.objetivoFija != null ? `${p.objetivoFija}% / ${100 - p.objetivoFija}%` : '-'],
+      ['Hoy: renta fija / variable', p.realFija != null ? `${n(p.realFija, 0)}% / ${n(100 - p.realFija, 0)}% (US$ ${n(p.totalUSD)})` : '-'],
+    ], { columnStyles: { 0: { cellWidth: 200 } } });
+    if (p.items.length) table(['Activo o cuenta', 'Tipo', 'Cuenta como', 'Valor USD'], p.items.map((x) => [x.nombre, x.tipo, x.clase, n(x.usd)]));
+    for (const [t, txt] of p.notas) { title(t, 11); para(txt); }
+    if (p.pasos.length) { title('Los pasos que sigo', 11); table(['Paso', 'Hecho'], p.pasos.map((s) => [s.paso, s.hecho])); }
+    if (p.respuestas.length) { title('Respuestas del perfil', 11); table(['Pregunta', 'Respuesta'], p.respuestas); }
+    note('El perfil es una guía, no asesoramiento financiero.');
+  }
   title('Notas para el análisis');
   for (const t of REPORT_NOTES) para(`- ${t}`, 8.5);
   for (const x of R.meses) {
@@ -4477,6 +4642,15 @@ async function reportXLSX(R) {
   add('Saldos diarios', R.meses.flatMap((x) => x.saldos.map((s) => ({ Fecha: s.fecha, Cuenta: s.cuenta, Moneda: s.moneda, Saldo: s.saldo, [`Saldo en ${sym}`]: s.saldoLocal, Estimado: s.estimado }))));
   add('Patrimonio diario', R.meses.flatMap((x) => x.patrimonio.map((p) => ({ Fecha: p.fecha, [`Patrimonio ${sym}`]: p.patrimonio, [`Liquidez ${sym}`]: p.liquidez, [`Inversiones ${sym}`]: p.inversiones, [`Deuda ${sym}`]: p.deuda }))));
   add('Cuentas', R.cuentas.map((a) => ({ Cuenta: a.cuenta, Tipo: a.tipo, Moneda: a.moneda, 'Saldo de hoy': a.saldo, [`En ${sym}`]: a.saldoLocal })));
+  add('Mi plan', [
+    { Dato: 'Perfil de inversor', Valor: R.plan.perfil }, { Dato: 'Perfil según las respuestas', Valor: R.plan.perfilRespuestas },
+    { Dato: 'Plan: % renta fija', Valor: R.plan.objetivoFija }, { Dato: 'Plan: % renta variable', Valor: R.plan.objetivoFija != null ? 100 - R.plan.objetivoFija : null },
+    { Dato: 'Hoy: % renta fija', Valor: R.plan.realFija }, { Dato: 'Hoy: % renta variable', Valor: R.plan.realFija != null ? round2(100 - R.plan.realFija) : null }, { Dato: 'Total invertido USD', Valor: R.plan.totalUSD },
+    ...R.plan.items.map((x) => ({ Dato: `${x.nombre} (${x.tipo})`, Valor: `${x.clase} · US$ ${x.usd}` })),
+    ...R.plan.notas.map(([t, txt]) => ({ Dato: t, Valor: txt })),
+    ...R.plan.pasos.map((s) => ({ Dato: `Paso: ${s.paso}`, Valor: s.hecho === 'Sí' ? 'Hecho' : 'Pendiente' })),
+    ...R.plan.respuestas.map(([q, a]) => ({ Dato: q, Valor: a })),
+  ]);
   add('Fijos', R.fijos.map((f) => ({ Nombre: f.nombre, Tipo: f.tipo, Monto: f.monto, Moneda: f.moneda, Día: f.dia, Categoría: f.categoria, 'Se repite': f.seRepite, Seguro: f.seguro })));
   add('Notas', [
     { Nota: `Informe de ${R.meses[0].nombre} a ${R.meses[R.meses.length - 1].nombre}, generado el ${R.generado}.` },
@@ -4885,7 +5059,7 @@ const VIEW_FN = {
   resumen: () => viewResumen(), movimientos: () => viewMovimientos(), plan: () => viewPlan(),
   fijos: () => viewFijos(), programados: () => viewProgramados(), presupuesto: () => viewPresupuesto(), metas: () => viewMetas(),
   cuentas: () => viewCuentas(), prestamos: () => viewPrestamos(), inversiones: () => viewInversiones(), dolar: () => viewDolar(),
-  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), historial: () => viewHistorial(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
+  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), miplan: () => viewMiPlan(), historial: () => viewHistorial(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
 };
 
 /* Menú "Más": una hoja con todas las secciones, agrupadas */
@@ -6211,6 +6385,13 @@ const ACTIONS = {
   tradeDel: (ids) => { const [hid, tid] = ids.split('|'); const h = byId(S.holdings, hid); const t = h?.trades?.find((x) => x.id === tid); if (t) tradeDelete(h, t); },
   qtyAdjust: (id) => qtyAdjustForm(byId(S.holdings, id)),
   catAdd: (type) => customCatForm(type),
+  planStepAdd: () => {
+    const inp = $('#planStepNew'), text = inp?.value.trim();
+    if (!text) { inp?.focus(); return toast('Escribí el paso.'); }
+    const P = planOf(); P.steps = [...(P.steps || []), { id: uid(), text, done: false }]; touchPlan(); save(); render();
+    setTimeout(() => $('#planStepNew')?.focus(), 50);
+  },
+  planStepDel: (id) => { const P = planOf(); P.steps = (P.steps || []).filter((s) => s.id !== id); touchPlan(); save(); render(); },
   catEdit: (id) => { const c = (S.customCats || []).find((x) => x.id === id); if (c) customCatForm(c.type, null, c); },
   fixSuggest: (i) => { const s = fixedSuggestions()[Number(i)]; if (s) recurringForm(null, { type: 'gasto', name: s.name, amount: s.amount, currency: s.currency, accountId: s.accountId, category: s.category }); },
   fixDismiss: (i) => { const s = fixedSuggestions()[Number(i)]; if (!s) return; S.settings.fixDismissed = [...(S.settings.fixDismissed || []), s.key].slice(-100); save(false); render(); },
@@ -6387,6 +6568,26 @@ function bindEvents() {
   });
   // En pantallas táctiles el tooltip no tiene "mouseleave": se oculta al desplazar
   window.addEventListener('scroll', () => { const tip = tipEl(); tip.dataset.owner = ''; tip.hidden = true; }, { passive: true });
+
+  // Mi plan: preguntas, reparto, qué cuenta como fija/variable, notas y pasos (se guardan solos)
+  let noteTimer;
+  document.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t.id === 'planFija') { const v = Number(t.value); $('#planFijaVal').textContent = `${v}%`; $('#planVarVal').textContent = `${100 - v}%`; }
+    if (t.dataset?.planNote) {
+      const P = planOf(); P.notes = { ...(P.notes || {}), [t.dataset.planNote]: t.value };
+      clearTimeout(noteTimer); noteTimer = setTimeout(() => { touchPlan(); save(); }, 700);
+    }
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.dataset?.planNote) { clearTimeout(noteTimer); touchPlan(); save(); }
+    if (t.name?.startsWith('pq_')) { const P = planOf(); P.quiz = { ...(P.quiz || {}), [t.name.slice(3)]: Number(t.value) }; touchPlan(); save(); render(); }
+    if (t.id === 'planFija') { planOf().target = Number(t.value); touchPlan(); save(); render(); }
+    if (t.dataset?.planClass) { const P = planOf(); P.classes = { ...(P.classes || {}), [t.dataset.planClass]: t.value }; touchPlan(); save(); render(); }
+    if (t.dataset?.planStep) { const s = (planOf().steps || []).find((x) => x.id === t.dataset.planStep); if (s) { s.done = t.checked; touchPlan(); save(); render(); } }
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'planStepNew') { e.preventDefault(); ACTIONS.planStepAdd(); } });
 
   // Lo mismo para la pantalla y para la hoja de una sección
   for (const content of [$('#content'), $('#sheet')]) {
