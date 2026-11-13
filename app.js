@@ -1083,10 +1083,13 @@ function viewCuentas() {
 const daysInMonth = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
 // Un fijo con "Se repite todos los meses" desmarcado queda guardado en la lista, pero no se registra ni se espera solo
 const repeats = (r) => r.active !== false;
-// Ingresos fijos que elegiste no contar (ej. una mesada que no sabés si llega) quedan fuera de "Hoy podés gastar"
-const countsInPlan = (r) => r.countInPlan !== false;
 // Ingreso seguro (llega sí o sí, ej. el sueldo) o "a veces" (la mesada, trabajos sueltos). Si no lo elegiste: la familia cuenta como "a veces"
 const isSure = (r) => r.sure ?? !/mesada|familia|papa|mama/i.test(norm(`${r.category} ${r.name}`));
+// ¿Se cuenta en "Hoy podés gastar" ANTES de que entre? Por defecto: los seguros sí; los "a veces" recién cuando entran
+// (cuando tocás "Ya entró" pasan a ser un ingreso real del mes y ahí sí se suman). Si lo elegiste a mano, manda tu elección.
+const countsInPlan = (r) => r.countInPlan ?? isSure(r);
+// Guarda la elección sólo si es distinta de lo que haría la app sola (así, si cambiás "seguro / a veces", se acomoda)
+const planChoice = (count, sure) => (!!count === !!sure ? undefined : !!count);
 const recurringTx = (r, month) => S.transactions.find((t) => t.recurringId === r.id && t.date?.startsWith(month));
 
 // Monto de la regla convertido a la moneda de la cuenta donde entra / sale
@@ -1200,17 +1203,20 @@ function recurringForm(r, preset = null) {
       { name: 'catIngreso', label: 'Categoría', type: 'select', value: r.category, options: catsOf('ingreso').map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
       { name: 'day', label: 'Día del mes', value: r.day || '', placeholder: 'Vacío = sin día fijo', hint: 'Con día: se registra solo. Sin día: te queda pendiente para marcar cuando pase.' },
       { name: 'active', label: 'Se repite todos los meses', type: 'checkbox', value: repeats(r), full: true, hint: 'Desmarcalo si no es todos los meses: queda guardado para registrarlo cuando pase.' },
-      { name: 'countInPlan', label: 'Contarlo en "Hoy podés gastar" (apagalo si no sabés si va a llegar)', type: 'checkbox', value: r.countInPlan !== false, full: true, showIf: (v) => v.type === 'ingreso' },
       { name: 'sure', label: 'Es seguro (llega sí o sí todos los meses, como un sueldo)', type: 'checkbox', value: isSure(r), full: true, showIf: (v) => v.type === 'ingreso' },
+      { name: 'countInPlan', label: 'Contarlo en "Hoy podés gastar" antes de que entre', type: 'checkbox', value: countsInPlan(r), full: true, showIf: (v) => v.type === 'ingreso',
+        hint: 'Si no es seguro, conviene dejarlo apagado: se suma recién cuando toques "Ya entró".' },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este fijo (los movimientos ya registrados quedan)', type: 'checkbox', full: true }]),
     ],
+    // Al marcar / desmarcar "Es seguro", "Contarlo antes de que entre" lo sigue (lo podés cambiar después)
+    onInput: (form, v, changed) => { if (changed === 'sure' && form.elements.countInPlan) form.elements.countInPlan.checked = !!v.sure; },
     onSubmit: (v) => {
       if (v.remove) { S.recurring = S.recurring.filter((x) => x !== r); tombstone(r.id); save(); render(); return; }
       const day = v.day ? Number(v.day) : null;
       if (day != null && !(Number.isInteger(day) && day >= 1 && day <= 31)) return 'El día tiene que ser un número entero del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
-        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? !!v.countInPlan : true, active: !!v.active, sure: v.type === 'ingreso' ? !!v.sure : undefined };
+        category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? planChoice(v.countInPlan, v.sure) : undefined, active: !!v.active, sure: v.type === 'ingreso' ? !!v.sure : undefined };
       // Al crear un fijo o cambiarle el día, sólo se registra solo desde el próximo vencimiento
       // (si el día de este mes ya pasó, ya lo tenés en tu saldo; marcalo a mano si hace falta)
       if (isNew || day !== r.day || (next.active && !repeats(r))) next.startMonth = day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
@@ -1792,9 +1798,15 @@ function insightsFor(a) {
   if (a.small.count >= 8) out.push(['🐜', `Hacés unos ${Math.round(a.small.count)} gastos chicos por mes`, `Compras de hasta ${fmtIn(antLimitLocal(), S.settings.localCurrency)} que suman ${fm(a.small.total)} por mes (${fm(a.small.total * 12)} al año). Los "gastos hormiga" son los más fáciles de recortar.`]);
   if (a.expense > 0) {
     const t = totals();
-    const cover = t.liquid / a.expense;
-    if (cover < 3) out.push(['🛟', 'Tu fondo de emergencia es corto', `Tu liquidez cubre ${fmtNum(cover, 1)} meses de gastos. Lo ideal son 3 a 6 meses: entre ${fm(a.expense * 3)} y ${fm(a.expense * 6)}.`]);
-    else out.push(['🛟', 'Fondo de emergencia cubierto', `Tu liquidez cubre ${fmtNum(cover, 1)} meses de gastos (lo ideal son 3 a 6).`]);
+    // El mismo fondo de emergencia que Mi plan y "Te alcanza para"
+    const F = emergencyFund();
+    const monthly = F.monthly > 0 ? F.monthly : a.expense;
+    const cover = F.usd / monthly;
+    if (F.goal > 0) {
+      if (F.usd < F.goal) out.push(['🛟', 'Completá tu fondo de emergencia', `Tenés ${fm(F.usd)} de tu meta de ${fm(F.goal)} (${pc((F.usd / F.goal) * 100)}): cubre ${fmtNum(cover, 1)} meses de gastos. Completalo antes de invertir más.`]);
+      else out.push(['🛟', 'Fondo de emergencia completo', `Llegaste a tu meta de ${fm(F.goal)}: cubre ${fmtNum(cover, 1)} meses de gastos.`]);
+    } else if (cover < 3) out.push(['🛟', 'Tu fondo de emergencia es corto', `Tu fondo de emergencia (${fm(F.usd)}) cubre ${fmtNum(cover, 1)} meses de gastos. Lo ideal son 3 a 6 meses: entre ${fm(monthly * 3)} y ${fm(monthly * 6)}. Poné tu meta en Mi plan.`]);
+    else out.push(['🛟', 'Fondo de emergencia cubierto', `Tu fondo de emergencia (${fm(F.usd)}) cubre ${fmtNum(cover, 1)} meses de gastos (lo ideal son 3 a 6).`]);
     if (t.debt > 0 && a.income > 0 && t.debt > a.income * 0.3) out.push(['💳', 'Deuda de tarjeta alta', `Debés ${fm(t.debt)}, el ${pc((t.debt / a.income) * 100)} de tu ingreso mensual.`]);
   }
   if (a.saving > 0) out.push(['🎯', 'Si seguís a este ritmo', `En 12 meses juntás ${fm(a.saving * 12)}.`]);
@@ -2101,7 +2113,8 @@ const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId &&
 
 // Números base del plan, todo en USD por mes
 function planNumbers() {
-  const recInc = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && countsInPlan(r)).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
+  // (para proyectar un mes normal se cuentan también los "a veces", salvo que los hayas apagado a mano)
+  const recInc = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && r.countInPlan !== false).reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const recOut = S.recurring.filter((r) => repeats(r) && r.type === 'gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   const interest = monthlyInterestUSD();
   // Gasto variable promedio de los 3 meses anteriores con datos (o lo que va de este mes si recién empezás)
@@ -3725,8 +3738,9 @@ function viewMiPlan() {
   const L = pr && PLAN_LEVELS[pr.level];
   const steps = P.steps || [];
   const done = steps.filter((s) => s.done).length;
-  const eGoal = Number(P.emergencyGoal) || 0, eNow = A.by.emergencia;
-  const suggested = Math.round(monthlyCostUSD() * 3);
+  const EF = emergencyFund();
+  const eGoal = EF.goal, eNow = EF.usd;
+  const suggested = Math.round(EF.monthly * 3);
   const ePct = eGoal > 0 ? Math.min(100, (eNow / eGoal) * 100) : null;
   const eLow = eGoal > 0 && eNow < eGoal;
   const real = A.invested > 0 ? { fija: A.pct('fija'), variable: A.pct('variable'), diversificador: A.pct('diversificador') } : null;
@@ -3753,7 +3767,7 @@ function viewMiPlan() {
 
   <section class="card">
     <div class="card-head" style="margin-bottom:6px"><h2>${icon('shield', 18)} Fondo de emergencia</h2></div>
-    <div class="plan-emerg"><b class="money" style="font-size:20px">${fmtMoney(eNow)}</b><span class="muted small">${eGoal ? `de <span class="money">${fmtMoney(eGoal)}</span>` : 'sin meta todavía'}</span></div>
+    <div class="plan-emerg"><b class="money" style="font-size:20px">${fmtMoney(eNow)}</b><span class="muted small">${eGoal ? `de <span class="money">${fmtMoney(eGoal)}</span>` : 'sin meta todavía'}${EF.months != null ? ` · cubre ${fmtNum(EF.months, 1)} meses de gastos` : ''}</span></div>
     ${ePct != null ? `<div class="meter big"><div class="${eLow ? 'warning' : 'good'}" style="width:${ePct}%"></div></div>` : ''}
     <label class="plan-note" style="margin:10px 0 0"><span>Mi meta (USD)</span><input type="text" inputmode="decimal" id="planEmerg" value="${eGoal ? numInput(eGoal) : ''}" placeholder="${suggested > 0 ? `ej. ${suggested} (3 meses de tus gastos)` : 'ej. 1500'}"></label>
     <div class="small muted" style="margin-top:6px">Es plata para imprevistos, aparte de tus inversiones. Por defecto cuentan tus billeteras y cuentas para gastar.${suggested > 0 ? ` Lo recomendado es 3 a 6 meses de gastos (≈ <span class="money">${fmtMoney(suggested)}</span> a <span class="money">${fmtMoney(suggested * 2)}</span>).` : ''}</div>
@@ -4868,10 +4882,10 @@ function spendPlan() {
   const fixed = sum(txs.filter((t) => t.type === 'gasto' && t.recurringId)) + pendingRules('gasto').reduce((s, r) => s + toUSD(r.amount, r.currency), 0);
   // Gastos programados: los de este mes (pagados o no) y los vencidos sin pagar
   const sched = sum(txs.filter((t) => t.type === 'gasto' && t.scheduledId)) + schedDueThisMonth().reduce((s, x) => s + toUSD(x.amount, x.currency), 0);
-  const g = S.goals[0];
-  const M = g ? goalMath(g, P) : null;
+  // Ahorro: lo que necesita por mes CADA meta con fecha, sumado. Sin metas con fecha: el % que elegiste
+  const goals = S.goals.map((g) => ({ g, need: goalMath(g, P).needed })).filter((x) => x.need != null).map((x) => ({ name: x.g.name, need: Math.max(0, x.need) }));
   const rate = Number(S.settings.saveRate ?? 10);
-  const save = M?.needed != null ? M.needed : Math.max(0, income * rate / 100);
+  const save = goals.length ? goals.reduce((s, x) => s + x.need, 0) : Math.max(0, income * rate / 100);
   const budget = income - fixed - sched - save;
   const spentBefore = sum(txs.filter((t) => isVariable(t) && t.date < today));
   const spentToday = sum(txs.filter((t) => isVariable(t) && t.date === today));
@@ -4879,7 +4893,7 @@ function spendPlan() {
   const perDay = (budget - spentBefore) / daysLeft;
   const spent = spentBefore + spentToday;
   // monthLeft < 0 = ya gastaste más de lo que tenías para todo el mes
-  return { income, fixed, sched, save, budget, rate, goal: M?.needed != null ? g : null, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
+  return { income, fixed, sched, save, budget, rate, goals, spentBefore, spentToday, spent, daysLeft, perDay, todayLeft: perDay - spentToday, monthLeft: budget - spent };
 }
 
 /* ---------------- "Acumulado sin gastar" ----------------
@@ -4943,13 +4957,24 @@ function monthlyCostUSD() {
   return P.recOut + P.avgVariable;
 }
 
-// "Si no entra nada más, aguantás X días": tu plata disponible (sin inversiones, menos lo que debés en tarjetas) ÷ lo que gastás por día
+// Fondo de emergencia: UNA sola cuenta para Mi plan, Consejos y "Te alcanza para".
+// Es lo que está en la categoría "Fondo de emergencia" de Mi plan (por defecto: efectivo, bancos y billeteras;
+// no cuenta lo pendiente de invertir ni las inversiones). Un "mes de gastos" = tus fijos + tu gasto promedio del día a día.
+function emergencyFund() {
+  const usd = planAlloc().by.emergencia || 0;
+  const goal = Number(planOf().emergencyGoal) || 0;
+  const monthly = monthlyCostUSD();
+  return { usd, goal, monthly, months: monthly > 0 ? usd / monthly : null };
+}
+
+// "Si no entra nada más, aguantás X días": tu fondo de emergencia (menos lo que debés en tarjetas) ÷ lo que gastás por día
 function runway() {
   const t = totals();
-  const money = Math.max(0, t.liquid - t.debt);
-  const perMonth = monthlyCostUSD();
+  const F = emergencyFund();
+  const money = Math.max(0, F.usd - t.debt);
+  const perMonth = F.monthly;
   if (!(perMonth > 0) || !hasData()) return null;
-  return { money, perMonth, days: Math.floor(money / (perMonth / 30)) };
+  return { money, debt: t.debt, perMonth, days: Math.floor(money / (perMonth / 30)) };
 }
 
 // Si no entra nada más, ¿cuánto aguantás? (corto: el número y una línea)
@@ -4964,7 +4989,7 @@ function runwayHTML() {
     <div class="runway-top"><span class="muted small">Si no te entra nada más, te alcanza para</span>
       <b class="runway-val ${tone}">${big}</b></div>
     <div class="meter"><div class="${tone}" style="width:${Math.min(100, (r.days / 180) * 100)}%"></div></div>
-    <div class="small muted money" style="margin-top:6px">Tenés ${L(r.money)} · gastás ${L(r.perMonth)} por mes</div>
+    <div class="small muted money" style="margin-top:6px">Tu fondo de emergencia${r.debt > 0 ? ' (menos tarjetas)' : ''}: ${L(r.money)} · gastás ${L(r.perMonth)} por mes</div>
   </section>`;
 }
 
@@ -5017,7 +5042,8 @@ function spendCardHTML() {
     <div class="small muted" style="margin:4px 0 12px">Cargá tu sueldo y tus gastos de todos los meses y la app lo calcula.</div>
     <button class="btn primary" data-action="go" data-id="fijos">${icon('repeat', 16)} Agregar mis fijos</button>
   </section>`;
-  const notCounted = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && !countsInPlan(r));
+  // Ingresos que todavía no entraron este mes y no se cuentan antes (ej. la mesada, que es "a veces")
+  const notCounted = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && !countsInPlan(r) && !recurringTx(r, currentMonth()));
   recordDayBudget(p);
   const saved = dailySaved();
   return `<section class="card spend-card">
@@ -5032,7 +5058,7 @@ function spendCardHTML() {
     </button>`}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
     <div class="small muted money" style="margin-top:6px">Llevás ${L(p.spent)} de ${L(Math.max(0, p.budget))} · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}</div>
-    ${notCounted.length ? `<div class="small muted" style="margin-top:4px">Sin contar: ${notCounted.map((r) => esc(r.name)).join(', ')}</div>` : ''}
+    ${notCounted.length ? `<div class="small muted" style="margin-top:4px">Se suma cuando entre: ${notCounted.map((r) => esc(r.name)).join(', ')}</div>` : ''}
     <div class="spend-foot">
       <button class="link-btn" data-action="spendInfo">¿Cómo se calcula?</button>
       ${!doneToday && new Date().getHours() >= 19 ? `<button class="btn sm" data-action="checkin">Hoy no gasté</button>` : ''}
@@ -5050,16 +5076,16 @@ function spendInfo() {
   openForm({
     title: '¿Cómo se calcula?',
     fields: [
-      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos contás?</b><br><span class="muted small">Apagá los que no sabés si van a llegar.</span></div>` }] : []),
+      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos contás antes de que entren?</b><br><span class="muted small">Los seguros se cuentan desde el día 1. Los "a veces" (como la mesada) se suman recién cuando entran; prendelos sólo si estás seguro de que llegan.</span></div>` }] : []),
       ...incomes.map((r) => ({
         name: `inc_${r.id}`, type: 'checkbox', full: true, value: countsInPlan(r),
-        label: `${r.name} · ${fmtIn(r.amount, r.currency)}${recurringTx(r, currentMonth()) ? ' (ya entró)' : ''}`,
+        label: `${r.name} · ${fmtIn(r.amount, r.currency)} · ${isSure(r) ? 'seguro' : 'a veces'}${recurringTx(r, currentMonth()) ? ' (ya entró: se cuenta)' : ''}`,
       })),
       { type: 'html', html: `<div class="calc">
         ${row('Te entra este mes', L(p.income))}
         ${row('− Fijos', L(p.fixed))}
         ${p.sched > 0 ? row('− Programados', L(p.sched)) : ''}
-        ${row(p.goal ? `− Ahorro para "${esc(p.goal.name)}"` : `− Ahorro (${p.rate}%)`, L(p.save))}
+        ${p.goals.length ? p.goals.map((x) => row(`− Ahorro para "${esc(x.name)}"`, L(x.need))).join('') : row(`− Ahorro (${p.rate}%)`, L(p.save))}
         ${row('= Para gastar este mes', L(p.budget), 'total')}
         ${overMonth ? `
         ${row('− Ya gastaste', L(p.spent))}
@@ -5069,13 +5095,14 @@ function spendInfo() {
         ${row('− Gastado hoy', L(p.spentToday))}
         ${row('= Hoy podés gastar', L(p.todayLeft), p.todayLeft < 0 ? 'total over' : 'total')}`}
       </div>` },
-      { name: 'saveRate', label: p.goal ? 'Si no tuvieras meta: % para ahorrar' : '% de lo que te entra para ahorrar', type: 'number', value: p.rate, full: true },
+      { name: 'saveRate', label: p.goals.length ? 'Si no tuvieras metas con fecha: % para ahorrar' : '% de lo que te entra para ahorrar', type: 'number', value: p.rate, full: true },
     ],
     submitLabel: 'Listo',
     onSubmit: (v) => {
       if (v.saveRate != null && !(v.saveRate >= 0 && v.saveRate <= 90)) return 'Elegí un porcentaje entre 0 y 90.';
       if (v.saveRate != null) S.settings.saveRate = v.saveRate;
-      for (const r of incomes) r.countInPlan = !!v[`inc_${r.id}`];
+      // Sólo se toca lo que cambiaste
+      for (const r of incomes) { const on = !!v[`inc_${r.id}`]; if (on !== countsInPlan(r)) r.countInPlan = planChoice(on, isSure(r)); }
       save(); render();
     },
   });
