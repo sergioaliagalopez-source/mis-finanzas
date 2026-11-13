@@ -992,7 +992,7 @@ function viewInversiones() {
     ${tile('Ganancia / pérdida', t.cost ? `<span class="${cls(gp)}">${fmtMoney(gp, { sign: true })}</span>` : '—', t.cost ? fmtPct((gp / t.cost) * 100) : 'Cargá el precio promedio para verla')}
     ${tile('Precios actualizados', `<span style="font-size:16px">${fmtDateTime(S.settings.lastRefresh)}</span>`, 'Tocá Actualizar para refrescar')}
   </div>
-  <a href="#" class="link-row" data-action="go" data-id="miplan">${icon('shield', 18)}<span>Mi plan</span><span class="spacer"></span><span class="muted small">${planProfile() ? `Perfil ${PLAN_LEVELS[planProfile().level].name.toLowerCase()}${planOf().target != null && planAlloc().pctFija != null ? ` · hoy ${fmtNum(planAlloc().pctFija, 0)}/${fmtNum(100 - planAlloc().pctFija, 0)}` : ''}` : 'Definí tu perfil'}</span>${icon('right', 18)}</a>
+  <a href="#" class="link-row" data-action="go" data-id="miplan">${icon('shield', 18)}<span>Mi plan</span><span class="spacer"></span><span class="muted small">${(() => { const pr = planProfile(), g = Number(planOf().emergencyGoal) || 0, e = planAlloc().by.emergencia; return [pr ? `Perfil ${PLAN_LEVELS[pr.level].name.toLowerCase()}` : 'Definí tu perfil', g && e < g ? 'completá tu fondo de emergencia' : ''].filter(Boolean).join(' · '); })()}</span>${icon('right', 18)}</a>
   <section class="card">
     <div class="card-head"><h2>Mis posiciones</h2>
       <div class="toolbar"><button class="btn" data-action="go" data-id="ajustes" data-anchor="importar">Importar desde mi chat</button>
@@ -3608,7 +3608,8 @@ function loansHTML() {
 }
 
 /* ---------------- Mi plan: perfil de inversor, plan de cartera, notas y pasos ----------------
-   El perfil sale de 6 preguntas + el reparto que elegís (renta fija / variable), no de leer las notas.
+   Categorías: fondo de emergencia, pendiente de invertir, renta fija, renta variable y diversificadores (oro…).
+   El perfil sale de 6 preguntas + tu plan + qué tan concentrada está tu renta variable (cripto, acciones sueltas).
    Es una guía para vos, no asesoramiento financiero. */
 
 const PLAN_QUIZ = [
@@ -3620,83 +3621,128 @@ const PLAN_QUIZ = [
   ['¿Tenés un fondo de emergencia (plata para 3 a 6 meses de gastos)?', ['No', 'Menos de 3 meses', 'Sí, de 3 a 6 meses', 'Más de 6 meses']],
 ];
 const PLAN_LEVELS = {
-  conservador: { name: 'Conservador', icon: 'shield', text: 'Priorizás no perder. Te queda bien más renta fija (60–80%): depósitos a plazo fijo, Meru, ahorros con rendimiento.', range: [0, 40] },
-  moderado: { name: 'Moderado', icon: 'pie', text: 'Buscás crecer sin grandes sustos. Un reparto típico es 40–60% en renta variable y el resto en renta fija.', range: [30, 70] },
-  arriesgado: { name: 'Arriesgado', icon: 'trending', text: 'Aceptás caídas fuertes para crecer más a largo plazo. Suele ser 70–100% en renta variable. Lo clave: tener un fondo de emergencia aparte y no vender en pánico.', range: [60, 100] },
+  conservador: { name: 'Conservador', icon: 'shield', text: 'Priorizás no perder. Te queda bien mucha renta fija (60–80%): depósitos a plazo, ahorro con rendimiento.' },
+  moderado: { name: 'Moderado', icon: 'pie', text: 'Buscás crecer sin grandes sustos: más o menos mitad renta fija y mitad renta variable, mejor en ETFs amplios.' },
+  crecimiento: { name: 'Crecimiento', icon: 'chart', text: 'Buscás crecer a largo plazo con mucha renta variable, pero diversificada (ETFs amplios). Las caídas se aguantan con tiempo y un fondo de emergencia.' },
+  arriesgado: { name: 'Arriesgado', icon: 'trending', text: 'Mucha renta variable y concentrada (cripto o acciones sueltas): puede subir mucho, pero también caer fuerte. Clave: fondo de emergencia aparte y no vender en pánico.' },
 };
+// Categorías de cada activo o cuenta
+const PLAN_CLASSES = [['emergencia', 'Fondo de emergencia'], ['pendiente', 'Pendiente de invertir'], ['fija', 'Renta fija'], ['variable', 'Renta variable'], ['diversificador', 'Diversificador'], ['fuera', 'No cuenta']];
+const PLAN_COLORS = { fija: 'var(--c3)', variable: 'var(--c2)', diversificador: 'var(--c4)' };
 const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'FDUSD', 'TUSD', 'USDP', 'PYUSD']);
 const planOf = () => S.plan || (S.plan = {});
 const touchPlan = () => { planOf().u = new Date().toISOString(); };
-const levelOf = (x) => (x == null ? null : x < 0.4 ? 'conservador' : x < 0.68 ? 'moderado' : 'arriesgado');
-
-// Perfil: 60% las respuestas, 40% el reparto que elegiste (si falta uno, se usa el otro)
-function planProfile() {
-  const P = planOf(), ans = P.quiz || {};
-  const answered = PLAN_QUIZ.filter((_, i) => ans[i] != null).length;
-  const quiz = answered === PLAN_QUIZ.length ? PLAN_QUIZ.reduce((s, _, i) => s + ans[i], 0) / (PLAN_QUIZ.length * 3) : null;
-  const v = P.target != null ? (100 - P.target) / 100 : null; // target = % en renta fija
-  if (quiz == null && v == null) return null;
-  const score = quiz != null && v != null ? 0.6 * quiz + 0.4 * v : quiz ?? v;
-  return { level: levelOf(score), score, quiz, quizLevel: levelOf(quiz), planLevel: levelOf(v), answered, variable: v != null ? Math.round(v * 100) : null };
+const levelOf = (x) => (x == null ? null : x < 0.35 ? 'conservador' : x < 0.55 ? 'moderado' : x < 0.75 ? 'crecimiento' : 'arriesgado');
+// Plan objetivo: % renta fija, % diversificadores; la renta variable es el resto
+function planTarget() {
+  const P = planOf();
+  if (P.target == null) return null;
+  const fija = P.target, div = Math.min(P.targetDiv || 0, 100 - fija);
+  return { fija, div, variable: 100 - fija - div };
 }
 
-// Qué cuenta como renta fija y qué como variable (lo podés cambiar en cada cosa)
+// Cada activo o cuenta con su categoría (la que elegiste o la de siempre)
 function planItems() {
   const cls = planOf().classes || {};
   const items = [];
   for (const h of S.holdings) {
     const usd = holdingValue(h);
     if (!(usd > 0)) continue;
-    const def = STABLES.has(h.symbol) ? 'fija' : 'variable';
-    items.push({ id: h.id, name: h.symbol, kind: ASSET_TYPES[h.assetType] || '', usd, def, cls: cls[h.id] || def });
+    const def = STABLES.has(h.symbol) ? 'pendiente' : h.assetType === 'oro' ? 'diversificador' : 'variable';
+    // Dentro de la renta variable: ETF amplio, acción individual o cripto (para ver qué tan concentrada está)
+    const sub = h.assetType === 'etf' ? 'etf' : h.assetType === 'accion' ? 'accion' : h.assetType === 'cripto' ? 'cripto' : 'otro';
+    items.push({ id: h.id, name: h.symbol, kind: ASSET_TYPES[h.assetType] || '', usd, def, cls: cls[h.id] || def, sub });
   }
   for (const a of S.accounts) {
     if (a.type === 'credito') continue;
     const usd = toUSD(a.balance, a.currency);
     if (!(usd > 0)) continue;
-    const def = effectiveApy(a) > 0 ? 'fija' : 'fuera'; // cuentas con rendimiento (ej. Meru) = renta fija; la plata para gastar no cuenta
-    items.push({ id: a.id, name: a.name, kind: ACCOUNT_TYPES[a.type]?.label || '', usd, def, cls: cls[a.id] || def });
+    // Billeteras y cuentas para gastar (ej. Meru) = fondo de emergencia; saldo en un exchange = pendiente de invertir
+    const def = a.type === 'exchange' ? 'pendiente' : 'emergencia';
+    items.push({ id: a.id, name: a.name, kind: ACCOUNT_TYPES[a.type]?.label || '', usd, def, cls: cls[a.id] || def, sub: 'cuenta' });
   }
   return items;
 }
 function planAlloc() {
   const items = planItems();
-  const fija = items.filter((x) => x.cls === 'fija').reduce((s, x) => s + x.usd, 0);
-  const variable = items.filter((x) => x.cls === 'variable').reduce((s, x) => s + x.usd, 0);
-  const total = fija + variable;
-  return { items, fija, variable, total, pctFija: total > 0 ? (fija / total) * 100 : null };
+  const sum = (c) => items.filter((x) => x.cls === c).reduce((s, x) => s + x.usd, 0);
+  const by = Object.fromEntries(PLAN_CLASSES.map(([c]) => [c, sum(c)]));
+  const invested = by.fija + by.variable + by.diversificador; // lo que cuenta para el plan
+  const pct = (c) => (invested > 0 ? (by[c] / invested) * 100 : null);
+  // Concentración de la renta variable
+  const varItems = items.filter((x) => x.cls === 'variable');
+  const subSum = (s) => varItems.filter((x) => x.sub === s).reduce((t, x) => t + x.usd, 0);
+  const vs = { etf: subSum('etf'), accion: subSum('accion'), cripto: subSum('cripto'), otro: by.variable - subSum('etf') - subSum('accion') - subSum('cripto') };
+  const vpct = (s) => (by.variable > 0 ? (vs[s] / by.variable) * 100 : 0);
+  return { items, by, invested, pct, vs, vpct };
 }
 
-const planBar = (fija) => `<div class="stack plan-stack">${fija > 0 ? `<div style="flex:${fija};background:var(--c3)"></div>` : ''}${fija < 100 ? `<div style="flex:${100 - fija};background:var(--c2)"></div>` : ''}</div>`;
+// Perfil: 60% las respuestas, 40% el riesgo de tu plan. El riesgo del plan sube con la renta variable y con
+// cuánto de ella es cripto o acciones sueltas (un 80% en ETFs amplios no es lo mismo que un 80% en cripto)
+function planProfile() {
+  const P = planOf(), ans = P.quiz || {}, T = planTarget(), A = planAlloc();
+  const answered = PLAN_QUIZ.filter((_, i) => ans[i] != null).length;
+  const quiz = answered === PLAN_QUIZ.length ? PLAN_QUIZ.reduce((s, _, i) => s + ans[i], 0) / (PLAN_QUIZ.length * 3) : null;
+  const cripto = A.vpct('cripto'), accion = A.vpct('accion');
+  const conc = Math.min(1, (cripto + accion * 0.5) / 100);
+  const varShare = T ? (T.variable + T.div * 0.3) / 100 : null;
+  const planRisk = varShare != null ? Math.min(1, varShare * (0.75 + 0.5 * conc)) : null;
+  if (quiz == null && planRisk == null) return null;
+  const score = quiz != null && planRisk != null ? 0.6 * quiz + 0.4 * planRisk : quiz ?? planRisk;
+  // Qué lo vuelve más arriesgado (o más tranquilo)
+  const why = [];
+  if (T) why.push(`${T.variable}% de tu plan es renta variable${T.div ? ` (y ${T.div}% diversificadores)` : ''}`);
+  if (A.by.variable > 0) {
+    if (cripto >= 10) why.push(`${fmtNum(cripto, 0)}% de tu renta variable es cripto (sube y baja mucho)`);
+    if (accion >= 10) why.push(`${fmtNum(accion, 0)}% de tu renta variable son acciones individuales (dependen de una sola empresa)`);
+    if (A.vpct('etf') >= 50) why.push(`${fmtNum(A.vpct('etf'), 0)}% de tu renta variable está en ETFs amplios (más diversificado: baja el riesgo)`);
+  }
+  if (quiz != null) why.push(`tus respuestas dan un perfil ${PLAN_LEVELS[levelOf(quiz)].name.toLowerCase()}`);
+  return { level: levelOf(score), score, quiz, quizLevel: levelOf(quiz), planLevel: levelOf(planRisk), answered, why, cripto, accion };
+}
+
+// Barra de reparto (renta fija / variable / diversificadores)
+const planBar = (p) => `<div class="stack plan-stack">${['fija', 'variable', 'diversificador'].filter((c) => p[c] > 0).map((c) => `<div style="flex:${p[c]};background:${PLAN_COLORS[c]}"></div>`).join('')}</div>`;
+const planTxt = (p) => `${fmtNum(p.fija, 0)}% fija · ${fmtNum(p.variable, 0)}% variable${p.diversificador ? ` · ${fmtNum(p.diversificador, 0)}% diversif.` : ''}`;
+
+// Qué hacer para volver al plan: dentro de ±5 puntos está bien; hasta 10, dirigir las compras nuevas; más de 10, mover plata
+function planAdvice(T, A) {
+  const names = { fija: 'renta fija', variable: 'renta variable', diversificador: 'diversificadores' };
+  const diffs = ['fija', 'variable', 'diversificador'].map((c) => ({ c, d: A.pct(c) - T[c === 'diversificador' ? 'div' : c] }));
+  const worst = diffs.reduce((a, b) => (Math.abs(b.d) > Math.abs(a.d) ? b : a));
+  if (Math.abs(worst.d) <= 5) return { ok: true, html: `Vas según tu plan: todo está dentro del margen de ±5 puntos.` };
+  const under = diffs.filter((x) => x.d < 0).sort((a, b) => a.d - b.d)[0], over = diffs.filter((x) => x.d > 0).sort((a, b) => b.d - a.d)[0];
+  const need = under ? (-under.d / 100) * A.invested : 0;
+  if (Math.abs(worst.d) <= 10) {
+    return { ok: false, html: `Tenés <b>${fmtNum(Math.abs(worst.d), 0)} puntos ${worst.d > 0 ? 'de más' : 'de menos'}</b> en ${names[worst.c]}. No hace falta vender: hacé tus <b>próximas compras en ${names[under.c]}</b> (unos <b class="money">${fmtMoney(need)}</b>) hasta acercarte al plan.` };
+  }
+  return { ok: false, html: `Tenés <b>${fmtNum(Math.abs(worst.d), 0)} puntos ${worst.d > 0 ? 'de más' : 'de menos'}</b> en ${names[worst.c]} (más de 10). Podés <b>pasar unos <span class="money">${fmtMoney(need)}</span> de ${names[over.c]} a ${names[under.c]}</b>, o, si no querés vender, poner todas tus compras nuevas en ${names[under.c]}.` };
+}
 
 function viewMiPlan() {
-  const P = planOf(), pr = planProfile(), al = planAlloc();
-  const target = P.target ?? null, ans = P.quiz || {};
+  const P = planOf(), pr = planProfile(), A = planAlloc(), T = planTarget();
+  const ans = P.quiz || {};
   const L = pr && PLAN_LEVELS[pr.level];
   const steps = P.steps || [];
   const done = steps.filter((s) => s.done).length;
-  // Cómo vas: tu reparto real contra tu plan
-  let compare = '';
-  if (al.total > 0) {
-    const real = al.pctFija;
-    const diff = target != null ? real - target : null;
-    const move = target != null ? Math.abs(al.fija - (target / 100) * al.total) : 0;
-    compare = `<div class="plan-row2"><span class="muted small">Tu plan</span>${target != null ? planBar(target) : '<div class="small muted">Elegí tu reparto arriba.</div>'}<span class="small">${target != null ? `${target}% fija · ${100 - target}% variable` : ''}</span></div>
-      <div class="plan-row2"><span class="muted small">Hoy</span>${planBar(real)}<span class="small"><b>${fmtNum(real, 0)}% fija · ${fmtNum(100 - real, 0)}% variable</b> · <span class="money">${fmtMoney(al.total)}</span></span></div>
-      ${diff == null ? '' : Math.abs(diff) < 5
-        ? `<div class="safe-line ok">${icon('check', 16)}<span>Vas según tu plan (diferencia de ${fmtNum(Math.abs(diff), 0)}%).</span></div>`
-        : `<div class="safe-line bad">${icon('alert', 16)}<span>${diff < 0 ? `Estás <b>${fmtNum(-diff, 0)}% más arriesgado</b> que tu plan` : `Estás <b>${fmtNum(diff, 0)}% más conservador</b> que tu plan`}. Para volver: pasá unos <b class="money">${fmtMoney(move)}</b> de renta ${diff < 0 ? 'variable a fija' : 'fija a variable'}, o hacé tus próximas compras en renta ${diff < 0 ? 'fija' : 'variable'}.</span></div>`}`;
-  } else compare = '<div class="small muted">Cuando tengas inversiones o una cuenta con rendimiento (ej. Meru), acá ves tu reparto real.</div>';
-  const clsOpts = (x) => [['fija', 'Renta fija'], ['variable', 'Renta variable'], ['fuera', 'No cuenta']].map(([v, l]) => `<option value="${v}" ${x.cls === v ? 'selected' : ''}>${l}</option>`).join('');
+  const eGoal = Number(P.emergencyGoal) || 0, eNow = A.by.emergencia;
+  const suggested = Math.round(monthlyCostUSD() * 3);
+  const ePct = eGoal > 0 ? Math.min(100, (eNow / eGoal) * 100) : null;
+  const eLow = eGoal > 0 && eNow < eGoal;
+  const real = A.invested > 0 ? { fija: A.pct('fija'), variable: A.pct('variable'), diversificador: A.pct('diversificador') } : null;
+  const adv = T && real ? planAdvice(T, A) : null;
+  const clsOpts = (x) => PLAN_CLASSES.map(([v, l]) => `<option value="${v}" ${x.cls === v ? 'selected' : ''}>${l}</option>`).join('');
   const note = (k, label, ph) => `<label class="plan-note"><span>${label}</span><textarea data-plan-note="${k}" rows="3" placeholder="${esc(ph)}">${esc(P.notes?.[k] || '')}</textarea></label>`;
   return `
+  ${eLow ? `<div class="banner plan-first">${icon('shield', 16)} <b>Completá tu fondo de emergencia antes de invertir más.</b> Te faltan <span class="money">${fmtMoney(eGoal - eNow)}</span></div>` : ''}
   <section class="card plan-profile ${pr ? pr.level : ''}">
     <div class="muted small">Tu perfil de inversor</div>
     ${pr ? `<div class="plan-level">${icon(L.icon, 22)}<b>${L.name}</b></div>
       <p class="small" style="margin:4px 0 0;color:var(--text-2)">${L.text}</p>
-      ${pr.quizLevel && pr.planLevel && pr.quizLevel !== pr.planLevel ? `<div class="safe-line bad">${icon('alert', 16)}<span>Por tus respuestas sos <b>${PLAN_LEVELS[pr.quizLevel].name.toLowerCase()}</b>, pero tu plan de ${pr.variable}% en renta variable es de un perfil <b>${PLAN_LEVELS[pr.planLevel].name.toLowerCase()}</b>. Revisá si tu plan va con vos.</span></div>` : ''}
-      ${pr.quiz == null ? `<div class="small muted" style="margin-top:6px">Calculado sólo con tu reparto. Respondé las preguntas para que sea más preciso.</div>` : ''}`
-    : '<p class="small" style="margin:6px 0 0;color:var(--text-2)">Respondé las preguntas y elegí tu reparto para saber si sos <b>conservador</b>, <b>moderado</b> o <b>arriesgado</b>.</p>'}
+      ${pr.why.length ? `<div class="small" style="margin-top:8px"><b>Por qué:</b><ul class="plan-why">${pr.why.map((w) => `<li>${w}</li>`).join('')}</ul></div>` : ''}
+      ${pr.quizLevel && pr.planLevel && pr.quizLevel !== pr.planLevel ? `<div class="safe-line bad">${icon('alert', 16)}<span>Tus respuestas son de un perfil <b>${PLAN_LEVELS[pr.quizLevel].name.toLowerCase()}</b> y tu plan es de uno <b>${PLAN_LEVELS[pr.planLevel].name.toLowerCase()}</b>. Revisá si tu plan va con vos.</span></div>` : ''}
+      ${pr.quiz == null ? '<div class="small muted" style="margin-top:6px">Calculado sólo con tu plan y tu cartera. Respondé las preguntas para que sea más preciso.</div>' : ''}`
+    : '<p class="small" style="margin:6px 0 0;color:var(--text-2)">Respondé las preguntas y armá tu plan para saber si sos <b>conservador</b>, <b>moderado</b>, <b>de crecimiento</b> o <b>arriesgado</b>.</p>'}
   </section>
 
   <details class="more-box" ${pr?.quiz == null ? 'open' : ''}>
@@ -3706,26 +3752,43 @@ function viewMiPlan() {
   </details>
 
   <section class="card">
+    <div class="card-head" style="margin-bottom:6px"><h2>${icon('shield', 18)} Fondo de emergencia</h2></div>
+    <div class="plan-emerg"><b class="money" style="font-size:20px">${fmtMoney(eNow)}</b><span class="muted small">${eGoal ? `de <span class="money">${fmtMoney(eGoal)}</span>` : 'sin meta todavía'}</span></div>
+    ${ePct != null ? `<div class="meter big"><div class="${eLow ? 'warning' : 'good'}" style="width:${ePct}%"></div></div>` : ''}
+    <label class="plan-note" style="margin:10px 0 0"><span>Mi meta (USD)</span><input type="text" inputmode="decimal" id="planEmerg" value="${eGoal ? numInput(eGoal) : ''}" placeholder="${suggested > 0 ? `ej. ${suggested} (3 meses de tus gastos)` : 'ej. 1500'}"></label>
+    <div class="small muted" style="margin-top:6px">Es plata para imprevistos, aparte de tus inversiones. Por defecto cuentan tus billeteras y cuentas para gastar.${suggested > 0 ? ` Lo recomendado es 3 a 6 meses de gastos (≈ <span class="money">${fmtMoney(suggested)}</span> a <span class="money">${fmtMoney(suggested * 2)}</span>).` : ''}</div>
+  </section>
+
+  <section class="card">
     <div class="card-head" style="margin-bottom:8px"><h2>${icon('pie', 18)} Mi plan de cartera</h2></div>
-    <label for="planFija" class="small" style="color:var(--text-2)">¿Cómo querés repartir lo que invertís?</label>
-    <input type="range" id="planFija" min="0" max="100" step="5" value="${target ?? 50}" class="plan-range">
-    <div class="plan-split"><span><i class="swatch" style="background:var(--c3)"></i> Renta fija <b id="planFijaVal">${target ?? 50}%</b></span><span><i class="swatch" style="background:var(--c2)"></i> Renta variable <b id="planVarVal">${100 - (target ?? 50)}%</b></span></div>
-    ${target == null ? '<div class="small muted">Mové la barra para guardar tu plan.</div>' : ''}
-    <div class="small muted" style="margin-top:6px">Renta fija: ahorro con rendimiento, depósitos a plazo, stablecoins. Renta variable: acciones, ETF, cripto (y oro, si querés).</div>
+    <label for="planFija" class="small" style="color:var(--text-2)">Renta fija</label>
+    <input type="range" id="planFija" min="0" max="100" step="5" value="${T?.fija ?? 20}" class="plan-range fija">
+    <label for="planDiv" class="small" style="color:var(--text-2)">Diversificadores (oro y similares)</label>
+    <input type="range" id="planDiv" min="0" max="30" step="5" value="${T?.div ?? 0}" class="plan-range div">
+    <div class="plan-split"><span><i class="swatch" style="background:var(--c3)"></i> Fija <b id="planFijaVal">${T?.fija ?? 20}%</b></span>
+      <span><i class="swatch" style="background:var(--c2)"></i> Variable <b id="planVarVal">${T?.variable ?? 80}%</b></span>
+      <span><i class="swatch" style="background:var(--c4)"></i> Diversif. <b id="planDivVal">${T?.div ?? 0}%</b></span></div>
+    ${T == null ? '<div class="small muted">Mové las barras para guardar tu plan. La renta variable es lo que queda.</div>' : ''}
+    <div class="small muted" style="margin-top:6px">El fondo de emergencia y lo pendiente de invertir no entran en este reparto.</div>
   </section>
 
   <section class="card">
     <div class="card-head" style="margin-bottom:8px"><h2>${icon('chart', 18)} Cómo vas</h2></div>
-    ${compare}
-    ${al.items.length ? `<details class="plan-classes"><summary class="small">Qué cuenta como fija o variable</summary>
-      <div class="list">${al.items.map((x) => `<div class="list-row"><div class="grow"><div class="name">${esc(x.name)}</div><div class="meta">${esc(x.kind)} · <span class="money">${fmtMoney(x.usd)}</span></div></div>
-        <select data-plan-class="${x.id}" aria-label="Clase de ${esc(x.name)}">${clsOpts(x)}</select></div>`).join('')}</div></details>` : ''}
+    ${real ? `<div class="plan-row2"><span class="muted small">Tu plan</span>${T ? `${planBar({ fija: T.fija, variable: T.variable, diversificador: T.div })}<span class="small">${planTxt({ fija: T.fija, variable: T.variable, diversificador: T.div })}</span>` : '<div class="small muted">Armá tu plan arriba.</div>'}</div>
+      <div class="plan-row2"><span class="muted small">Hoy (invertido: <span class="money">${fmtMoney(A.invested)}</span>)</span>${planBar(real)}<span class="small"><b>${planTxt(real)}</b></span></div>
+      ${A.by.variable > 0 ? `<div class="small muted">Renta variable: ${fmtNum(A.vpct('etf'), 0)}% ETFs amplios · ${fmtNum(A.vpct('accion'), 0)}% acciones individuales · ${fmtNum(A.vpct('cripto'), 0)}% cripto${A.vpct('otro') >= 1 ? ` · ${fmtNum(A.vpct('otro'), 0)}% otros` : ''}</div>` : ''}
+      ${adv ? `<div class="safe-line ${adv.ok ? 'ok' : 'bad'}">${icon(adv.ok ? 'check' : 'alert', 16)}<span>${adv.html}</span></div>` : ''}`
+    : '<div class="small muted">Cuando tengas inversiones, acá ves tu reparto real contra tu plan.</div>'}
+    ${A.by.pendiente > 0 ? `<div class="small" style="margin-top:8px">${icon('calendar', 14)} Pendiente de invertir: <b class="money">${fmtMoney(A.by.pendiente)}</b> <span class="muted">(no cuenta en el reparto)</span></div>` : ''}
+    ${A.items.length ? `<details class="plan-classes"><summary class="small">Mover cada activo o cuenta a otra categoría</summary>
+      <div class="list">${A.items.map((x) => `<div class="list-row"><div class="grow"><div class="name">${esc(x.name)}</div><div class="meta">${esc(x.kind)} · <span class="money">${fmtMoney(x.usd)}</span></div></div>
+        <select data-plan-class="${x.id}" aria-label="Categoría de ${esc(x.name)}">${clsOpts(x)}</select></div>`).join('')}</div></details>` : ''}
   </section>
 
   <section class="card">
     <div class="card-head" style="margin-bottom:8px"><h2>${icon('book', 18)} Mis notas</h2></div>
     ${note('ahorro', 'Mi plan de ahorro', 'ej. Ahorro el 20% de lo que me entra el día que cobro, antes de gastar.')}
-    ${note('inversion', 'Mi plan de inversión', 'ej. 20% renta fija en Meru, 80% renta variable: 50% VOO, 20% BTC, 10% oro (PAXG).')}
+    ${note('inversion', 'Mi plan de inversión', 'ej. 75% renta variable (VOO y un poco de BTC), 20% renta fija, 5% oro (PAXG).')}
     ${note('riesgo', 'Cómo manejo el riesgo', 'ej. Si el mercado cae, no vendo: compro un poco más cada mes. Reviso mi cartera una vez por mes.')}
     <div class="small muted">Se guarda solo mientras escribís.</div>
   </section>
@@ -3739,13 +3802,25 @@ function viewMiPlan() {
   <p class="muted small" style="margin:0">Es una guía para ordenar tu plan, no asesoramiento financiero profesional.</p>`;
 }
 
-// Para el informe: tu plan, tu perfil y cómo vas
+// Para el informe: tu plan, tu perfil y cada categoría por separado
 function planReport() {
-  const P = planOf(), pr = planProfile(), al = planAlloc();
+  const P = planOf(), pr = planProfile(), A = planAlloc(), T = planTarget();
+  const r2 = (x) => (x == null ? null : round2(x));
+  const label = Object.fromEntries(PLAN_CLASSES);
+  const subName = { etf: 'ETF amplio', accion: 'Acción individual', cripto: 'Cripto', otro: 'Otro', cuenta: 'Cuenta' };
   return {
-    perfil: pr ? PLAN_LEVELS[pr.level].name : '', perfilRespuestas: pr?.quizLevel ? PLAN_LEVELS[pr.quizLevel].name : '',
-    objetivoFija: P.target ?? null, realFija: al.pctFija != null ? round2(al.pctFija) : null, totalUSD: round2(al.total),
-    items: al.items.map((x) => ({ nombre: x.name, tipo: x.kind, clase: x.cls === 'fija' ? 'Renta fija' : x.cls === 'variable' ? 'Renta variable' : 'No cuenta', usd: round2(x.usd) })),
+    perfil: pr ? PLAN_LEVELS[pr.level].name : '', perfilRespuestas: pr?.quizLevel ? PLAN_LEVELS[pr.quizLevel].name : '', porque: pr?.why || [],
+    objetivo: T, real: A.invested > 0 ? { fija: r2(A.pct('fija')), variable: r2(A.pct('variable')), diversificador: r2(A.pct('diversificador')) } : null,
+    investedUSD: r2(A.invested),
+    categorias: [
+      ['Fondo de emergencia', A.by.emergencia, P.emergencyGoal ? `meta US$ ${fmtNum(P.emergencyGoal, 2)} (${fmtNum(Math.min(100, (A.by.emergencia / P.emergencyGoal) * 100), 0)}%)` : 'sin meta'],
+      ['Pendiente de invertir', A.by.pendiente, 'no cuenta en el reparto'],
+      ['Renta fija', A.by.fija, ''],
+      ['Renta variable: ETFs amplios', A.vs.etf, ''], ['Renta variable: acciones individuales', A.vs.accion, ''], ['Renta variable: cripto', A.vs.cripto, ''],
+      ...(A.vs.otro > 0.005 ? [['Renta variable: otros', A.vs.otro, '']] : []),
+      ['Diversificadores (oro y similares)', A.by.diversificador, ''],
+    ].map(([n, usd, extra]) => ({ categoria: n, usd: r2(usd), extra })),
+    items: A.items.map((x) => ({ nombre: x.name, tipo: x.cls === 'variable' ? subName[x.sub] : x.kind, clase: label[x.cls], usd: r2(x.usd) })),
     notas: [['Mi plan de ahorro', P.notes?.ahorro], ['Mi plan de inversión', P.notes?.inversion], ['Cómo manejo el riesgo', P.notes?.riesgo]].filter(([, t]) => t),
     pasos: (P.steps || []).map((s) => ({ paso: s.text, hecho: s.done ? 'Sí' : 'No' })),
     respuestas: PLAN_QUIZ.map(([q, o], i) => [q, P.quiz?.[i] != null ? o[P.quiz[i]] : '']).filter(([, a]) => a),
@@ -4527,19 +4602,21 @@ async function reportPDF(R) {
   table(['Cuenta', 'Tipo', 'Moneda', 'Saldo', `En ${sym}`], R.cuentas.map((a) => [a.cuenta, a.tipo, a.moneda, n(a.saldo), money(a.saldoLocal)]));
   if (R.fijos.length) { title('Ingresos y gastos fijos'); table(['Nombre', 'Tipo', 'Monto', 'Moneda', 'Día', 'Categoría', 'Se repite', 'Seguro'], R.fijos.map((f) => [f.nombre, f.tipo, n(f.monto), f.moneda, f.dia, f.categoria, f.seRepite, f.seguro])); }
   if (R.metas.length) { title('Metas'); table(['Meta', 'Objetivo', 'Moneda', 'Para'], R.metas.map((g) => [g.meta, n(g.objetivo), g.moneda, g.fecha])); }
-  if (R.plan.perfil || R.plan.objetivoFija != null || R.plan.notas.length || R.plan.pasos.length) {
-    const p = R.plan;
-    title('Mi plan (perfil, reparto y notas)');
+  if (R.plan.perfil || R.plan.objetivo || R.plan.notas.length || R.plan.pasos.length) {
+    const p = R.plan, pc = (o) => (o ? `${n(o.fija, 0)}% fija · ${n(o.variable, 0)}% variable · ${n(o.div ?? o.diversificador, 0)}% diversificadores` : '-');
+    title('Mi plan (perfil, categorías y notas)');
     table(['Dato', 'Valor'], [
       ['Perfil de inversor', p.perfil || '-'], ['Perfil según las respuestas', p.perfilRespuestas || '-'],
-      ['Plan: renta fija / variable', p.objetivoFija != null ? `${p.objetivoFija}% / ${100 - p.objetivoFija}%` : '-'],
-      ['Hoy: renta fija / variable', p.realFija != null ? `${n(p.realFija, 0)}% / ${n(100 - p.realFija, 0)}% (US$ ${n(p.totalUSD)})` : '-'],
+      ['Plan objetivo', pc(p.objetivo)], ['Hoy (sobre lo invertido)', p.real ? `${pc(p.real)} (US$ ${n(p.investedUSD)})` : '-'],
     ], { columnStyles: { 0: { cellWidth: 200 } } });
-    if (p.items.length) table(['Activo o cuenta', 'Tipo', 'Cuenta como', 'Valor USD'], p.items.map((x) => [x.nombre, x.tipo, x.clase, n(x.usd)]));
+    if (p.porque.length) { para('Por qué ese perfil:', 9); for (const w of p.porque) para(`- ${w}`, 8.5); }
+    title('Categorías', 11);
+    table(['Categoría', 'USD', 'Nota'], p.categorias.map((c) => [c.categoria, n(c.usd), c.extra]));
+    if (p.items.length) table(['Activo o cuenta', 'Tipo', 'Categoría', 'Valor USD'], p.items.map((x) => [x.nombre, x.tipo, x.clase, n(x.usd)]));
     for (const [t, txt] of p.notas) { title(t, 11); para(txt); }
     if (p.pasos.length) { title('Los pasos que sigo', 11); table(['Paso', 'Hecho'], p.pasos.map((s) => [s.paso, s.hecho])); }
     if (p.respuestas.length) { title('Respuestas del perfil', 11); table(['Pregunta', 'Respuesta'], p.respuestas); }
-    note('El perfil es una guía, no asesoramiento financiero.');
+    note('El perfil es una guía, no asesoramiento financiero. El fondo de emergencia y lo pendiente de invertir no entran en el reparto.');
   }
   title('Notas para el análisis');
   for (const t of REPORT_NOTES) para(`- ${t}`, 8.5);
@@ -4644,8 +4721,11 @@ async function reportXLSX(R) {
   add('Cuentas', R.cuentas.map((a) => ({ Cuenta: a.cuenta, Tipo: a.tipo, Moneda: a.moneda, 'Saldo de hoy': a.saldo, [`En ${sym}`]: a.saldoLocal })));
   add('Mi plan', [
     { Dato: 'Perfil de inversor', Valor: R.plan.perfil }, { Dato: 'Perfil según las respuestas', Valor: R.plan.perfilRespuestas },
-    { Dato: 'Plan: % renta fija', Valor: R.plan.objetivoFija }, { Dato: 'Plan: % renta variable', Valor: R.plan.objetivoFija != null ? 100 - R.plan.objetivoFija : null },
-    { Dato: 'Hoy: % renta fija', Valor: R.plan.realFija }, { Dato: 'Hoy: % renta variable', Valor: R.plan.realFija != null ? round2(100 - R.plan.realFija) : null }, { Dato: 'Total invertido USD', Valor: R.plan.totalUSD },
+    ...R.plan.porque.map((w) => ({ Dato: 'Por qué', Valor: w })),
+    { Dato: 'Plan: % renta fija', Valor: R.plan.objetivo?.fija ?? null }, { Dato: 'Plan: % renta variable', Valor: R.plan.objetivo?.variable ?? null }, { Dato: 'Plan: % diversificadores', Valor: R.plan.objetivo?.div ?? null },
+    { Dato: 'Hoy: % renta fija', Valor: R.plan.real?.fija ?? null }, { Dato: 'Hoy: % renta variable', Valor: R.plan.real?.variable ?? null }, { Dato: 'Hoy: % diversificadores', Valor: R.plan.real?.diversificador ?? null },
+    { Dato: 'Total invertido USD (fija + variable + diversificadores)', Valor: R.plan.investedUSD },
+    ...R.plan.categorias.map((c) => ({ Dato: `Categoría: ${c.categoria} (USD)`, Valor: c.usd, Nota: c.extra })),
     ...R.plan.items.map((x) => ({ Dato: `${x.nombre} (${x.tipo})`, Valor: `${x.clase} · US$ ${x.usd}` })),
     ...R.plan.notas.map(([t, txt]) => ({ Dato: t, Valor: txt })),
     ...R.plan.pasos.map((s) => ({ Dato: `Paso: ${s.paso}`, Valor: s.hecho === 'Sí' ? 'Hecho' : 'Pendiente' })),
@@ -6573,7 +6653,10 @@ function bindEvents() {
   let noteTimer;
   document.addEventListener('input', (e) => {
     const t = e.target;
-    if (t.id === 'planFija') { const v = Number(t.value); $('#planFijaVal').textContent = `${v}%`; $('#planVarVal').textContent = `${100 - v}%`; }
+    if (t.id === 'planFija' || t.id === 'planDiv') {
+      const f = Number($('#planFija').value), d = Math.min(Number($('#planDiv').value), 100 - f);
+      $('#planFijaVal').textContent = `${f}%`; $('#planDivVal').textContent = `${d}%`; $('#planVarVal').textContent = `${100 - f - d}%`;
+    }
     if (t.dataset?.planNote) {
       const P = planOf(); P.notes = { ...(P.notes || {}), [t.dataset.planNote]: t.value };
       clearTimeout(noteTimer); noteTimer = setTimeout(() => { touchPlan(); save(); }, 700);
@@ -6583,7 +6666,11 @@ function bindEvents() {
     const t = e.target;
     if (t.dataset?.planNote) { clearTimeout(noteTimer); touchPlan(); save(); }
     if (t.name?.startsWith('pq_')) { const P = planOf(); P.quiz = { ...(P.quiz || {}), [t.name.slice(3)]: Number(t.value) }; touchPlan(); save(); render(); }
-    if (t.id === 'planFija') { planOf().target = Number(t.value); touchPlan(); save(); render(); }
+    if (t.id === 'planFija' || t.id === 'planDiv') {
+      const P = planOf(), f = Number($('#planFija').value);
+      P.target = f; P.targetDiv = Math.min(Number($('#planDiv').value), 100 - f); touchPlan(); save(); render();
+    }
+    if (t.id === 'planEmerg') { const v = parseNum(t.value); planOf().emergencyGoal = v > 0 ? v : null; touchPlan(); save(); render(); }
     if (t.dataset?.planClass) { const P = planOf(); P.classes = { ...(P.classes || {}), [t.dataset.planClass]: t.value }; touchPlan(); save(); render(); }
     if (t.dataset?.planStep) { const s = (planOf().steps || []).find((x) => x.id === t.dataset.planStep); if (s) { s.done = t.checked; touchPlan(); save(); render(); } }
   });

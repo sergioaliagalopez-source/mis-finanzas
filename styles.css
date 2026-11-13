@@ -861,6 +861,7 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .plan-profile .plan-level { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 24px; }
 .plan-profile.conservador .plan-level { color: var(--c3); }
 .plan-profile.moderado .plan-level { color: var(--accent); }
+.plan-profile.crecimiento .plan-level { color: var(--c5); }
 .plan-profile.arriesgado .plan-level { color: var(--c2); }
 .quiz-q { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
 .quiz-q:last-child { border-bottom: 0; }
@@ -881,3 +882,8 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .plan-step.done span { text-decoration: line-through; color: var(--muted); }
 .plan-add { display: flex; gap: 8px; margin-top: 10px; }
 .plan-add input { flex: 1; min-width: 0; }
+.plan-first { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; }
+.plan-why { margin: 4px 0 0; padding-left: 18px; color: var(--text-2); display: flex; flex-direction: column; gap: 2px; }
+.plan-emerg { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.plan-range.div { accent-color: var(--c4); }
+.plan-note input { width: 100%; }
