@@ -155,8 +155,13 @@ const catsOf = (type) => {
   return [...base.slice(0, -1), ...mine, other];
 };
 const OTHER_CATS = new Set(['Otros gastos', 'Otros ingresos']);
+// Al editar, la categoría que ya tiene el movimiento siempre está en la lista (ej. "Compra de inversión"), así no se cambia sola
+const withCat = (list, cat) => (cat && !list.includes(cat) ? [cat, ...list] : list);
 // Para reconocer tus categorías al dictar o leer un comprobante (ej. "comparsa")
-const customCatWords = (type) => (S?.customCats || []).filter((c) => c.type === type).map((c) => [c.name, norm(c.name).replace(/[^a-z0-9 ]/g, ' ')]);
+// (sin palabras de relleno: "Salidas con amigos" no tiene que quedarse con todo lo que dice "con")
+const CAT_STOP = new Set(['con', 'del', 'las', 'los', 'para', 'por', 'que', 'una', 'uno', 'mis', 'sus', 'the', 'and']);
+const customCatWords = (type) => (S?.customCats || []).filter((c) => c.type === type)
+  .map((c) => [c.name, norm(c.name).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !CAT_STOP.has(w)).join(' ')]);
 
 const ARS_TYPES = [['oficial', 'Oficial'], ['bolsa', 'MEP'], ['blue', 'Blue'], ['contadoconliqui', 'CCL'], ['cripto', 'Cripto'], ['tarjeta', 'Tarjeta']];
 const BOB_TYPES = [['oficial', 'Oficial del BCB (el que usan los bancos)'], ['binance', 'Binance (USDT/BOB)'], ['manual', 'El de mi banco (lo cargo yo)']];
@@ -269,10 +274,15 @@ function migrate(s) {
 }
 
 function load() {
+  let raw = null;
   try {
-    const raw = localStorage.getItem(STORE_KEY);
+    raw = localStorage.getItem(STORE_KEY);
     if (raw) { S = migrate(JSON.parse(raw)); stampEdits(null); return true; }
-  } catch (e) { console.warn(e); }
+  } catch (e) {
+    console.warn(e);
+    // Si los datos guardados no se pueden leer, se guarda una copia aparte antes de empezar de cero (para poder recuperarlos)
+    try { if (raw) localStorage.setItem(`${STORE_KEY}.corrupt`, raw); } catch (e2) { /* sin espacio */ }
+  }
   S = migrate(defaultState());
   stampEdits(null);
   return false;
@@ -290,6 +300,7 @@ const STAMP_SKIP = {
   recurring: ['skip'],
 };
 let lastSeen = new Map();
+let lastBudgets = null; // cómo estaban los topes en el último guardado
 function itemKey(k, x) {
   const skip = STAMP_SKIP[k] || [];
   return JSON.stringify(x, (f, v) => (f === 'u' || skip.includes(f) ? undefined : v));
@@ -303,6 +314,10 @@ function stampEdits(now) {
     seen.set(x.id, j);
   }
   lastSeen = seen;
+  // Topes: si cambiaste alguno (o lo borraste), se marca cuándo, para que al sincronizar gane la versión más nueva
+  const bj = JSON.stringify(S.budgets || {});
+  if (now && lastBudgets != null && bj !== lastBudgets) S.budgetsU = now;
+  lastBudgets = bj;
 }
 
 // edit=false para cambios que no son datos tuyos (precios, vista, filtros): no cuentan como "última edición"
@@ -588,7 +603,9 @@ async function refreshAllInner({ silent = false } = {}) {
     try {
       const j = await getJSON('https://open.er-api.com/v6/latest/USD');
       if (j && j.rates) {
-        for (const [code] of CURRENCIES) if (j.rates[code] && !USD_PEGGED.has(code) && !(code === 'BOB' && S.settings.bobRateType === 'manual')) S.settings.rates[code] = j.rates[code];
+        // Bs y pesos argentinos tienen su propia fuente (el dólar que elegiste): ésta sólo se usa si todavía no hay ninguno
+        const own = (code) => (code === 'BOB' || code === 'ARS') && S.settings.rates[code] > 0;
+        for (const [code] of CURRENCIES) if (j.rates[code] && !USD_PEGGED.has(code) && !(code === 'BOB' && S.settings.bobRateType === 'manual') && !own(code)) S.settings.rates[code] = j.rates[code];
         S.settings.ratesUpdated = now;
       }
     } catch (e) { notes.push('tipos de cambio no disponibles'); }
@@ -602,8 +619,9 @@ async function refreshAllInner({ silent = false } = {}) {
     if (S.settings.bobRateType !== 'manual' && (S.settings.localCurrency === 'BOB' || S.accounts.some((a) => a.currency === 'BOB'))) {
       try {
         const list = await getJSON('https://bo.dolarapi.com/v1/dolares');
-        const d = Array.isArray(list) && (list.find((x) => x.casa === (S.settings.bobRateType || 'binance')) || list[0]);
-        if (d && d.venta > 0) { S.settings.rates.BOB = d.venta; S.settings.ratesUpdated = now; }
+        // Sólo el dólar que elegiste (si no viene, se queda el último que había, en vez de cambiar a otro sin avisar)
+        const d = Array.isArray(list) && list.find((x) => x.casa === (S.settings.bobRateType || 'binance'));
+        if (d && d.venta > 0) { S.settings.rates.BOB = d.venta; S.settings.ratesUpdated = now; } else notes.push('dólar en Bolivia no disponible');
       } catch (e) { notes.push('dólar en Bolivia no disponible'); }
     }
   }
@@ -910,7 +928,7 @@ function viewResumen() {
   ${spendCardHTML()}
   ${runwayHTML()}
 
-  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="${pend.every((it) => it.schedId) ? 'programados' : 'fijos'}" class="small">Ver todo</a></div>
+  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="${pend.every((it) => it.schedId) ? 'programados' : pend.every((it) => it.recId) ? 'fijos' : 'plan'}" class="small">Ver todo</a></div>
     <div class="list">${pend.map((it) => `<div class="list-row act">
       <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
       <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Este mes' : `${it.schedId ? `${fmtDay(it.date)} · ` : ''}${daysUntil(it.date)}`}</div></div>
@@ -931,7 +949,7 @@ function viewResumen() {
     <div class="more-inner">
       <div class="tiles">
         ${tile('Liquidez', fmtMoney(t.liquid), 'Efectivo, bancos y billeteras')}
-        ${tile('Inversiones', fmtMoney(t.inv), t.cost > 0 ? `<span class="${cls(gp)}">${arrow(gp)}${fmtMoney(gp, { sign: true })} (${fmtPct((gp / t.cost) * 100)})</span>` : `${S.holdings.length} activos`)}
+        ${tile('Inversiones', fmtMoney(t.inv), t.cost > 0 ? `<span class="${cls(gp)}">${arrow(gp)}${fmtMoney(gp, { sign: true })} (${fmtPct((gp / t.cost) * 100)})</span>` : `${S.holdings.length} activo${S.holdings.length === 1 ? '' : 's'}`)}
         ${tile('Deuda de tarjetas', fmtMoney(t.debt), t.owed ? `Debés en préstamos: ${fmtMoney(t.owed)}` : 'Tarjetas de crédito')}
         ${tile('Te deben', fmtMoney(t.lent), 'Préstamos por cobrar')}
       </div>
@@ -941,7 +959,7 @@ function viewResumen() {
             <span class="acc-ico sm">${accIcon(a)}</span>
             <div class="grow"><div class="name">${esc(a.name)}</div><div class="meta">${esc(ACCOUNT_TYPES[a.type]?.label)}${a.institution ? ' · ' + esc(a.institution) : ''}</div></div>
             <div class="val"><div class="money ${a.type === 'credito' && Number(a.balance) > 0 ? 'down' : ''}">${a.type === 'credito' && Number(a.balance) > 0 ? '−' : ''}${fmtIn(a.balance, a.currency)}</div>
-            ${a.currency !== dispCur() ? `<div class="meta money">≈ ${fmtMoney(toUSD(a.balance, a.currency))}</div>` : ''}</div>
+            ${a.currency !== dispCur() ? `<div class="meta money">≈ ${a.type === 'credito' && Number(a.balance) > 0 ? '−' : ''}${fmtMoney(toUSD(a.balance, a.currency))}</div>` : ''}</div>
           </div>`).join('') || '<div class="empty">Sin cuentas</div>'}</div></section>
       ${fxCardHTML()}
       <div class="grid-2">
@@ -988,7 +1006,7 @@ function viewInversiones() {
   ${S.holdings.map((h) => positionWarnHTML(h)).join('')}
   ${noKey ? `<div class="banner">Bitcoin, Ethereum y PAXG se actualizan solos. Para que <b>VOO, NVDA y GOOGL</b> también se actualicen, pegá una clave gratuita de Finnhub en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>. Mientras tanto podés cargar el precio a mano con “Editar”.</div>` : ''}
   <div class="tiles">
-    ${tile('Valor del portafolio', fmtMoney(t.inv), `${S.holdings.length} activos`)}
+    ${tile('Valor del portafolio', fmtMoney(t.inv), `${S.holdings.length} activo${S.holdings.length === 1 ? '' : 's'}`)}
     ${tile('Costo cargado', t.cost ? fmtMoney(t.cost) : '—', 'Según tu precio promedio de compra')}
     ${tile('Ganancia / pérdida', t.cost ? `<span class="${cls(gp)}">${fmtMoney(gp, { sign: true })}</span>` : '—', t.cost ? fmtPct((gp / t.cost) * 100) : 'Cargá el precio promedio para verla')}
     ${tile('Precios actualizados', `<span style="font-size:16px">${fmtDateTime(S.settings.lastRefresh)}</span>`, 'Tocá Actualizar para refrescar')}
@@ -1022,11 +1040,15 @@ function viewInversiones() {
 // Cuentas sin saldo que nunca se usaron (ej. "Tarjeta 2" de ejemplo): se pueden quitar de un toque
 function unusedAccounts() {
   // (las que configuraste con banco/entidad o rendimiento, como Meru, nunca se sugieren)
-  return S.accounts.filter((a) => !Number(a.balance) && !a.institution && !(Number(a.apy) > 0)
+  const list = S.accounts.filter((a) => !Number(a.balance) && !a.institution && !(Number(a.apy) > 0)
     && !S.transactions.some((t) => t.accountId === a.id || t.toAccountId === a.id)
     && !S.recurring.some((r) => r.accountId === a.id)
+    && !(S.scheduled || []).some((s) => s.accountId === a.id)
     && !(S.loans || []).some((l) => l.accountId === a.id)
-    && !(S.goals || []).some((g) => g.source === a.id));
+    && !(S.goals || []).some((g) => g.source === a.id)
+    && a.id !== S.settings.defaultAccountId);
+  // Nunca dejar la app sin una cuenta para gastar (ej. el "Efectivo" de una instalación nueva)
+  return S.accounts.some((a) => a.type !== 'credito' && !list.includes(a)) ? list : list.filter((a) => a.type === 'credito');
 }
 
 function viewCuentas() {
@@ -1113,11 +1135,18 @@ const weekTx = (r, date) => S.transactions.find((t) => t.recurringId === r.id &&
 const monthlyEq = (r) => { const a = Number(r.amount) || 0, f = freqOf(r); return f === 'anual' ? a / 12 : f === 'semanal' ? (a * 52) / 12 : a; };
 const freqText = (r) => {
   const f = freqOf(r);
-  if (f === 'semanal') return `Todos los ${DIAS_SEMANA[Number(r.weekday) || 0]}`;
+  if (f === 'semanal') { const d = DIAS_SEMANA[Number(r.weekday) || 0]; return `Todos los ${/s$/.test(d) ? d : `${d}s`}`; } // "los domingos", "los lunes"
   if (f === 'anual') return `Cada año en ${monthName(r.month || 1)}${r.day ? ` (día ${r.day})` : ''}`;
   return r.day ? `Todos los ${r.day}` : 'Cada mes, sin día fijo';
 };
 const freqUnit = (r) => ({ semanal: '/sem', anual: '/año' }[freqOf(r)] || '');
+// Si movés un movimiento de un fijo a otra fecha, la original no se vuelve a registrar sola
+// (semanal: esa fecha; mensual y anual: ese mes, si cambió de mes)
+function skipMoved(r, from, to) {
+  if (!r || !from || !to) return;
+  const key = freqOf(r) === 'semanal' ? (from !== to ? from : null) : (from.slice(0, 7) !== to.slice(0, 7) ? from.slice(0, 7) : null);
+  if (key) r.skip = [...new Set([...(r.skip || []), key])];
+}
 
 // Monto de la regla convertido a la moneda de la cuenta donde entra / sale
 function recurringAmountFor(r, acc) {
@@ -1202,7 +1231,7 @@ function recurringRowHTML(r, month) {
   else if (isCur) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`;
   else status = '<span class="status warning">No registrado</span>';
   return `<div class="list-row act rec-row ${on ? '' : 'off'}">
-    <label class="rec-check" title="Se repite todos los meses"><input type="checkbox" data-repeat="${r.id}" ${on ? 'checked' : ''}><span></span></label>
+    <label class="rec-check" title="Se repite"><input type="checkbox" data-repeat="${r.id}" ${on ? 'checked' : ''}><span></span></label>
     <div class="grow"><div class="name">${esc(r.name)}</div>
       <div class="meta">${on ? freqText(r) : 'No se repite'}${r.type === 'ingreso' ? (isSure(r) ? ' · seguro' : ' · a veces') : ''}${r.type === 'ingreso' && on && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
     <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}${freqUnit(r) ? `<small class="muted">${freqUnit(r)}</small>` : ''}</div></div>
@@ -1305,7 +1334,7 @@ function payRecurringForm(r) {
     },
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
-      registerRecurring(r, { date: v.date, time: v.time, amount: v.amount, accountId: v.accountId });
+      if (!registerRecurring(r, { date: v.date, time: v.time, amount: v.amount, accountId: v.accountId })) return 'No hay una cuenta para registrarlo. Agregá una en Cuentas.';
       snapshot(); save(); render();
       toast(`${r.name}: registrado ✓`);
     },
@@ -1559,10 +1588,10 @@ function viewMovimientos() {
   </section>
 
   <div class="shortcuts">
-    ${shortcutHTML('fijos', pendN ? `${pendN} pendiente${pendN > 1 ? 's' : ''}` : `${S.recurring.filter(repeats).length} activos`, pendN)}
+    ${shortcutHTML('fijos', pendN ? `${pendN} pendiente${pendN > 1 ? 's' : ''}` : `${S.recurring.filter(repeats).length} activo${S.recurring.filter(repeats).length === 1 ? '' : 's'}`, pendN)}
     ${shortcutHTML('programados', schedPending().length ? `${schedPending().length} pendiente${schedPending().length > 1 ? 's' : ''}` : 'Ninguno pendiente', schedPending().length)}
     ${shortcutHTML('analisis', 'Gráficos del mes')}
-    ${shortcutHTML('presupuesto', Object.keys(S.budgets).length ? `${Object.keys(S.budgets).length} topes` : 'Sin topes')}
+    ${shortcutHTML('presupuesto', Object.keys(S.budgets).length ? `${Object.keys(S.budgets).length} tope${Object.keys(S.budgets).length === 1 ? '' : 's'}` : 'Sin topes')}
   </div>`;
 }
 
@@ -1631,7 +1660,7 @@ function fixedSuggestions() {
     const key = `${norm(t.note)}|${t.category}`;
     if (dismissed.has(key) || S.recurring.some((r) => norm(r.name) === norm(t.note))) continue;
     const g = groups.get(key) || { key, name: t.note, category: t.category, byMonth: {}, last: t };
-    (g.byMonth[m] = g.byMonth[m] || []).push(Number(t.amount) || 0);
+    (g.byMonth[m] = g.byMonth[m] || []).push(txUSD(t)); // en USD: el mismo gasto puede salir de cuentas en monedas distintas
     if (t.date >= g.last.date) g.last = t;
     groups.set(key, g);
   }
@@ -1643,7 +1672,8 @@ function fixedSuggestions() {
     const mid = per[Math.floor(per.length / 2)];
     if (!(mid > 0) || per.some((x) => Math.abs(x - mid) > mid * 0.2)) continue; // monto parecido (±20%)
     const acc = S.accounts.find((a) => a.id === g.last.accountId);
-    out.push({ key: g.key, name: g.name, category: g.category, amount: round2(mid), currency: acc?.currency || S.settings.localCurrency, accountId: acc?.id || '', months: ms });
+    const cur = acc?.currency || S.settings.localCurrency;
+    out.push({ key: g.key, name: g.name, category: g.category, amount: round2(fromUSD(mid, cur)), currency: cur, accountId: acc?.id || '', months: ms });
   }
   return out.slice(0, 5);
 }
@@ -1998,7 +2028,7 @@ function planHTML(a) {
 function budgetCarry(cat, b, month = currentMonth()) {
   if (!b?.roll) return 0;
   const lim = toUSD(b.amount, b.currency);
-  let carry = 0;
+  let carry = Number(b.carry0) || 0; // (lo que tenías guardado cuando cambiaste el monto)
   for (let m = b.since || month; m < month; m = addMonths(m, 1)) carry = Math.max(0, carry + lim - (monthStats(m).byCat[cat] || 0));
   return carry;
 }
@@ -2154,7 +2184,7 @@ function budgetForm(cat) {
     title: cat ? `Presupuesto: ${cat}` : 'Nuevo presupuesto mensual',
     fields: [
       cat ? { type: 'html', html: '' } : { name: 'cat', label: 'Categoría', type: 'select', full: true, options: catsOf('gasto').filter((c) => !used.has(c)).map((c) => [c, c]) },
-      { name: 'amount', label: `Tope por mes (${cur})`, type: 'number', full: true, required: true,
+      { name: 'amount', label: `Tope por mes (${curLabel(cur)})`, type: 'number', full: true, required: true,
         value: b ? round2(fromUSD(toUSD(b.amount, b.currency), cur)) : '' },
       { name: 'roll', label: 'Lo que no gaste pasa al mes siguiente', type: 'checkbox', full: true, value: !!b?.roll,
         hint: 'Ej. tope de Bs 300 y gastaste 250: el mes que viene tenés Bs 350. Si te pasás, se descuenta de lo que tenías guardado.' },
@@ -2165,7 +2195,11 @@ function budgetForm(cat) {
       if (cat && v.remove) { delete S.budgets[cat]; save(); render(); toast(`Tope de ${cat} eliminado`); return; }
       if (!c) return 'Ya tenés presupuesto para todas las categorías.';
       // "Acumular" empieza a contar desde el mes en que lo activás (no se suma lo que sobró antes)
-      if (!(v.amount > 0)) { delete S.budgets[c]; } else S.budgets[c] = { amount: v.amount, currency: cur, ...(v.roll ? { roll: true, since: b?.roll && b.since ? b.since : currentMonth() } : {}) };
+      // Si cambiás el monto de un tope que acumula, lo que ya tenías guardado se conserva y desde este mes cuenta el monto nuevo
+      const keep = b?.roll && b.since && v.roll && Math.abs(toUSD(v.amount, cur) - toUSD(b.amount, b.currency)) < 0.005;
+      const rollPart = !v.roll ? {} : keep ? { roll: true, since: b.since, ...(b.carry0 ? { carry0: b.carry0 } : {}) }
+        : { roll: true, since: currentMonth(), ...(b?.roll ? { carry0: round2(budgetCarry(c, b, currentMonth())) } : {}) };
+      if (!(v.amount > 0)) { delete S.budgets[c]; } else S.budgets[c] = { amount: v.amount, currency: cur, ...rollPart };
       save(); render();
     },
   });
@@ -2211,7 +2245,7 @@ function goalCurrent(g) {
   if (g.source === 'networth') return t.netWorth;
   if (g.source === 'liquid' || !g.source) return t.liquid;
   const a = S.accounts.find((x) => x.id === g.source);
-  return a ? toUSD(a.balance, a.currency) : 0;
+  return a ? toUSD(a.balance, a.currency) : t.liquid; // (si borraste esa cuenta, cuenta tu liquidez)
 }
 
 const isVariable = (t) => t.type === 'gasto' && !nonFlow(t) && !t.recurringId && !t.scheduledId;
@@ -2230,7 +2264,7 @@ function planNumbers() {
     return {
       variable: txs.filter(isVariable).reduce((s, t) => s + txUSD(t), 0),
       extra: txs.filter((t) => t.type === 'ingreso' && !nonFlow(t) && !t.recurringId).reduce((s, t) => s + txUSD(t), 0),
-      any: txs.some((t) => !nonFlow(t)),
+      any: txs.some((t) => !nonFlow(t) && t.type !== 'transferencia'),
     };
   }).filter((p) => p.any);
   let avgVariable, avgExtra;
@@ -2258,7 +2292,7 @@ function goalMath(g, P) {
   // Máximo de gastos variables por mes para llegar (sin contar ingresos extra que no son seguros)
   const maxVariable = needed != null ? P.maxSaving - needed : null;
   const etaMonths = remaining <= 0 ? 0 : P.projectedSaving > 0 ? remaining / P.projectedSaving : null;
-  return { current, target, remaining, monthsLeft, needed, maxVariable, etaMonths, pct: target ? Math.min(100, (current / target) * 100) : 0 };
+  return { current, target, remaining, monthsLeft, needed, maxVariable, etaMonths, pct: target ? Math.max(0, Math.min(100, (current / target) * 100)) : 0 };
 }
 
 function etaLabel(months) {
@@ -2425,7 +2459,7 @@ function goalForm(g) {
     onSubmit: (v) => {
       if (v.remove) { S.goals = S.goals.filter((x) => x !== g); tombstone(g.id); save(); render(); return; }
       if (!(v.target > 0)) return 'El monto tiene que ser mayor a 0.';
-      if (v.date && v.date <= todayISO()) return 'La fecha tiene que ser en el futuro.';
+      if (v.date && v.date !== g.date && v.date <= todayISO()) return 'La fecha tiene que ser en el futuro.';
       const next = { name: v.name, target: v.target, currency: v.currency, date: v.date, source: v.source };
       if (isNew) S.goals.push({ id: uid(), created: new Date().toISOString(), ...next }); else Object.assign(g, next);
       save(); render();
@@ -2489,7 +2523,7 @@ function wordsToDigits(text) {
       const n = NUM_WORDS[w];
       if (n === 1000) { total += (chunk || 1) * 1000; chunk = 0; } else chunk += n;
     }
-    return String(total + chunk) + (m.endsWith(' ') ? ' ' : '');
+    return String(total + chunk) + m.match(/\s*$/)[0]; // (respeta el espacio o el salto de línea que seguía)
   });
 }
 
@@ -2507,9 +2541,15 @@ function findDate(s) {
   const dm = s.match(/\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/);
   if (dm) { const mon = dm[2] === 'setiembre' ? 8 : MONTHS_ES.indexOf(dm[2]); const x = new Date(d.getFullYear(), mon, +dm[1]); if (x > d) x.setFullYear(x.getFullYear() - 1); return isoOf(x); }
   const sl = s.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
-  if (sl) { const yy = sl[3] ? (+sl[3] < 100 ? 2000 + +sl[3] : +sl[3]) : d.getFullYear(); return isoOf(new Date(yy, +sl[2] - 1, +sl[1])); }
-  const el = s.match(/\bel\s+(?:dia\s+)?(\d{1,2})\b(?!\s*(?:bs|bolivianos|\$|dolares|usd|pesos|:))/);
-  if (el && +el[1] >= 1 && +el[1] <= 31) { const x = new Date(d.getFullYear(), d.getMonth(), +el[1]); if (x > d) x.setMonth(x.getMonth() - 1); return isoOf(x); }
+  // "25/12" sin año: si todavía no llegó, es del año pasado
+  if (sl) { const yy = sl[3] ? (+sl[3] < 100 ? 2000 + +sl[3] : +sl[3]) : d.getFullYear(); const x = new Date(yy, +sl[2] - 1, +sl[1]); if (!sl[3] && x > d) x.setFullYear(x.getFullYear() - 1); return isoOf(x); }
+  const el = s.match(/\bel\s+(?:dia\s+)?(\d{1,2})\b(?!\s*(?:bs|bob|bolivianos|\$|dolares|usd|pesos|verdes|:))/);
+  if (el && +el[1] >= 1 && +el[1] <= 31) {
+    // "el 31": de este mes si ya pasó; si no, del mes anterior (y si ese mes no tiene 31, su último día)
+    let y = d.getFullYear(), m = d.getMonth();
+    if (+el[1] > d.getDate()) { m -= 1; if (m < 0) { m = 11; y -= 1; } }
+    return isoOf(new Date(y, m, Math.min(+el[1], new Date(y, m + 1, 0).getDate())));
+  }
   return null;
 }
 
@@ -2571,27 +2611,52 @@ function localParse(text) {
     if (date) ctxDate = date;
     const time = findTime(raw);
     // Sacar fechas y horas antes de buscar el monto
-    const s = raw.replace(/\b\d{1,2}:\d{2}\b|\ba\s+las?\s+\d{1,2}\b|\b\d{1,2}\s*(am|pm)\b|\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\bel\s+(dia\s+)?\d{1,2}\b(?!\s*(bs|bolivianos|\$|dolares|usd))|\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b|\btarjeta\s*\d\b/g, ' ');
+    const s = raw.replace(/\b\d{1,2}:\d{2}\b|\ba\s+las?\s+\d{1,2}\b|\b\d{1,2}\s*(am|pm)\b|\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\bel\s+(dia\s+)?(?:3[01]|[12]\d|0?[1-9])\b(?!\s*(bs|bob|bolivianos|pesos|verdes|\$|dolares|usd|:))|\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b|\btarjeta\s*\d\b/g, ' ');
     // De todos los números, el monto es el que tiene moneda; si ninguno la tiene, el más grande ("2 salteñas 16" → 16)
-    const nums = [...s.matchAll(/(\$|us\$|usd\s*)?\s*(\d+(?:[.,]\d+)?)\s*(?:(k|lucas)\b)?\s*(bs\b|bob\b|bolivianos?\b|pesos\b|\$|usd\b|usdt\b|usdc\b|dolares\b|dolar\b|verdes\b)?/gi)]
+    const nums = [...s.matchAll(/(\$\s*us\b|\$|us\$|usd\s*)?\s*(\d+(?:[.,]\d+)?)\s*(?:(k|lucas)\b)?\s*(bs\b|bob\b|bolivianos?\b|pesos\b|\$|usd\b|usdt\b|usdc\b|dolares\b|dolar\b|verdes\b)?/gi)]
       .filter((m) => parseNum(m[2]) > 0);
     const amt = nums.find((m) => m[1] || m[4]) || nums.sort((a, b) => parseNum(b[2]) - parseNum(a[2]))[0];
-    if (!amt) { carry = raw; continue; }
+    if (!amt) {
+      // Sin monto pero nombrás un fijo pendiente ("pagué el gym", "me llegó la mesada"): se usa su monto y su cuenta
+      const rr = pendingRecurring().find((x) => { const w = norm(x.name).split(/[^a-z0-9]+/).find((k) => k.length >= 3); return w && new RegExp(`\\b${w}\\b`).test(raw); });
+      if (rr) {
+        const a0 = S.accounts.find((a) => a.id === rr.accountId) || defaultAccount(rr.currency);
+        const v0 = a0 ? convert(rr.amount, rr.currency, a0.currency) : null;
+        out.push({ type: rr.type, amount: v0 ?? rr.amount, currency: v0 != null ? a0.currency : rr.currency, category: rr.category, accountId: a0?.id || '', date: date || ctxDate || todayISO(), time: time || ((date || ctxDate || todayISO()) === todayISO() ? nowTime() : '12:00'), note: rr.name });
+        carry = '';
+        continue;
+      }
+      carry = raw; continue;
+    }
     carry = '';
     let amount = parseNum(amt[2]);
     if (amt[3]) amount *= 1000;
     if (!(amount > 0)) continue;
     const curWord = `${amt[1] || ''} ${amt[4] || ''}`;
     let currency = /\$|usd|dolar|verde/.test(curWord) ? 'USD' : /bs|bob|bolivian|pesos/.test(curWord) ? S.settings.localCurrency : null;
-    if (!currency && /\b(dolares|usd|usdt|usdc)\b/.test(raw)) currency = 'USD';
+    if (!currency && /\$\s*us\b|\b(dolares|usd|usdt|usdc)\b/.test(raw)) currency = 'USD'; // ("$us 20", como se escribe en Bolivia)
     const isIncome = INCOME_RX.test(raw);
     const words = [...customCatWords(isIncome ? 'ingreso' : 'gasto'), ...(isIncome ? INC_WORDS : CAT_WORDS)];
     let category = isIncome ? 'Otros ingresos' : 'Otros gastos';
     const catText = raw.replace(/\b(con )?(la )?tarjeta( de credito| de debito)?\b/g, ' '); // "con tarjeta de crédito" no es recarga de celular
     for (const [cat, list] of words) if (list.split(' ').some((w) => w.length > 2 && new RegExp(`\\b${w}\\b`).test(catText))) { category = cat; break; }
+    // Si nombraste la categoría misma ("40 en transporte", "salud 80")
+    if (OTHER_CATS.has(category)) {
+      const hit = catsOf(isIncome ? 'ingreso' : 'gasto').find((c) => { const w = norm(c).split(/[^a-z0-9]+/).find((k) => k.length >= 4 && !['pago', 'otros'].includes(k)); return !OTHER_CATS.has(c) && w && new RegExp(`\\b${w}\\b`).test(catText); });
+      if (hit) category = hit;
+    }
     let acc = findAccount(raw);
     if (acc === 'efectivo') acc = S.accounts.find((a) => a.type === 'efectivo' && (!currency || a.currency === currency)) || defaultAccount(currency);
     else if (acc === 'tarjeta') acc = S.accounts.find((a) => a.type === 'credito' || a.type === 'debito') || defaultAccount(currency);
+    // No dijiste la cuenta y es de un fijo (ej. el sueldo): la cuenta de ese fijo
+    // (lo nombraste, ej. "internet 250"; o es un ingreso de esa categoría, ej. "me pagaron el sueldo")
+    if (!acc) {
+      const mine = S.recurring.filter((x) => repeats(x) && x.type === (isIncome ? 'ingreso' : 'gasto') && x.accountId);
+      const named = (x) => { const w = norm(x.name).split(/[^a-z0-9]+/).find((k) => k.length >= 3); return w && new RegExp(`\\b${w}\\b`).test(raw); };
+      const rr = mine.find(named) || (isIncome && mine.find((x) => x.category === category));
+      const a1 = rr && S.accounts.find((a) => a.id === rr.accountId);
+      if (a1 && (!currency || a1.currency === currency)) acc = a1;
+    }
     if (!acc) acc = defaultAccount(currency || S.settings.localCurrency);
     currency = currency || acc?.currency || S.settings.localCurrency;
     // Detalle: la frase sin montos, monedas ni palabras de relleno
@@ -2607,13 +2672,14 @@ function localParse(text) {
     // Préstamos: "le presté 50 a Juan", "Juan me prestó 100", "le debo 20 a Ana"
     const notName = /^(la|las|el|los|mi|un|una|me|le|que|por|con)$/;
     const pick = (...rx) => { for (const r of rx) { const m = raw.match(r); if (m && !notName.test(m[1])) return m[1]; } return null; };
-    const lentTo = pick(/\bpreste\b.*?\ba\s+([a-z]+)/, /\ble\s+preste\b\s+([a-z]+)/);
-    const borrowedFrom = lentTo ? null : pick(/\b([a-z]+)\s+me\s+presto\b/, /\bme\s+presto\s+([a-z]+)/, /\ble\s+debo\b.*?\ba\s+([a-z]+)/);
+    // ("a mi hermano", "a la María": se salta el artículo)
+    const lentTo = pick(/\bpreste\b.*?\ba\s+(?:(?:mi|la|el|al|los|las)\s+)?([a-z]+)/, /\ble\s+preste\b\s+([a-z]+)/);
+    const borrowedFrom = lentTo ? null : pick(/\b([a-z]+)\s+me\s+presto\b/, /\bme\s+presto\s+([a-z]+)/, /\ble\s+debo\b.*?\ba\s+(?:(?:mi|la|el|al|los|las)\s+)?([a-z]+)/);
     if (lentTo || borrowedFrom) {
       const person = (lentTo || borrowedFrom).replace(/^\w/, (c) => c.toUpperCase());
       const dir = lentTo ? 'preste' : 'debo';
-      out.push({ type: dir === 'preste' ? 'gasto' : 'ingreso', amount, currency, category: dir === 'preste' ? 'Otros gastos' : 'Otros ingresos', accountId: acc?.id || '',
-        date: d, time: time || nowTime(), note: dir === 'preste' ? `Préstamo a ${person}` : `Préstamo de ${person}`, loan: { dir, person } });
+      out.push({ type: dir === 'preste' ? 'gasto' : 'ingreso', amount, currency, category: dir === 'preste' ? 'Otros gastos' : 'Otros ingresos', accountId: /\ble\s+debo\b/.test(raw) && !findAccount(raw) ? '' : acc?.id || '', // "le debo 20 a Ana": no entró plata a ninguna cuenta
+        date: d, time: time || (d === todayISO() ? nowTime() : '12:00'), note: dir === 'preste' ? `Préstamo a ${person}` : `Préstamo de ${person}`, loan: { dir, person } });
       continue;
     }
     out.push({ type: isIncome ? 'ingreso' : 'gasto', amount, currency, category, accountId: acc?.id || '', date: d, time: time || (d === todayISO() ? nowTime() : '12:00'), note: note.slice(0, 60) });
@@ -2674,7 +2740,7 @@ function pendingCardsHTML() {
         <input data-k="amount" inputmode="decimal" value="${esc(numInput(p.amount))}" class="pamount">
         <select data-k="currency">${CURRENCIES.map(([c]) => `<option value="${c}" ${c === p.currency ? 'selected' : ''}>${curLabel(c)}</option>`).join('')}</select>
       </div>
-      <div class="pcard-row"><select data-k="accountId">${accOpts(p.accountId)}</select><input type="date" data-k="date" value="${p.date}"></div>
+      <div class="pcard-row"><select data-k="accountId"><option value="" ${p.accountId ? '' : 'selected'}>— No mover plata —</option>${accOpts(p.accountId)}</select><input type="date" data-k="date" value="${esc(p.date)}"></div>
       <div class="small muted">Se anota en Cuentas → Préstamos (no cuenta como gasto ni ingreso).</div>
     </div>` : `
     <div class="pcard ${p.type}" data-i="${i}">
@@ -2686,7 +2752,7 @@ function pendingCardsHTML() {
       </div>
       <input data-k="note" value="${esc(p.note)}" placeholder="Detalle">
       <div class="pcard-row"><select data-k="category">${catOpts(p.type, p.category)}</select><select data-k="accountId">${accOpts(p.accountId)}</select></div>
-      <div class="pcard-row"><input type="date" data-k="date" value="${p.date}"><input type="time" data-k="time" value="${p.time}"></div>
+      <div class="pcard-row"><input type="date" data-k="date" value="${esc(p.date)}"><input type="time" data-k="time" value="${esc(p.time)}"></div>
     </div>`).join('')}</div>
     <div class="toolbar" style="margin-top:8px"><button class="btn primary" data-chat="save">${icon('check', 16)} Guardar ${chatPending.length === 1 ? 'movimiento' : `${chatPending.length} movimientos`}</button>
       <button class="btn ghost" data-chat="discard">Descartar</button></div>`;
@@ -2733,37 +2799,51 @@ async function handleChatSend() {
 
 function savePending() {
   readPendingFromDOM();
-  const ok = chatPending.filter((p) => p.amount > 0 && S.accounts.some((a) => a.id === p.accountId));
+  // (un préstamo puede no mover plata de ninguna cuenta: "le debo 20 a Ana")
+  const ok = chatPending.filter((p) => p.amount > 0 && (S.accounts.some((a) => a.id === p.accountId) || (p.loan && !p.accountId)));
   if (!ok.length) return toast('No hay movimientos válidos para guardar.');
-  const touched = new Set();
+  const touched = new Set(), failed = [];
+  let saved = 0;
   for (const p of ok) {
     const acc = S.accounts.find((a) => a.id === p.accountId);
     if (p.loan) {
-      createLoan({ dir: p.loan.dir, person: (p.person || p.loan.person).replace(/^\w/, (c) => c.toUpperCase()), amount: p.amount, currency: p.currency, date: p.date, accountId: acc.id });
-      touched.add(acc);
+      if (acc && convert(p.amount, p.currency, acc.currency) == null) { failed.push(p); continue; } // sin tipo de cambio: no se crea a medias
+      createLoan({ dir: p.loan.dir, person: (p.person || p.loan.person).replace(/^\w/, (c) => c.toUpperCase()), amount: p.amount, currency: p.currency, date: p.date, accountId: acc?.id || '' });
+      if (acc) touched.add(acc);
+      saved++;
       continue;
     }
     const amount = convert(p.amount, p.currency, acc.currency);
-    if (amount == null) { toast(NO_RATE, 4500); continue; }
+    if (amount == null) { failed.push(p); continue; }
     const tx = { id: uid(), created: new Date().toISOString(), type: p.type, date: p.date || todayISO(), time: p.time || '', accountId: acc.id, amount, category: p.category, note: p.note || p.category, via: 'chat' };
     // "Pagué el gym" o "me llegó la mesada" marca ese fijo como hecho en vez de sumarlo como extra
     // Sólo fijos sin día, y si el monto se parece (±25%) o dijiste su nombre ("cancha 50" no es el gym de 300)
     const rule = S.recurring.find((r) => {
       if (!repeats(r) || autoReg(r) || !dueIn(r, tx.date.slice(0, 7)) || r.type !== p.type || r.category !== p.category || recurringTx(r, tx.date.slice(0, 7))) return false;
       const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(p.amount, p.currency);
-      return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || norm(p.note || '').includes(norm(r.name).split(' ')[0]);
+      return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || nameIn(r.name, p.note);
     });
     if (rule) { tx.recurringId = rule.id; tx.note = rule.name; }
     S.transactions.push(tx);
     applyTx(tx, 1);
     touched.add(acc);
+    saved++;
   }
-  chatPending = [];
+  // Los que no se pudieron guardar (falta el tipo de cambio) quedan a la vista para reintentar
+  const invalid = chatPending.filter((p) => !ok.includes(p));
+  chatPending = [...failed, ...invalid];
   $$('#chatLog .pending-box').forEach((b) => { b.className = 'saved-box'; b.innerHTML = `<span class="up">${icon('check', 16)} Guardado</span>`; });
-  snapshot(); save(); render();
+  if (saved) { snapshot(); save(); render(); }
   const m = monthStats(currentMonth());
-  chatBubble(`Listo, guardé ${ok.length} ${ok.length === 1 ? 'movimiento' : 'movimientos'}. ${[...touched].map((a) => `${esc(a.name)}: <b class="money">${fmtIn(a.balance, a.currency)}</b>`).join(' · ')}<br>
+  if (saved) chatBubble(`Listo, guardé ${saved} ${saved === 1 ? 'movimiento' : 'movimientos'}. ${[...touched].map((a) => `${esc(a.name)}: <b class="money">${fmtIn(a.balance, a.currency)}</b>`).join(' · ')}<br>
     <span class="muted small">Este mes llevás gastado <span class="money">${fmtMoney(m.expense)}</span>.</span>`);
+  if (chatPending.length) chatBubble(`${failed.length ? 'No pude guardar estos porque falta el tipo de cambio (tocá <b>Actualizar</b> con internet).' : 'Estos quedaron sin guardar: revisá el monto y la cuenta.'}<div class="pending-box">${pendingCardsHTML()}</div>`);
+}
+
+// ¿Nombraste ese fijo? Primera palabra de 3+ letras de su nombre, como palabra entera ("El gym" → "gym", no "el")
+function nameIn(name, text) {
+  const w = norm(name || '').split(/[^a-z0-9]+/).find((k) => k.length >= 3);
+  return !!w && new RegExp(`\\b${w}\\b`).test(norm(text || ''));
 }
 
 /* --- Micrófono (dictado del iPhone / navegador) ---
@@ -3021,7 +3101,7 @@ function mergeRemote(R) {
   for (const t of R.transactions || []) {
     if (have.has(t.id) || dead.has(t.id)) continue;
     // El mismo fijo registrado solo en los dos dispositivos: queda uno
-    if (t.recurringId && S.transactions.some((x) => x.recurringId === t.recurringId && x.date?.slice(0, 7) === t.date?.slice(0, 7))) { dead.add(t.id); continue; }
+    if (t.recurringId && S.transactions.some((x) => x.recurringId === t.recurringId && (freqOf(S.recurring.find((r) => r.id === t.recurringId) || {}) === 'semanal' ? x.date === t.date : x.date?.slice(0, 7) === t.date?.slice(0, 7)))) { dead.add(t.id); continue; }
     if (t.scheduledId && S.transactions.some((x) => x.scheduledId === t.scheduledId)) { dead.add(t.id); continue; }
     S.transactions.push(t);
     applyTx(t, 1); // sólo afecta cuentas que ya existían acá; las cuentas nuevas traen su saldo
@@ -3069,7 +3149,7 @@ function mergeRemote(R) {
   for (const l of S.loans) {
     const rl = (R.loans || []).find((x) => x.id === l.id);
     if (!rl) continue;
-    const key = (p) => `${p.date}|${p.amount}`;
+    const key = (p) => p.id || `${p.date}|${p.amount}`; // (los pagos nuevos tienen id: dos pagos iguales el mismo día no se juntan)
     const mine = new Set((l.payments || []).map(key));
     for (const p of rl.payments || []) if (!mine.has(key(p))) (l.payments = l.payments || []).push(p);
     l.closed = loanRemaining(l) <= 0.005;
@@ -3087,7 +3167,11 @@ function mergeRemote(R) {
   S.priceHist = { ...(R.priceHist || {}), ...(S.priceHist || {}) };
   const seenFix = new Set((S.balanceLog || []).map((x) => x.id));
   for (const x of R.balanceLog || []) if (!seenFix.has(x.id)) S.balanceLog.push(x);
-  S.budgets = { ...(R.budgets || {}), ...(S.budgets || {}) };
+  // Topes: gana la versión editada más tarde (así un tope borrado no vuelve); sin marcas (datos viejos), se juntan
+  if (R.budgetsU || S.budgetsU) {
+    if ((R.budgetsU || '') > (S.budgetsU || '')) { S.budgets = JSON.parse(JSON.stringify(R.budgets || {})); S.budgetsU = R.budgetsU; }
+  } else S.budgets = { ...(R.budgets || {}), ...(S.budgets || {}) };
+  lastBudgets = JSON.stringify(S.budgets || {});
   S.deleted = [...dead].slice(-5000);
 }
 
@@ -3534,9 +3618,14 @@ function upcomingItems(days = 30) {
     const rem = loanRemaining(l);
     if (l.closed || rem <= 0) continue;
     // En cuotas: la próxima cuota sin pagar
-    const nx = loanPlan(l)?.next;
+    const lp = loanPlan(l), nx = lp?.next;
     if (nx) {
-      if (nx.date <= end) out.push({ date: nx.date, name: l.dir === 'preste' ? `${l.person}: cuota ${nx.k}` : `Cuota ${nx.k} a ${l.person}`, amount: nx.amount, currency: l.currency, type: l.dir === 'preste' ? 'ingreso' : 'gasto', kind: 'Préstamo', loanId: l.id, overdue: nx.date < today });
+      // Si hay varias cuotas atrasadas, se juntan ("Cuotas 1 a 3 a Banco") con el total que falta de ellas
+      let last = nx.k;
+      while (last < lp.n && lp.dateOf(last) < today) last++;
+      const amt = last > nx.k ? round2(Math.min(lp.left, nx.amount + (last - nx.k) * lp.cuota)) : nx.amount;
+      const nm = last > nx.k ? `cuotas ${nx.k} a ${last}` : `cuota ${nx.k}`;
+      if (nx.date <= end) out.push({ date: nx.date, name: l.dir === 'preste' ? `${l.person}: ${nm}` : `${nm[0].toUpperCase() + nm.slice(1)} a ${l.person}`, amount: amt, currency: l.currency, type: l.dir === 'preste' ? 'ingreso' : 'gasto', kind: 'Préstamo', loanId: l.id, overdue: nx.date < today });
       continue;
     }
     if (!l.dueDate || l.dueDate > end) continue;
@@ -3547,7 +3636,7 @@ function upcomingItems(days = 30) {
 
 function daysUntil(iso) {
   const n = Math.round((Date.parse(iso) - Date.parse(todayISO())) / 864e5);
-  return n < 0 ? `vencido hace ${-n} día${n === -1 ? '' : 's'}` : n === 0 ? 'hoy' : n === 1 ? 'mañana' : `en ${n} días`;
+  return n < 0 ? `venció hace ${-n} día${n === -1 ? '' : 's'}` : n === 0 ? 'hoy' : n === 1 ? 'mañana' : `en ${n} días`;
 }
 
 function upcomingHTML() {
@@ -3730,7 +3819,7 @@ function loanForm(l) {
       if (isNew) createLoan({ ...v, person });
       else {
         // Si cambia el monto, la moneda o el tipo, se rehace lo que salió/entró de la cuenta al prestar
-        const moved = v.amount !== Number(l.amount) || v.currency !== l.currency || v.dir !== l.dir;
+        const moved = v.amount !== Number(l.amount) || v.currency !== l.currency || v.dir !== l.dir || (v.date || l.date) !== l.date; // (también si cambia la fecha)
         const start = S.transactions.find((t) => t.loanId === l.id && (t.loanKind === 'start' || (!t.loanKind && /^Préstamo/.test(t.note))));
         if (moved && start) {
           const acc = S.accounts.find((a) => a.id === start.accountId);
@@ -3768,7 +3857,7 @@ function loanPayForm(l) {
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       l.payments = l.payments || [];
-      l.payments.push({ date: v.date || todayISO(), amount: v.amount });
+      l.payments.push({ id: uid(), date: v.date || todayISO(), amount: v.amount });
       if (v.accountId) loanTx(l, 'pay', v.amount, v.accountId, v.date);
       if (loanRemaining(l) <= 0.005) l.closed = true;
       snapshot(); save(); render();
@@ -3948,7 +4037,7 @@ function viewMiPlan() {
   </section>
 
   <details class="more-box" ${pr?.quiz == null ? 'open' : ''}>
-    <summary>${pr?.quiz == null ? `Preguntas (${pr?.answered || 0} de ${PLAN_QUIZ.length})` : 'Cambiar mis respuestas'}</summary>
+    <summary>${pr?.quiz == null ? `Preguntas (${PLAN_QUIZ.filter((_, i) => ans[i] != null).length} de ${PLAN_QUIZ.length})` : 'Cambiar mis respuestas'}</summary>
     <div class="more-inner"><section class="card">${PLAN_QUIZ.map(([q, opts], i) => `<div class="quiz-q"><b>${i + 1}. ${q}</b>
       <div class="quiz-opts">${opts.map((o, j) => `<label class="quiz-opt"><input type="radio" name="pq_${i}" value="${j}" ${ans[i] === j ? 'checked' : ''}><span>${o}</span></label>`).join('')}</div></div>`).join('')}</section></div>
   </details>
@@ -4130,7 +4219,7 @@ function matchRecurring(type, category, amount, currency, note, date) {
   return S.recurring.find((r) => {
     if (!repeats(r) || autoReg(r) || !dueIn(r, date.slice(0, 7)) || r.type !== type || r.category !== category || recurringTx(r, date.slice(0, 7))) return false;
     const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(amount, currency);
-    return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || norm(note || '').includes(norm(r.name).split(' ')[0]);
+    return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || nameIn(r.name, note);
   });
 }
 
@@ -4246,7 +4335,7 @@ function quickEntry(type = 'gasto', t = null, pre = null) {
     if (!fam) S.settings.lastAccount = { ...(S.settings.lastAccount || {}), [st.type]: acc.id };
     if (t) {
       const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
-      if (r && next.date.slice(0, 7) !== t.date.slice(0, 7)) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
+      skipMoved(r, t.date, next.date);
       applyTx(t, -1); Object.assign(t, next); applyTx(t, 1);
     } else {
       const tx = { id: uid(), created: new Date().toISOString(), ...next };
@@ -4308,7 +4397,7 @@ async function readReceipt(file) {
     <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Cancelar</button></div>`;
   form.onsubmit = (e) => e.preventDefault();
   form.oninput = null; form.onchange = null; form.onclick = null;
-  dlg.onclose = null;
+  dlg.onclose = () => { dlg.onclose = null; cancelled = true; worker?.terminate(); }; // (cerrar con Escape también cancela)
   form.querySelector('[data-close]').onclick = () => { cancelled = true; worker?.terminate(); dlg.close(); };
   dlg.showModal();
   const msg = (t, p) => {
@@ -4333,7 +4422,7 @@ async function readReceipt(file) {
     if (cancelled) return;
     if (!S.settings.ocrReady) { S.settings.ocrReady = true; save(false); }
     const r = parseReceipt(data.text || '');
-    dlg.close();
+    dlg.onclose = null; dlg.close();
     quickEntry('gasto', null, {
       amount: r.amount ?? '', date: r.date || todayISO(), time: r.time || nowTime(), note: r.note || '', category: r.category,
       accountId: receiptPayer(), showAcc: true, receipt: { text: (data.text || '').trim(), found: r.amount != null },
@@ -4961,7 +5050,7 @@ async function makeReport() {
     <div class="meter"><div id="repBar" class="good" style="width:8%"></div></div>
     <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Cancelar</button></div>`;
   form.onsubmit = (e) => e.preventDefault();
-  form.oninput = null; form.onchange = null; form.onclick = null; dlg.onclose = null;
+  form.oninput = null; form.onchange = null; form.onclick = null; dlg.onclose = () => { dlg.onclose = null; cancelled = true; };
   form.querySelector('[data-close]').onclick = () => { cancelled = true; dlg.close(); };
   dlg.showModal();
   const step = (t, p) => { const m = $('#repMsg'); if (m) m.textContent = t; const b = $('#repBar'); if (b && p != null) b.style.width = `${p}%`; };
@@ -4979,7 +5068,7 @@ async function makeReport() {
       <p class="small muted" style="margin:0">Guardalo en Archivos o mandalo directo a tu app de Claude para analizarlo.</p>
       <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Cerrar</button>
         <button type="button" class="btn primary" id="repSave">${icon('download', 16)} Guardar o compartir</button></div>`;
-    form.querySelector('[data-close]').onclick = () => dlg.close();
+    dlg.onclose = null; form.querySelector('[data-close]').onclick = () => dlg.close();
     $('#repSave').onclick = async () => {
       const mobile = matchMedia('(pointer: coarse)').matches;
       if (mobile && navigator.canShare?.({ files: [file] })) {
@@ -5102,9 +5191,8 @@ function spendPlan() {
 
 /* ---------------- "Acumulado sin gastar" ----------------
    Sólo informativo: NO cambia spendPlan() ni ningún cálculo, saldo, ahorro, fijo o programado.
-   Cada día se guarda el presupuesto del día que mostró la app; el acumulado suma, día por día desde
-   el 1 del mes hasta ayer, lo que te sobró de ese presupuesto. Si gastaste de más, se descuenta, sin bajar de 0.
-   Los días sin presupuesto guardado se estiman con la fórmula actual (y esa estimación no se guarda). */
+   Cada día se guarda el presupuesto del día que mostró la app (para el informe). El acumulado es lo que te sobró
+   hasta ayer frente al ritmo parejo del mes (ver dailySaved). */
 
 // Guarda el presupuesto del día de hoy (el último valor que mostró la app hoy)
 function recordDayBudget(p) {
@@ -5126,31 +5214,23 @@ function mergeDayBudgets(a = {}, b = {}) {
   return out;
 }
 
-// { usd, estimated }: estimated = true si algún día se calculó sin presupuesto guardado
+// { usd, estimated }
+// Lo que te sobró hasta ayer = lo que te tocaba a ritmo parejo (presupuesto del mes ÷ días × días que pasaron) − lo que gastaste.
+// (Antes se sumaba el presupuesto que mostraba cada día; como lo que sobra un día ya se reparte en los días siguientes,
+// eso contaba lo mismo varias veces y podía pasar el presupuesto entero del mes.)
+// Es justo lo que hace que "Hoy podés gastar" sea más que el reparto parejo: hoy = (presupuesto ÷ días) + acumulado ÷ días que quedan.
 function dailySaved() {
   const month = currentMonth(), today = todayISO();
   const dim = daysInMonth(month), todayDay = Number(today.slice(8, 10));
   const p = spendPlan();
-  // Lo que gastaste cada día (los mismos gastos que cuenta "Hoy podés gastar": sin fijos, programados, familia ni transferencias)
-  const spentOn = {};
-  for (const t of S.transactions) if (t.date?.startsWith(month) && t.date < today && isVariable(t)) spentOn[t.date] = (spentOn[t.date] || 0) + txUSD(t);
   // No se cuentan los días antes de que empezaras a usar la app
   const firsts = [...S.transactions.map((t) => t.date), ...Object.keys(S.dayBudgets || {})].filter(Boolean).sort();
   const start = firsts[0] || today;
-  let acc = 0, before = 0, estimated = false;
-  for (let d = 1; d < todayDay; d++) {
-    const iso = `${month}-${String(d).padStart(2, '0')}`;
-    const spent = spentOn[iso] || 0;
-    if (iso >= start) {
-      const snap = S.dayBudgets?.[iso];
-      let rec;
-      if (snap && Number.isFinite(snap.v)) rec = snap.v;
-      else { rec = (p.budget - before) / (dim - d + 1); estimated = true; } // misma fórmula que spendPlan() para ese día
-      acc = Math.max(0, acc + Math.max(0, rec) - spent);
-    }
-    before += spent;
-  }
-  return { usd: acc, estimated };
+  const startDay = start.slice(0, 7) < month ? 1 : start.slice(0, 7) === month ? Number(start.slice(8, 10)) : todayDay;
+  const days = Math.max(0, todayDay - startDay);
+  // Los mismos gastos que cuenta "Hoy podés gastar": sin fijos, programados, familia ni transferencias
+  const spent = S.transactions.filter((t) => t.date?.startsWith(month) && t.date < today && isVariable(t)).reduce((s, t) => s + txUSD(t), 0);
+  return { usd: Math.max(0, (Math.max(0, p.budget) * days) / dim - spent), estimated: false };
 }
 
 /* ---------------- Colchón e ingreso seguro ---------------- */
@@ -5296,7 +5376,7 @@ function spendInfo() {
         ${row('− Ya gastaste', L(p.spent))}
         ${row('= Hoy podés gastar', L(p.monthLeft), 'total over')}` : `
         ${row('− Gastado antes de hoy', L(p.spentBefore))}
-        ${row(`÷ ${p.daysLeft} días que quedan`, `${L(p.perDay)} por día`, 'total')}
+        ${row(`÷ ${p.daysLeft} ${p.daysLeft === 1 ? 'día que queda' : 'días que quedan'}`, `${L(p.perDay)} por día`, 'total')}
         ${row('− Gastado hoy', L(p.spentToday))}
         ${row('= Hoy podés gastar', L(p.todayLeft), p.todayLeft < 0 ? 'total over' : 'total')}`}
       </div>` },
@@ -5355,9 +5435,10 @@ function addFavorite(id) {
   toast(`Guardado: ${tx.note || tx.category} ${tx.type === 'gasto' ? '−' : '+'}${fmtIn(tx.amount, acc?.currency || 'USD')}`, 6000, {
     label: 'Deshacer',
     fn: () => {
-      if (!S.transactions.includes(tx)) return;
-      applyTx(tx, -1);
-      S.transactions = S.transactions.filter((x) => x !== tx);
+      const cur = S.transactions.find((x) => x.id === tx.id); // (por id: si se sincronizó en el medio, el objeto pudo cambiar)
+      if (!cur) return;
+      applyTx(cur, -1);
+      S.transactions = S.transactions.filter((x) => x !== cur);
       tombstone(tx.id);
       snapshot(); save(); render();
       toast('Listo, lo deshice.');
@@ -5698,6 +5779,7 @@ function tradeForm(h) {
       const fee = Math.max(0, v.fee || 0);
       const q = Number(h.quantity) || 0;
       if (v.side === 'venta' && qty > q + 1e-12) return `Sólo tenés ${fmtNum(q)} ${h.symbol}.`;
+      v.date = v.date || todayISO(); // (fecha vacía = hoy)
       if (v.date > todayISO()) return 'La fecha no puede ser futura.';
       const acc = v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
       if (acc && convert(1, 'USD', acc.currency) == null) return NO_RATE;
@@ -5747,10 +5829,12 @@ function saveTrade(h, { side, date, qty, price, fee, acc }) {
 }
 
 // Lo que mueve en tu cuenta una compra (sale plata, con la comisión) o una venta (entra, menos la comisión)
+const tradeUSD = ({ side, qty, price, fee }) => (side === 'compra' ? qty * price + (fee || 0) : qty * price - (fee || 0));
 function tradeTxFields(h, { side, date, qty, price, fee }, acc) {
-  const usd = side === 'compra' ? qty * price + (fee || 0) : qty * price - (fee || 0);
+  const usd = tradeUSD({ side, qty, price, fee });
+  // Con el tipo de cambio del día de la operación (si no hay de ese día, el de hoy)
   return {
-    date, type: side === 'compra' ? 'gasto' : 'ingreso', accountId: acc.id, amount: round2(convert(usd, 'USD', acc.currency)),
+    date, type: side === 'compra' ? 'gasto' : 'ingreso', accountId: acc.id, amount: round2(convertAt(usd, 'USD', acc.currency, date || todayISO()).v),
     category: side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
     note: `${side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(qty)} ${h.symbol}${fee ? ` (comisión US$ ${fmtNum(fee, 2)})` : ''}`,
   };
@@ -5833,6 +5917,7 @@ function tradeEditForm(h, t) {
       if (hint && v.qty > 0 && v.price > 0) hint.innerHTML = `${fmtNum(v.qty)} × US$ ${fmtNum(v.price, 2)}${v.fee ? ` ${v.side === 'compra' ? '+' : '−'} US$ ${fmtNum(v.fee, 2)}` : ''} = <b>US$ ${fmtNum(round2(v.qty * v.price + (v.side === 'compra' ? 1 : -1) * (v.fee || 0)), 2)}</b>`;
     },
     onSubmit: (v) => {
+      v.date = v.date || t.date || todayISO(); // (si borraste la fecha, queda la que tenía)
       if (v.date > todayISO()) return 'La fecha no puede ser futura.';
       if (isAdj ? !v.qty : !(v.qty > 0)) return 'La cantidad no puede ser 0.';
       if (!isAdj && !(v.price > 0)) return 'El precio tiene que ser mayor a 0.';
@@ -5844,14 +5929,19 @@ function tradeEditForm(h, t) {
       if (err) return err;
       // La plata que movió en tu cuenta se rehace con los datos nuevos
       if (!isAdj) {
+        // Misma cuenta: se conserva el tipo de cambio que tuvo (y cualquier corrección tuya), ajustando sólo por la diferencia en dólares
+        const oldUSD = tradeUSD(t), newUSD = tradeUSD(next);
+        const sameAcc = tx && acc && tx.accountId === acc.id && oldUSD > 0 && (tx.type === 'gasto') === (next.side === 'compra');
+        const keepAmt = sameAcc ? round2((Number(tx.amount) || 0) * (newUSD / oldUSD)) : null;
         if (tx) { applyTx(tx, -1); S.transactions = S.transactions.filter((x) => x !== tx); tombstone(tx.id); }
         if (acc) {
           const nt = { id: uid(), created: new Date().toISOString(), investment: true, holdingId: h.id, tradeId: t.id, ...tradeTxFields(h, next, acc) };
+          if (keepAmt != null) nt.amount = keepAmt;
           S.transactions.push(nt); applyTx(nt, 1);
         }
       }
       snapshot(); save(); render();
-      toast(`${tradeLabel(next)} de ${h.symbol} corregida ✓`);
+      toast(`${tradeLabel(next)} de ${h.symbol} ${isAdj ? 'corregido' : 'corregida'} ✓`);
       syncPriceHistory();
     },
   });
@@ -5860,7 +5950,7 @@ function tradeEditForm(h, t) {
 async function tradeDelete(h, t) {
   const tx = S.transactions.find((x) => x.tradeId === t.id);
   const ok = await confirmDlg(`Borrar ${tradeLabel(t).toLowerCase()}`,
-    `Se borra la ${tradeLabel(t).toLowerCase()} del ${fmtDate(t.date)} (${fmtNum(t.qty)} ${esc(h.symbol)}) y se recalcula tu cantidad y tu precio promedio${tx ? '. También se revierte la plata que movió en tu cuenta' : ''}.`, 'Borrar');
+    `Se borra ${t.side === 'ajuste' ? 'el' : 'la'} ${tradeLabel(t).toLowerCase()} del ${fmtDate(t.date)} (${fmtNum(t.qty)} ${esc(h.symbol)}) y se recalcula tu cantidad y tu precio promedio${tx ? '. También se revierte la plata que movió en tu cuenta' : ''}.`, 'Borrar');
   if (!ok) return;
   const err = undoTrade(h, t.id);
   if (err) return toast(err, 5000);
@@ -6137,6 +6227,17 @@ function accountForm(a) {
         closingDay: v.type === 'credito' ? v.closingDay : '', dueDay: v.type === 'credito' ? v.dueDay : '', notes: v.notes,
         apy, apySource, apyOffset, apyAccrue: apy > 0 && !!v.apyAccrue, apyLastAccrual: todayISO(),
       };
+      // Si cambiaste el saldo desde acá, queda anotado igual que en "Actualizar saldo" (para el informe y para sincronizar)
+      if (!isNew && changes.currency === a.currency) {
+        const diff = round2(changes.balance - (Number(a.balance) || 0));
+        if (Math.abs(diff) > 0.005) {
+          const out = a.type === 'credito' ? diff > 0 : diff < 0;
+          changes.balanceSetAt = new Date().toISOString();
+          S.balanceLog = S.balanceLog || [];
+          S.balanceLog.push({ id: uid(), accountId: a.id, date: todayISO(), delta: out ? -Math.abs(diff) : Math.abs(diff), currency: a.currency });
+          if (S.balanceLog.length > 500) S.balanceLog.shift();
+        }
+      }
       if (isNew) S.accounts.push({ id: uid(), ...changes }); else Object.assign(a, changes);
       snapshot(); save(); render();
       if (!rate(v.currency)) refreshAll({ silent: true });
@@ -6204,8 +6305,8 @@ function txForm(type, t) {
       { name: 'amount', label: 'Monto', type: 'number', value: t.amount, required: true },
       { name: 'toAmount', label: 'Monto que llega', type: 'number', value: t.toAmount, hint: 'Las cuentas tienen distinta moneda.',
         showIf: (v) => v.type === 'transferencia' && curOf(v.accountId) !== curOf(v.toAccountId) },
-      { name: 'catGasto', label: 'Categoría', type: 'select', value: t.category, options: catsOf('gasto').map((c) => [c, c]), showIf: (v) => v.type === 'gasto' },
-      { name: 'catIngreso', label: 'Categoría', type: 'select', value: t.category, options: catsOf('ingreso').map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
+      { name: 'catGasto', label: 'Categoría', type: 'select', value: t.category, options: withCat(catsOf('gasto'), t.category).map((c) => [c, c]), showIf: (v) => v.type === 'gasto' },
+      { name: 'catIngreso', label: 'Categoría', type: 'select', value: t.category, options: withCat(catsOf('ingreso'), t.category).map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
       { name: 'note', label: 'Detalle', value: t.note, full: true, placeholder: 'ej. Almuerzo, pasaje, sueldo octubre…' },
       { name: 'memo', label: 'Nota (opcional): explicalo con tus palabras', type: 'textarea', value: t.memo || '', full: true,
         showIf: (v) => v.type !== 'transferencia' && OTHER_CATS.has(v.type === 'gasto' ? v.catGasto : v.catIngreso) },
@@ -6235,7 +6336,7 @@ function txForm(type, t) {
       } else {
         // Si un fijo se mueve a otro mes, el mes original no se vuelve a registrar solo
         const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
-        if (r && next.date.slice(0, 7) !== t.date.slice(0, 7)) r.skip = [...new Set([...(r.skip || []), t.date.slice(0, 7)])];
+        skipMoved(r, t.date, next.date);
         applyTx(t, -1); Object.assign(t, next); applyTx(t, 1);
       }
       S.settings.txMonth = next.date.slice(0, 7);
@@ -6273,7 +6374,8 @@ function transferForm(fromId, t = null) {
   const marketFxAt = (c1, c2, date) => { const one = convertAt(1, c1, c2, date).v; return one > 0 ? fxPair(c1, c2).rate(1, one) : null; };
   const rateFor = (a, b, date) => (date && date !== todayISO() ? marketFxAt(curOf(a), curOf(b), date) : null)
     || S.settings.lastFx?.[pairKey(a, b)] || marketFx(curOf(a), curOf(b));
-  const r0 = t?.fxRate || rateFor(from0, to0);
+  // Al editar una transferencia sin tipo de cambio guardado (ej. un pago de tarjeta), se usa el que resulta de sus montos
+  const r0 = t?.fxRate || (t && Number(t.toAmount) > 0 && Number(t.amount) > 0 && curOf(from0) !== curOf(to0) ? fxPair(curOf(from0), curOf(to0)).rate(Number(t.amount), Number(t.toAmount)) : null) || rateFor(from0, to0);
   openForm({
     title: t ? 'Editar transferencia' : 'Pasar plata entre cuentas',
     fields: [
@@ -6676,8 +6778,9 @@ const ACTIONS = {
     if (t.loanId) return toast('Este movimiento es de un préstamo: corregilo desde Cuentas → Préstamos.', 4500);
     const h = t.holdingId && S.holdings.find((x) => x.id === t.holdingId);
     // Si el activo ya se eliminó, se puede borrar igual (sólo se revierte el saldo de la cuenta)
-    if (t.investment && !h && !t.holdingId) return toast('Es una compra/venta de inversión: corregí la cantidad desde Inversiones → Editar.', 4500);
-    if (await confirmDlg('Eliminar movimiento', `Se va a revertir su efecto en el saldo de la cuenta${h ? ` y en tu cantidad de ${esc(h.symbol)}` : ''}.`)) {
+    // (un movimiento de inversión que quedó suelto, ej. después de importar con "Reemplazar", también se puede borrar)
+    const loose = t.investment && !h;
+    if (await confirmDlg('Eliminar movimiento', `Se va a revertir su efecto en el saldo de la cuenta${h ? ` y en tu cantidad de ${esc(h.symbol)}` : ''}.${loose ? ' La cantidad de tus inversiones no cambia (corregila en Inversiones si hace falta).' : ''}`)) {
       if (h) { const err = undoTrade(h, t.tradeId); if (err) return toast(err, 5000); }
       // Un fijo borrado no se vuelve a registrar solo ese mes
       const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
@@ -6717,7 +6820,7 @@ const ACTIONS = {
     if (!p?.rows.length) return;
     const cur = S.settings.localCurrency;
     // Una meta de 0 (ej. intereses) no es un presupuesto: es "no pagar más"
-    for (const r of p.rows) if (r.newV > 0.5) S.budgets[r.c] = { ...(S.budgets[r.c] || {}), amount: roundNice(fromUSD(r.newV, cur)), currency: cur };
+    for (const r of p.rows) if (r.newV > 0.5) { const old = S.budgets[r.c]; S.budgets[r.c] = { ...(old || {}), amount: roundNice(fromUSD(r.newV, cur)), currency: cur, ...(old?.roll ? { since: currentMonth(), carry0: round2(budgetCarry(r.c, old, currentMonth())) } : {}) }; }
     save(); render();
     ($('#sheetDlg').open && sheetView ? $('#sheet') : window).scrollTo({ top: 0, behavior: 'smooth' });
     toast('Listo: esos montos quedaron como topes del mes.');
@@ -6953,7 +7056,7 @@ function bindEvents() {
         // Al volver a activarlo, no se cobran los meses que estuvo apagado
         if (turnOn) { r.startMonth = r.day && r.day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth(); if (freqOf(r) === 'semanal') r.startDate = todayISO(); }
         processRecurring(); save(); render();
-        toast(t.checked ? `${r.name}: se repite todos los meses` : `${r.name}: guardado, ya no se repite`);
+        toast(t.checked ? `${r.name}: se repite (${freqText(r).toLowerCase()})` : `${r.name}: guardado, ya no se repite`);
       }
     }
     if (t.id === 'setBobType') { S.settings.bobRateType = t.value; save(); refreshAll(); }
@@ -6964,7 +7067,7 @@ function bindEvents() {
       if (n > 0) { S.settings.rates[t.dataset.rate] = n; save(); render(); toast(`Tipo de cambio de ${t.dataset.rate} guardado.`); }
       else toast('Ingresá un número mayor a 0.');
     }
-    if (t.id === 'restoreFile' && t.files[0]) restore(t.files[0]);
+    if (t.id === 'restoreFile' && t.files[0]) { restore(t.files[0]); t.value = ''; } // (así podés elegir el mismo archivo otra vez)
   });
   }
 

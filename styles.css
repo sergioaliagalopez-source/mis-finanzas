@@ -414,7 +414,8 @@ body.locked .app, body.locked .fab, body.veiled .app, body.veiled .fab, body.vei
 .habit.done .habit-ico { background: color-mix(in srgb, #0ca30c 16%, transparent); color: var(--good); }
 .list-row.soon .name { color: var(--text); }
 .warn-text { color: var(--warn-ink); }
-:root:not([data-theme="light"]) .warn-text { color: #fab219; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .warn-text { color: #fab219; } }
+:root[data-theme="dark"] .warn-text { color: #fab219; }
 .banner .ico { display: inline-block; vertical-align: -3px; }
 h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .fx-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -716,7 +717,7 @@ html.more-open, html.more-open body { overflow: hidden; }
 .sc-txt { display: flex; flex-direction: column; min-width: 0; }
 .sc-txt b { font-weight: 600; font-size: 15px; }
 .sc-txt small { font-size: 12.5px; line-height: 1.3; color: var(--muted); }
-.sc-txt small.warn-text { color: #e09600; font-weight: 600; }
+.sc-txt small.warn-text { color: var(--warn-ink); font-weight: 600; }
 .link-row { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; font-weight: 600; }
 .link-row .spacer { flex: 1; }
 .link-row .ico { color: var(--text-2); }
@@ -852,7 +853,8 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .q-cat-new { border: 1px dashed var(--border); background: none; }
 .q-cat-new .q-cat-ico { color: var(--accent); }
 .q-need::placeholder { color: var(--warn-ink); }
-:root:not([data-theme="light"]) .q-need::placeholder { color: #e0a62a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .q-need::placeholder { color: #e0a62a; } }
+:root[data-theme="dark"] .q-need::placeholder { color: #e0a62a; }
 .q-memo { width: 100%; min-height: 64px; resize: vertical; border-radius: 12px; font-family: inherit; font-size: 15px; padding: 10px 12px; border: 1px solid var(--border); background: var(--surface); }
 #dlgForm textarea[name="memo"] { font-family: inherit; font-size: 15px; min-height: 64px; }
 .cat-preview { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
