@@ -56,6 +56,7 @@ const ICONS = {
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
   faceid: '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 9.5v1M15 9.5v1M12 9.5v3.5h-1"/><path d="M9 15.5a4 4 0 0 0 6 0"/>',
+  finger: '<path d="M7 11a5 5 0 0 1 10 0v2a14 14 0 0 1-1.2 5.6"/><path d="M12 11v2.5a10 10 0 0 1-2 6"/><path d="M4.6 15A10 10 0 0 0 5 11a7 7 0 0 1 12.5-4.3"/><path d="M9.5 11a2.5 2.5 0 0 1 5 0v2"/>',
   back: '<path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1z"/><path d="m15 9-4 6M11 9l4 6"/>',
   flame: '<path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5 0 2 1 3 2 3-1-3 0-6.5 1-8.5z"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
@@ -85,6 +86,11 @@ const ICONS = {
   tag: '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/>',
   gift: '<rect x="3" y="8" width="18" height="5" rx="1"/><path d="M5 13v8h14v-8M12 8v13"/><path d="M12 8C10 4 6.5 4.5 7.5 7c.5 1 4.5 1 4.5 1zM12 8c2-4 5.5-3.5 4.5-1-.5 1-4.5 1-4.5 1z"/>',
 };
+// iPhone/iPad o Android/PC: algunos textos y ayudas cambian (Face ID o huella, Atajos o alarma del Reloj, permisos del micrófono)
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+const BIO = IS_IOS ? 'Face ID' : 'huella';
+const BIO_ICON = IS_IOS ? 'faceid' : 'finger';
 const icon = (name, size = 20) => `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 const paintIcons = (root = document) => $$('[data-icon]', root).forEach((el) => { el.innerHTML = icon(el.dataset.icon); });
 
@@ -190,7 +196,7 @@ const MORE_GROUPS = [
     ['informe', 'Informe', 'download', 'PDF o Excel'],
   ]],
   ['La app', [
-    ['respaldo', 'Respaldo', 'sync', 'iPhone, PC y copias'],
+    ['respaldo', 'Respaldo', 'sync', 'Celular, PC y copias'],
     ['ajustes', 'Ajustes', 'settings', 'Bloqueo y más'],
   ]],
 ];
@@ -911,6 +917,7 @@ function viewResumen() {
   return `
   ${missing.length ? `<div class="banner">Falta el tipo de cambio de ${missing.join(', ')}. Tocá <b>Actualizar</b> o cargalo en <a href="#" data-action="go" data-id="dolar">Dólar</a>.</div>` : ''}
   ${stale ? `<div class="banner">Tus datos viven sólo en este dispositivo. <a href="#" data-action="go" data-id="respaldo">Activá la sincronización automática</a> para no perderlos.</div>` : ''}
+  ${installBannerHTML()}
   ${dueSoonBanner()}
   <section class="card hero">
     <div class="label">Patrimonio hoy${t.lent ? ' <span class="muted small">(sin lo prestado)</span>' : ''}</div>
@@ -1809,7 +1816,7 @@ function viewRespaldo() {
   return `
   <div class="settings-grid">
     <section class="card" id="sincro">
-      <h2 style="margin-bottom:8px">${icon('sync', 18)} Tus datos en iPhone y PC</h2>
+      <h2 style="margin-bottom:8px">${icon('sync', 18)} Tus datos en tu celular y la PC</h2>
       <div id="cloudSync">${cloudSyncHTML()}</div>
     </section>
     <section class="card">
@@ -1862,8 +1869,9 @@ function viewAjustes() {
   const s = S.settings;
   return `
   <div class="settings-grid">
+    ${isInstalled() ? '' : `<section class="card" id="instalar"><h2 style="margin-bottom:8px">${icon('download', 18)} Instalar la app</h2>${installHelpHTML()}</section>`}
     <section class="card" id="bloqueo">
-      <h2 style="margin-bottom:8px">${icon('lock', 18)} Bloqueo con Face ID o PIN</h2>
+      <h2 style="margin-bottom:8px">${icon('lock', 18)} Bloqueo con ${BIO} o PIN</h2>
       ${lockSettingsHTML()}
     </section>
 
@@ -3006,11 +3014,13 @@ function toggleMic({ autoSend = false } = {}) {
     if (rec._done || e.error === 'aborted') return;
     const msg = {
       'no-speech': 'No te escuché. Tocá el micrófono y hablá enseguida.',
-      'not-allowed': 'MyFinance no tiene permiso para el micrófono. Revisá Ajustes del iPhone → Safari → Micrófono, o usá el micrófono del teclado.',
+      'not-allowed': IS_IOS ? 'MyFinance no tiene permiso para el micrófono. Revisá Ajustes del iPhone → Safari → Micrófono, o usá el micrófono del teclado.'
+        : IS_ANDROID ? 'MyFinance no tiene permiso para el micrófono. Tocá el candado o ⓘ junto a la dirección (o Ajustes → Apps → Chrome → Permisos → Micrófono), o usá el micrófono del teclado.'
+        : 'El navegador no tiene permiso para el micrófono. Permitilo desde el candado junto a la dirección.',
       'service-not-allowed': 'El dictado no está disponible ahora. Usá el micrófono del teclado.',
       'audio-capture': 'Otra app está usando el micrófono. Probá de nuevo.',
       'network': 'El dictado necesita internet. Probá de nuevo o usá el micrófono del teclado.',
-      'language-not-supported': 'Tu iPhone no tiene el dictado en español activado. Usá el micrófono del teclado.',
+      'language-not-supported': `Tu ${IS_IOS ? 'iPhone' : 'teléfono'} no tiene el dictado en español activado. Usá el micrófono del teclado.`,
     }[e.error] || 'El micrófono se cortó. Tocá de nuevo.';
     toast(msg, 5000);
   };
@@ -3412,7 +3422,7 @@ function cloudSyncHTML() {
   const c = cloudCfg();
   if (!c?.gistId) {
     return `<p class="small" style="color:var(--text-2);margin-top:0">Tus datos se guardan solos y <b>cifrados con tu contraseña</b> en tu cuenta de GitHub (gratis),
-      y cada dispositivo (iPhone y PC) se pone al día al abrir la app. Nadie más puede leerlos, ni GitHub.</p>
+      y cada dispositivo (celular y PC) se pone al día al abrir la app. Nadie más puede leerlos, ni GitHub.</p>
       <ol class="small" style="color:var(--text-2);padding-left:18px;margin:0 0 12px">
         <li>Entrá a <a href="https://github.com/settings/tokens/new?scopes=gist&description=Mis%20Finanzas" target="_blank" rel="noopener">este link de GitHub</a> (ya viene marcado sólo el permiso <b>gist</b>).</li>
         <li>En "Expiration" elegí <b>No expiration</b>, tocá <b>Generate token</b> y copiá el código (empieza con <code>ghp_</code>).</li>
@@ -3480,7 +3490,7 @@ const Lock = {
       <h2>MyFinance</h2><p class="muted">Ingresá tu PIN</p>
       <div class="pin-dots">${Array.from({ length: c.pinLen }, () => '<i></i>').join('')}</div>
       <div class="keypad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-k="${n}">${n}</button>`).join('')}
-        <button data-k="bio" ${c.credId && bioAvailable() ? '' : 'style="visibility:hidden"'} aria-label="Face ID">${icon('faceid', 26)}</button>
+        <button data-k="bio" ${c.credId && bioAvailable() ? '' : 'style="visibility:hidden"'} aria-label="${BIO}">${icon(BIO_ICON, 26)}</button>
         <button data-k="0">0</button><button data-k="del" aria-label="Borrar">${icon('back', 24)}</button></div>
       <button class="link-btn" data-k="forgot">¿Olvidaste el PIN?</button>
     </div>`;
@@ -3548,12 +3558,12 @@ const Lock = {
 function lockSettingsHTML() {
   const c = lockCfg();
   if (!c?.pinHash) {
-    return `<p class="small" style="color:var(--text-2);margin-top:0">Pide un PIN (o Face ID / huella) al abrir la app y cuando volvés después de 1 minuto.
+    return `<p class="small" style="color:var(--text-2);margin-top:0">Pide un PIN (o ${BIO}) al abrir la app y cuando volvés después de 1 minuto.
       Se configura por dispositivo.</p><button class="btn primary" data-action="lockOn">${icon('lock', 16)} Activar bloqueo</button>`;
   }
-  return `<p class="small" style="margin-top:0"><span class="status good">${icon('check', 14)} Bloqueo activo</span> · PIN de ${c.pinLen} dígitos${c.credId ? ' · Face ID / huella activado' : ''}</p>
+  return `<p class="small" style="margin-top:0"><span class="status good">${icon('check', 14)} Bloqueo activo</span> · PIN de ${c.pinLen} dígitos${c.credId ? ` · ${BIO} activado` : ''}</p>
     <div class="toolbar">
-      ${bioAvailable() ? `<button class="btn sm" data-action="${c.credId ? 'bioOff' : 'bioOn'}">${icon('faceid', 16)} ${c.credId ? 'Quitar Face ID' : 'Usar Face ID / huella'}</button>` : '<span class="muted small">Face ID funciona en la app instalada (https).</span>'}
+      ${bioAvailable() ? `<button class="btn sm" data-action="${c.credId ? 'bioOff' : 'bioOn'}">${icon(BIO_ICON, 16)} ${c.credId ? `Quitar ${BIO}` : `Usar ${BIO}`}</button>` : `<span class="muted small">${BIO[0].toUpperCase() + BIO.slice(1)} funciona en la app instalada (https).</span>`}
       <button class="btn sm" data-action="lockOn">Cambiar PIN</button>
       <button class="btn sm ghost danger" data-action="lockOff">Quitar bloqueo</button></div>`;
 }
@@ -3592,8 +3602,8 @@ async function enableBio() {
     } });
     setLockCfg({ ...lockCfg(), credId: bufToB64(cred.rawId) });
     render();
-    toast('Face ID / huella activado.');
-  } catch (e) { toast('No se pudo activar Face ID en este dispositivo.'); }
+    toast(`${BIO[0].toUpperCase() + BIO.slice(1)} activado.`);
+  } catch (e) { toast(`No se pudo activar ${BIO} en este dispositivo.`); }
 }
 
 /* ---------------- Hábito: racha de días registrando ---------------- */
@@ -6945,6 +6955,8 @@ const ACTIONS = {
   qtyAdjust: (id) => qtyAdjustForm(byId(S.holdings, id)),
   catAdd: (type) => customCatForm(type),
   txSearchClear: () => { txQuery = ''; render(); },
+  installApp: async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice.catch(() => null); installEvt = null; render(); if (r?.outcome === 'accepted') toast('Listo: buscá MyFinance en la pantalla de inicio de tu teléfono.', 5000); },
+  installDismiss: () => { S.settings.installDismissed = true; save(false); render(); },
   planStepAdd: () => {
     const inp = $('#planStepNew'), text = inp?.value.trim();
     if (!text) { inp?.focus(); return toast('Escribí el paso.'); }
@@ -6973,16 +6985,21 @@ const ACTIONS = {
   cloudConnect: () => cloudConnectForm(),
   reminderHelp: () => openForm({
     title: 'Recordatorio diario',
-    fields: [{ type: 'html', html: `<ol style="margin:0;padding-left:18px;color:var(--text-2)">
+    // iPhone: la app Atajos. Android (y otros): una alarma diaria del Reloj con un nombre
+    fields: [{ type: 'html', html: IS_IOS ? `<ol style="margin:0;padding-left:18px;color:var(--text-2)">
       <li>Abrí la app <b>Atajos</b> → <b>Automatización</b> → <b>+</b> → <b>Hora del día</b>.</li>
       <li>Elegí <b>21:00</b>, <b>Diariamente</b> y <b>Ejecutar inmediatamente</b>.</li>
-      <li>Agregá <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>` }],
+      <li>Agregá <b>Mostrar notificación</b>: "¿Registraste tus gastos de hoy?".</li></ol>`
+      : `<ol style="margin:0;padding-left:18px;color:var(--text-2)">
+      <li>Abrí la app <b>Reloj</b> del teléfono → <b>Alarma</b> → <b>+</b>.</li>
+      <li>Poné <b>21:00</b> y en <b>Repetir</b> elegí <b>todos los días</b>.</li>
+      <li>En <b>Nombre</b> o <b>Etiqueta</b> escribí: "¿Registraste tus gastos de hoy?". Si querés, bajale el volumen o elegí sólo vibrar.</li></ol>` }],
     submitLabel: 'Listo',
     onSubmit: () => {},
   }),
   cloudNow: () => CloudSync.sync({ quiet: false }),
   cloudOff: async () => { if (await confirmDlg('Desactivar sincronización', 'Este dispositivo deja de sincronizarse. Tus datos siguen acá y en GitHub.', 'Desactivar')) CloudSync.disconnect(); },
-  lockOn: () => pinForm(() => { if (bioAvailable() && !lockCfg()?.credId) setTimeout(() => toast('Tip: también podés activar Face ID / huella acá abajo.', 4000), 600); }),
+  lockOn: () => pinForm(() => { if (bioAvailable() && !lockCfg()?.credId) setTimeout(() => toast(`Tip: también podés activar ${BIO} acá abajo.`, 4000), 600); }),
   lockOff: async () => { if (await confirmDlg('Quitar bloqueo', 'La app se va a abrir sin pedir PIN en este dispositivo.', 'Quitar')) { setLockCfg(null); render(); } },
   bioOn: () => enableBio(),
   bioOff: () => { const c = lockCfg(); delete c.credId; setLockCfg(c); render(); },
@@ -7276,6 +7293,50 @@ function welcome() {
   $('#welcomeOpen')?.addEventListener('click', () => { $('#dlg').close(); cloudConnectForm(); });
 }
 
+/* ---------------- Instalar la app (Android: Chrome avisa que se puede instalar) ---------------- */
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; try { render(); } catch (err) { /* todavía cargando */ } });
+window.addEventListener('appinstalled', () => { installEvt = null; try { render(); } catch (err) { /* nada */ } });
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+function installHelpHTML() {
+  if (isInstalled()) return '';
+  if (installEvt) return `<p class="small" style="color:var(--text-2);margin-top:0">Instalala y se abre como una app normal, con su ícono y sin la barra del navegador.</p>
+    <button class="btn primary" data-action="installApp">${icon('download', 16)} Instalar MyFinance</button>`;
+  return `<p class="small" style="color:var(--text-2);margin:0">${IS_IOS ? 'En Safari tocá <b>Compartir</b> → <b>Agregar a inicio</b>.'
+    : 'En el menú <b>⋮</b> del navegador tocá <b>Instalar app</b> o <b>Agregar a la pantalla principal</b>. (Funciona mejor con Chrome.)'}</p>`;
+}
+// Aviso en Inicio, sólo cuando Chrome deja instalarla con un toque (y hasta que lo cierres)
+const installBannerHTML = () => (installEvt && !isInstalled() && !S.settings.installDismissed
+  ? `<div class="banner install-banner">${icon('download', 16)}<span>Instalá MyFinance en este teléfono para abrirla como una app.</span>
+    <button class="btn sm primary" data-action="installApp">Instalar</button><button class="btn sm ghost icon-only" data-action="installDismiss" aria-label="No mostrar más">${icon('x', 14)}</button></div>` : '');
+
+/* ---------------- Botón / gesto "atrás" (Android) ----------------
+   Sin esto, "atrás" cierra la app desde cualquier pantalla. Ahora: primero cierra la ventana o el menú abierto,
+   después vuelve a Inicio y, estando en Inicio sin nada abierto, el siguiente "atrás" sale de la app.
+   (En el iPhone no hay botón atrás: no cambia nada.) */
+function setupBackButton() {
+  if (!window.history?.pushState) return;
+  const arm = () => { if (!history.state?.mfGuard) history.pushState({ mfGuard: true }, ''); };
+  if (!history.state?.mfGuard) { history.replaceState({ mfRoot: true }, ''); arm(); }
+  // Si tocás algo después de volver a Inicio, "atrás" vuelve a funcionar igual (no sale de golpe)
+  window.addEventListener('pointerdown', arm, true);
+  window.addEventListener('popstate', () => {
+    if (Lock.locked) { arm(); return; } // con la app bloqueada no se navega
+    const open = [...document.querySelectorAll('dialog[open]')];
+    if (open.length) {
+      const d = open[open.length - 1];
+      // El mismo botón de cerrar de cada ventana (así se limpia lo que cada una necesita)
+      const btn = d.querySelector('[data-q="close"], [data-sheet-close], [data-close]');
+      if (btn) btn.click(); else d.close();
+      if (d.open) d.close();
+      arm(); return;
+    }
+    if (!$('#moreMenu')?.hidden) { closeMore(); arm(); return; }
+    if (S.settings.view !== 'resumen') { go('resumen'); arm(); return; }
+    // En Inicio sin nada abierto: se deja salir (el próximo "atrás" cierra la app)
+  });
+}
+
 /* ---------------- Inicio ---------------- */
 
 (async function init() {
@@ -7285,6 +7346,7 @@ function welcome() {
   const existed = load();
   if (Lock.enabled()) Lock.show();
   bindEvents();
+  setupBackButton();
   render();
   // Primero se compara con el archivo vinculado y con GitHub, así nunca se pisa una versión más nueva
   try { await FileSync.init(); } catch (e) { console.warn(e); }

@@ -345,7 +345,7 @@ tr.best td { background: color-mix(in srgb, #0ca30c 7%, transparent); }
 .cmp-bars .b.avg { background: var(--axis); }
 
 /* ---------- Metas ---------- */
-.goal-nums { display: flex; align-items: baseline; gap: 4px; margin-bottom: 8px; }
+.goal-nums { display: flex; align-items: baseline; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
 .goal-nums .spacer { flex: 1; }
 .goal-now { font-size: 26px; font-weight: 700; }
 .meter.big { height: 10px; }
@@ -762,6 +762,27 @@ html.more-open, html.more-open body { overflow: hidden; }
   .more-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .qa { font-size: 13px; }
 }
+/* Teléfonos angostos o con la letra agrandada en Ajustes del teléfono (Android achica el ancho útil) */
+@media (max-width: 340px) {
+  .topbar { gap: 6px; padding-left: calc(10px + env(safe-area-inset-left)); padding-right: calc(10px + env(safe-area-inset-right)); }
+  .topbar h1 { font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top-actions { gap: 4px; flex: none; }
+  .seg button { padding: 6px 7px; font-size: 13px; }
+  .icon-btn, #refreshBtn { padding: 6px; }
+  .q-top { gap: 6px; }
+  .q-icon { width: 34px; height: 34px; }
+  .q-seg button { height: 34px; font-size: 13px; gap: 3px; }
+  .close-grid b { font-size: 15px; overflow-wrap: anywhere; }
+  .close-grid > div { min-width: 0; }
+  .goal-facts { grid-template-columns: 1fr 1fr; }
+  .goal-now { font-size: 22px; }
+  .month-sum b { font-size: 15px; }
+  .filter, .filter select { max-width: 100%; min-width: 0; }
+  .tile { min-width: 0; }
+  .tile .t-value { font-size: 15px; overflow-wrap: anywhere; }
+  .q-seg { min-width: 0; }
+  .q-icon { width: 32px; height: 32px; }
+}
 
 /* Hoja deslizable con una sección (Fijos, Programados, Metas…) */
 .sheet-dlg { width: min(640px, calc(100vw - 32px)); background: var(--bg); }
@@ -914,3 +935,8 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .period-list .period-row { width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding-left: 8px; padding-right: 8px; border-radius: 10px; }
 .period-list .period-row.on { background: var(--surface-2); }
 .period-list .period-row .money { white-space: nowrap; }
+
+/* Aviso para instalar la app (Android) */
+.install-banner { display: flex; align-items: center; gap: 8px; }
+.install-banner > span { flex: 1; min-width: 0; }
+.install-banner .btn { flex: none; }
