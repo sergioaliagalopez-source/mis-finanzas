@@ -795,7 +795,7 @@ function openForm({ title, fields, submitLabel = 'Guardar', onSubmit, onInput, o
     done = true;
     dlg.close();
   };
-  const showErr = (m) => { const p = form.querySelector('.form-error'); p.textContent = m; p.hidden = false; };
+  const showErr = (m) => { const p = form.querySelector('.form-error'); p.textContent = m; p.hidden = false; p.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); navigator.vibrate?.(60); }; // (que se vea aunque el teclado tape el final)
   form.querySelector('[data-close]').onclick = () => dlg.close();
   dlg.onclose = () => { if (!done && onCancel) onCancel(); };
   dlg.showModal();
@@ -1132,20 +1132,35 @@ const freqOf = (r) => (r.freq === 'semanal' || r.freq === 'anual' ? r.freq : 'me
 const monthName = (n) => monthLabel(`2000-${String(n).padStart(2, '0')}`, 'long');
 // ¿Le toca ese mes? (los anuales sólo en su mes)
 const dueIn = (r, month) => freqOf(r) !== 'anual' || Number(month.slice(5, 7)) === Number(r.month);
-// ¿Se registra solo? Mensuales y anuales con día; semanales siempre (en su día de la semana)
-const autoReg = (r) => freqOf(r) === 'semanal' || !!r.day;
+/* Fijos con monto que cambia (luz, agua, gas…): el monto es aproximado. Se reserva el promedio de lo que pagaste
+   de verdad los últimos 3 meses (si todavía no hay pagos, el que cargaste) y nunca se registran solos:
+   quedan pendientes ("vence el 20") hasta que tocás "Ya pagué" y ponés lo que vino en la factura. */
+const isVar = (r) => !!r.variable && freqOf(r) !== 'semanal';
+const varPaid = (r) => S.transactions.filter((t) => t.recurringId === r.id).sort((a, b) => b.date.localeCompare(a.date));
+function recAmount(r) {
+  if (!isVar(r)) return Number(r.amount) || 0;
+  const last = varPaid(r).slice(0, 3);
+  if (!last.length) return Number(r.amount) || 0;
+  const avg = last.reduce((s, t) => s + txUSD(t), 0) / last.length;
+  return round2(fromUSD(avg, r.currency)) || Number(r.amount) || 0;
+}
+// ¿Se registra solo? Mensuales y anuales con día; semanales siempre (en su día de la semana). Los de monto que cambia, nunca
+const autoReg = (r) => !isVar(r) && (freqOf(r) === 'semanal' || !!r.day);
 const weekdayOf = (iso) => new Date(`${iso}T12:00:00`).getDay();
 // Fechas de un fijo semanal dentro de un mes
 const weekDates = (r, month) => Array.from({ length: daysInMonth(month) }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`).filter((d) => weekdayOf(d) === Number(r.weekday));
 const weekTx = (r, date) => S.transactions.find((t) => t.recurringId === r.id && t.date === date);
 // Cuánto es por mes en promedio (para proyecciones, colchón y "lo que te entra")
-const monthlyEq = (r) => { const a = Number(r.amount) || 0, f = freqOf(r); return f === 'anual' ? a / 12 : f === 'semanal' ? (a * 52) / 12 : a; };
+const monthlyEq = (r) => { const a = recAmount(r), f = freqOf(r); return f === 'anual' ? a / 12 : f === 'semanal' ? (a * 52) / 12 : a; };
 const freqText = (r) => {
   const f = freqOf(r);
   if (f === 'semanal') { const d = DIAS_SEMANA[Number(r.weekday) || 0]; return `Todos los ${/s$/.test(d) ? d : `${d}s`}`; } // "los domingos", "los lunes"
-  if (f === 'anual') return `Cada año en ${monthName(r.month || 1)}${r.day ? ` (día ${r.day})` : ''}`;
+  if (f === 'anual') return `Cada año en ${monthName(r.month || 1)}${r.day ? ` (${isVar(r) ? 'vence el' : 'día'} ${r.day})` : ''}`;
+  if (isVar(r)) return r.day ? `Vence el ${r.day} de cada mes` : 'Cada mes, sin día fijo';
   return r.day ? `Todos los ${r.day}` : 'Cada mes, sin día fijo';
 };
+// "~Bs 150" para los de monto que cambia (en la lista de Fijos se muestra "≈ −Bs 150")
+const recAmountLabel = (r) => `${isVar(r) ? '~' : ''}${fmtIn(recAmount(r), r.currency)}`;
 const freqUnit = (r) => ({ semanal: '/sem', anual: '/año' }[freqOf(r)] || '');
 // Si movés un movimiento de un fijo a otra fecha, la original no se vuelve a registrar sola
 // (semanal: esa fecha; mensual y anual: ese mes, si cambió de mes)
@@ -1157,7 +1172,7 @@ function skipMoved(r, from, to) {
 
 // Monto de la regla convertido a la moneda de la cuenta donde entra / sale
 function recurringAmountFor(r, acc) {
-  return acc ? convert(r.amount, r.currency, acc.currency) : r.amount;
+  return acc ? convert(recAmount(r), r.currency, acc.currency) : recAmount(r);
 }
 
 function registerRecurring(r, { date, time, amount, accountId } = {}) {
@@ -1205,21 +1220,31 @@ function processRecurring() {
   }
 }
 
-const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => repeats(r) && !autoReg(r) && dueIn(r, month) && !recurringTx(r, month));
+const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => repeats(r) && !autoReg(r) && dueIn(r, month) && (!r.startMonth || r.startMonth <= month) && !recurringTx(r, month));
 
 // Sugerencias para crear fijos con un toque (útil cuando recién empezás)
 const RECURRING_PRESETS = [
   { type: 'ingreso', name: 'Sueldo', category: 'Sueldo' },
   { type: 'ingreso', name: 'Mesada', category: 'Mesada / familia' },
   { type: 'gasto', name: 'Alquiler', category: 'Vivienda / alquiler' },
-  { type: 'gasto', name: 'Luz', category: 'Servicios' },
-  { type: 'gasto', name: 'Agua', category: 'Servicios' },
+  { type: 'gasto', name: 'Luz', category: 'Servicios', variable: true },
+  { type: 'gasto', name: 'Agua', category: 'Servicios', variable: true },
+  { type: 'gasto', name: 'Gas', category: 'Servicios', variable: true },
   { type: 'gasto', name: 'Internet', category: 'Servicios' },
   { type: 'gasto', name: 'Celular', category: 'Servicios' },
   { type: 'gasto', name: 'Gimnasio', category: 'Gimnasio / deporte' },
   { type: 'gasto', name: 'Suscripción', category: 'Suscripciones' },
   { type: 'gasto', name: 'Universidad', category: 'Educación' },
 ];
+
+// "· promedio de 3 meses · último Bs 180" (fijos con monto que cambia)
+function varMeta(r) {
+  if (!isVar(r)) return '';
+  const paid = varPaid(r), last = paid[0];
+  if (!last) return ' · monto aproximado';
+  const cur = S.accounts.find((a) => a.id === last.accountId)?.currency || r.currency;
+  return ` · ${paid.length > 1 ? `promedio de ${Math.min(3, paid.length)} meses` : 'según el último'} · último ${fmtIn(last.amount, cur)}`;
+}
 
 function recurringRowHTML(r, month) {
   const isCur = month === currentMonth();
@@ -1235,14 +1260,14 @@ function recurringRowHTML(r, month) {
   else if (!on) status = isCur ? `<button class="btn sm" data-action="payRecurring" data-id="${r.id}">Registrar este mes</button>` : '';
   else if (!dueIn(r, month)) status = `<span class="status neutral">Le toca en ${monthName(r.month)}</span>`;
   else if (month < currentMonth()) status = (r.skip || []).includes(month) ? '<span class="status neutral">Salteado</span>' : '<span class="status warning">No registrado</span>';
-  else if (r.day) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
+  else if (autoReg(r)) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
   else if (isCur) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`;
   else status = '<span class="status warning">No registrado</span>';
   return `<div class="list-row act rec-row ${on ? '' : 'off'}">
     <label class="rec-check" title="Se repite"><input type="checkbox" data-repeat="${r.id}" ${on ? 'checked' : ''}><span></span></label>
     <div class="grow"><div class="name">${esc(r.name)}</div>
-      <div class="meta">${on ? freqText(r) : 'No se repite'}${r.type === 'ingreso' ? (isSure(r) ? ' · seguro' : ' · a veces') : ''}${r.type === 'ingreso' && on && !countsInPlan(r) ? ' · no se cuenta' : ''} · ${esc(acc?.name || 'sin cuenta')}</div></div>
-    <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${r.type === 'ingreso' ? '+' : '−'}${fmtIn(r.amount, r.currency)}${freqUnit(r) ? `<small class="muted">${freqUnit(r)}</small>` : ''}</div></div>
+      <div class="meta">${on ? freqText(r) : 'No se repite'}${r.type === 'ingreso' ? (isSure(r) ? ' · seguro' : ' · a veces') : ''}${r.type === 'ingreso' && on && !countsInPlan(r) ? ' · no se cuenta' : ''}${varMeta(r)} · ${esc(acc?.name || 'sin cuenta')}</div></div>
+    <div class="val"><div class="money ${r.type === 'ingreso' ? 'up' : ''}">${isVar(r) ? '≈ ' : ''}${r.type === 'ingreso' ? '+' : '−'}${fmtIn(recAmount(r), r.currency)}${freqUnit(r) ? `<small class="muted">${freqUnit(r)}</small>` : ''}</div></div>
     ${status}
     <button class="btn sm ghost icon-only" data-action="editRecurring" data-id="${r.id}" title="Editar">${icon('settings', 16)}</button>
   </div>`;
@@ -1286,8 +1311,10 @@ function recurringForm(r, preset = null) {
       { name: 'type', label: 'Tipo', type: 'select', value: r.type, options: [['ingreso', 'Ingreso fijo (sueldo, mesada…)'], ['gasto', 'Gasto fijo (gym, alquiler…)']], full: true },
       { name: 'name', label: 'Nombre', value: r.name, required: true, placeholder: 'ej. Sueldo, Mesada de papá, Gimnasio', full: true },
       { name: 'freq', label: '¿Cada cuánto?', type: 'select', value: freqOf(r), options: FREQS, full: true },
-      { name: 'amount', label: 'Monto (cada vez)', type: 'number', value: r.amount, required: true },
+      { name: 'amount', label: isVar(r) ? 'Monto aproximado' : 'Monto (cada vez)', type: 'number', value: r.amount, required: true },
       { name: 'currency', label: 'Moneda', type: 'select', value: r.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
+      { name: 'variable', label: 'El monto cambia cada mes (luz, agua, gas…)', type: 'checkbox', value: !!r.variable, full: true, showIf: (v) => v.freq !== 'semanal',
+        hint: 'Poné un monto aproximado. La app reserva el promedio de lo que pagaste los últimos meses y, al pagar, te pide lo que vino en la factura. No se registra solo.' },
       { name: 'accountId', label: 'Cuenta', type: 'select', value: r.accountId, options: accOpts, full: true },
       { name: 'catGasto', label: 'Categoría', type: 'select', value: r.category, options: catsOf('gasto').map((c) => [c, c]), showIf: (v) => v.type === 'gasto' },
       { name: 'catIngreso', label: 'Categoría', type: 'select', value: r.category, options: catsOf('ingreso').map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
@@ -1295,7 +1322,7 @@ function recurringForm(r, preset = null) {
         options: [1, 2, 3, 4, 5, 6, 0].map((d) => [d, DIAS_SEMANA[d][0].toUpperCase() + DIAS_SEMANA[d].slice(1)]), hint: 'Se registra solo cada semana ese día.' },
       { name: 'month', label: 'Mes del año', type: 'select', value: r.month || Number(currentMonth().slice(5, 7)), showIf: (v) => v.freq === 'anual',
         options: Array.from({ length: 12 }, (_, i) => [i + 1, monthName(i + 1).replace(/^\w/, (c) => c.toUpperCase())]) },
-      { name: 'day', label: 'Día del mes', value: r.day || '', placeholder: 'Vacío = sin día fijo', showIf: (v) => v.freq !== 'semanal', hint: 'Con día: se registra solo. Sin día: te queda pendiente para marcar cuando pase.' },
+      { name: 'day', label: 'Día del mes', value: r.day || '', placeholder: 'Vacío = sin día fijo', showIf: (v) => v.freq !== 'semanal', hint: 'Con día: se registra solo (si el monto cambia, sólo te avisa que vence). Sin día: te queda pendiente para marcar cuando pase.' },
       { name: 'active', label: 'Se repite', type: 'checkbox', value: repeats(r), full: true, hint: 'Desmarcalo si no se repite: queda guardado para registrarlo cuando pase.' },
       { name: 'sure', label: 'Es seguro (llega sí o sí todos los meses, como un sueldo)', type: 'checkbox', value: isSure(r), full: true, showIf: (v) => v.type === 'ingreso' },
       { name: 'countInPlan', label: 'Contarlo en "Hoy podés gastar" antes de que entre', type: 'checkbox', value: countsInPlan(r), full: true, showIf: (v) => v.type === 'ingreso',
@@ -1303,7 +1330,10 @@ function recurringForm(r, preset = null) {
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este fijo (los movimientos ya registrados quedan)', type: 'checkbox', full: true }]),
     ],
     // Al marcar / desmarcar "Es seguro", "Contarlo antes de que entre" lo sigue (lo podés cambiar después)
-    onInput: (form, v, changed) => { if (changed === 'sure' && form.elements.countInPlan) form.elements.countInPlan.checked = !!v.sure; },
+    onInput: (form, v, changed) => {
+      if (changed === 'sure' && form.elements.countInPlan) form.elements.countInPlan.checked = !!v.sure;
+      if (changed === 'variable' || changed === 'freq') { const lb = form.querySelector('[data-field="amount"] label'); if (lb) lb.textContent = v.variable && v.freq !== 'semanal' ? 'Monto aproximado' : 'Monto (cada vez)'; }
+    },
     onSubmit: (v) => {
       if (v.remove) { S.recurring = S.recurring.filter((x) => x !== r); tombstone(r.id); save(); render(); return; }
       const freq = FREQS.some(([f]) => f === v.freq) ? v.freq : 'mensual';
@@ -1313,7 +1343,8 @@ function recurringForm(r, preset = null) {
       // (los mensuales se guardan igual que siempre: sin frecuencia)
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
         category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? planChoice(v.countInPlan, v.sure) : undefined, active: !!v.active, sure: v.type === 'ingreso' ? !!v.sure : undefined,
-        freq: freq === 'mensual' ? undefined : freq, weekday: freq === 'semanal' ? Number(v.weekday) : undefined, month: freq === 'anual' ? Number(v.month) : undefined };
+        freq: freq === 'mensual' ? undefined : freq, weekday: freq === 'semanal' ? Number(v.weekday) : undefined, month: freq === 'anual' ? Number(v.month) : undefined,
+        variable: v.variable && freq !== 'semanal' ? true : undefined };
       // Al crear un fijo o cambiarle cuándo toca, sólo se registra solo desde el próximo vencimiento
       // (si el día de este mes ya pasó, ya lo tenés en tu saldo; marcalo a mano si hace falta)
       const whenChanged = isNew || day !== r.day || freq !== freqOf(r) || next.weekday !== r.weekday || next.month !== r.month || (next.active && !repeats(r));
@@ -1393,21 +1424,50 @@ function scheduledForm(s, preset = null) {
       { name: 'minAmount', label: '¿Varía? Desde (opcional)', type: 'number', value: s.minAmount || '', placeholder: 'ej. 280', hint: 'Se reserva el más alto; al pagar elegís el real.' },
       { name: 'currency', label: 'Moneda', type: 'select', value: s.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
       { name: 'accountId', label: 'Lo pagás desde', type: 'select', value: s.accountId, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
-      { name: 'category', label: 'Categoría', type: 'select', value: s.category, options: catsOf('gasto').map((c) => [c, c]), full: true },
+      { name: 'category', label: 'Categoría', type: 'select', value: s.category, options: withCat(catsOf('gasto'), s.category).map((c) => [c, c]), full: true },
+      { type: 'html', html: `<div id="schedWhen" class="small muted">${schedWhenText(s.date)}</div>` },
+      // Luz, agua, gas… llegan todos los meses: son un fijo con monto que cambia, no un programado
+      { name: 'toFixed', label: 'Se repite todos los meses: pasarlo a Fijos (monto que cambia)', type: 'checkbox', full: true, value: false,
+        hint: 'Para luz, agua, gas… Así no lo tenés que cargar cada mes; al pagar ponés lo que vino en la factura.' },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar (si ya lo pagaste, el movimiento queda)', type: 'checkbox', full: true }]),
     ],
     submitLabel: isNew ? 'Programar' : 'Guardar',
+    onInput: (form, v, changed) => { if (changed === 'date') { const el = form.querySelector('#schedWhen'); if (el) el.innerHTML = schedWhenText(v.date); } },
     onSubmit: (v) => {
       if (v.remove) { S.scheduled = S.scheduled.filter((x) => x !== s); tombstone(s.id); save(); render(); return; }
       if (!v.date) return 'Elegí la fecha.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       if (v.minAmount && !(v.minAmount < v.amount)) return 'El "desde" tiene que ser menor que el monto.';
       const next = { name: v.name, date: v.date, amount: v.amount, minAmount: v.minAmount > 0 ? v.minAmount : null, currency: v.currency, accountId: v.accountId, category: v.category };
+      if (v.toFixed) return schedToFixed(isNew ? null : s, next);
       if (isNew) S.scheduled.push({ id: uid(), ...next }); else Object.assign(s, next);
       save(); render();
-      if (isNew) toast(`Programado: ${v.name} el ${fmtDay(v.date)}`);
+      if (isNew) toast(`Programado: ${v.name} el ${fmtDay(v.date)}${v.date.slice(0, 7) > currentMonth() ? ` · se descuenta en ${monthLabel(v.date.slice(0, 7), 'long')}` : ''}`, 4500);
     },
   });
+}
+
+// "Se descuenta de lo que podés gastar en diciembre" (para que no parezca que no se guardó)
+function schedWhenText(date) {
+  if (!date) return '';
+  const m = date.slice(0, 7), cur = currentMonth();
+  return m > cur ? `Se va a descontar de "Hoy podés gastar" en <b>${monthLabel(m, 'long')}</b>, el mes en que vence.`
+    : `Se descuenta de "Hoy podés gastar" de este mes${date < todayISO() ? ' (ya venció: se reserva hasta que lo pagues)' : ''}.`;
+}
+
+// Un programado que en realidad es de todos los meses (luz, agua…) pasa a ser un fijo con monto que cambia.
+// Si ya lo habías pagado, ese pago queda como el primer mes del fijo.
+function schedToFixed(s, d) {
+  const id = uid();
+  const day = Number(d.date.slice(8, 10));
+  S.recurring.push({ id, type: 'gasto', name: d.name, amount: d.amount, currency: d.currency, accountId: d.accountId, category: d.category, day, variable: true, startMonth: d.date.slice(0, 7) });
+  if (s) {
+    for (const t of S.transactions) if (t.scheduledId === s.id) { delete t.scheduledId; t.recurringId = id; }
+    S.scheduled = S.scheduled.filter((x) => x !== s);
+    tombstone(s.id);
+  }
+  save(); render();
+  toast(`${d.name} ahora es un fijo de todos los meses (vence el ${day}). Lo ves en Fijos.`, 5000);
 }
 
 // "Ya pagué": se registra con el monto real (ej. Bs 285 aunque programaste 300)
@@ -1725,7 +1785,7 @@ function fixMonthNow() {
 function fixMissing(r, m) {
   if (!repeats(r) || !dueIn(r, m) || (r.startMonth && r.startMonth > m)) return 0;
   if (freqOf(r) === 'semanal') return weekDates(r, m).filter((d) => d >= (r.startDate || '') && !weekTx(r, d) && !(r.skip || []).includes(d)).length * (Number(r.amount) || 0);
-  return recurringTx(r, m) || (r.skip || []).includes(m) ? 0 : Number(r.amount) || 0;
+  return recurringTx(r, m) || (r.skip || []).includes(m) ? 0 : recAmount(r);
 }
 function fixMonthStats(m) {
   const txs = S.transactions.filter((t) => t.recurringId && t.date?.startsWith(m));
@@ -3717,7 +3777,12 @@ function upcomingItems(days = 30) {
     }
     if (d && d <= end) out.push({ date: d, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo' });
   }
-  for (const r of pendingRecurring()) out.push({ date: `${currentMonth()}-${String(daysInMonth(currentMonth())).padStart(2, '0')}`, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo sin día', undated: true, recId: r.id });
+  for (const r of pendingRecurring()) {
+    // Monto que cambia con día de vencimiento: aparece en su fecha ("vence en 3 días"), con el monto aproximado
+    const m = currentMonth(), due = isVar(r) && r.day ? `${m}-${String(Math.min(r.day, daysInMonth(m))).padStart(2, '0')}` : null;
+    out.push({ date: due || `${m}-${String(daysInMonth(m)).padStart(2, '0')}`, name: r.name, amount: recAmount(r), currency: r.currency, type: r.type,
+      kind: due ? 'Fijo' : 'Fijo sin día', undated: !due, recId: r.id, overdue: !!due && due < today });
+  }
   for (const s of schedPending()) if (s.date <= end) out.push({ date: s.date, name: s.name, amount: s.amount, currency: s.currency, type: 'gasto', kind: 'Programado', schedId: s.id, overdue: s.date < today });
   for (const a of S.accounts) {
     if (a.type === 'credito' && Number(a.balance) > 0 && Number(a.dueDay)) {
@@ -5270,7 +5335,7 @@ function spendPlan() {
   // Fijos que todavía faltan este mes. Anuales: sólo en su mes. Semanales: una vez por cada día que le falta en el mes
   const pendingRules = (type) => S.recurring.filter((r) => repeats(r) && r.type === type && dueIn(r, month) && (!r.startMonth || r.startMonth <= month)
     && (freqOf(r) === 'semanal' || (!recurringTx(r, month) && !(r.day && (r.skip || []).includes(month)))));
-  const leftOf = (r) => (freqOf(r) !== 'semanal' ? Number(r.amount) || 0
+  const leftOf = (r) => (freqOf(r) !== 'semanal' ? recAmount(r)
     : weekDates(r, month).filter((d) => d >= today && d >= (r.startDate || '') && !weekTx(r, d) && !(r.skip || []).includes(d)).length * (Number(r.amount) || 0));
   // Detalle de cada parte (para "¿Cómo se calcula?"): los totales salen de sumar estas mismas listas
   // state: 'ok' = ya entró / ya pagado · 'pend' = falta · 'late' = venció sin pagar · 'skip' = no se cuenta (no suma)
@@ -5295,7 +5360,13 @@ function spendPlan() {
     items.income.push(countsInPlan(r) ? { name: r.name, usd, state: 'pend', weeks: weeksLeft(r) } : { name: r.name, usd, state: 'skip' });
   }
   items.fixed.push(...grouped(txs.filter((t) => t.type === 'gasto' && t.recurringId), (t) => ruleName(t.recurringId) || t.note || t.category));
-  for (const r of pendingRules('gasto')) { const usd = toUSD(leftOf(r), r.currency); if (usd > 0) items.fixed.push({ name: r.name, usd, state: 'pend', weeks: weeksLeft(r) }); }
+  for (const r of pendingRules('gasto')) {
+    const usd = toUSD(leftOf(r), r.currency);
+    if (!(usd > 0)) continue;
+    // Monto que cambia: "~" y la fecha en que vence (si ya pasó, "venció")
+    const due = isVar(r) && r.day ? `${month}-${String(Math.min(r.day, daysInMonth(month))).padStart(2, '0')}` : null;
+    items.fixed.push({ name: isVar(r) ? `${r.name} (aprox.)` : r.name, usd, state: due && due < today ? 'late' : 'pend', weeks: weeksLeft(r), date: due });
+  }
   // Gastos programados: los de este mes (pagados o no) y los vencidos sin pagar
   items.sched.push(...grouped(txs.filter((t) => t.type === 'gasto' && t.scheduledId), (t) => (S.scheduled || []).find((x) => x.id === t.scheduledId)?.name || t.note || t.category));
   for (const x of schedDueThisMonth()) items.sched.push({ name: x.name, usd: toUSD(x.amount, x.currency), state: x.date < today ? 'late' : 'pend', date: x.date });
@@ -5490,6 +5561,17 @@ function spendCardHTML() {
   </section>`;
 }
 
+// Programados de los meses que vienen: no se descuentan todavía (recién el mes en que vencen), pero se muestran para que no "desaparezcan"
+function laterSchedHTML(L) {
+  const end = monthEndISO(currentMonth());
+  const later = schedPending().filter((s) => s.date > end);
+  if (!later.length) return '';
+  const tot = later.reduce((t, s) => t + toUSD(s.amount, s.currency), 0);
+  return `<details class="calc-det calc-later"><summary class="calc-row"><span>Programados de otros meses <span class="calc-n">${later.length}</span></span><b class="money">${L(tot)}</b></summary>
+    <div class="calc-items"><div class="calc-item"><small class="muted">No se restan este mes: se descuentan el mes en que vencen.</small></div>
+    ${later.map((s) => `<div class="calc-item"><span>${esc(s.name)} <small class="muted">vence el ${fmtDate(s.date).slice(0, 5)} · se descuenta en ${monthLabel(s.date.slice(0, 7), 'long')}</small></span><span class="money">${fmtIn(s.amount, s.currency)}</span></div>`).join('')}</div></details>`;
+}
+
 function spendInfo() {
   const p = spendPlan();
   const cur = S.settings.localCurrency;
@@ -5520,6 +5602,7 @@ function spendInfo() {
         ${detRow('Te entra este mes', p.income, p.items.income, 'ingreso')}
         ${detRow('− Fijos', p.fixed, p.items.fixed)}
         ${p.sched > 0 ? detRow('− Programados', p.sched, p.items.sched) : ''}
+        ${laterSchedHTML(L)}
         ${p.loanDue > 0 ? detRow('− Cuotas de préstamos', p.loanDue, p.items.loans) : ''}
         ${p.goals.length ? p.goals.map((x) => row(`− Ahorro para "${esc(x.name)}"`, L(x.need))).join('') : row(`− Ahorro (${p.rate}%)`, L(p.save))}
         ${row('= Para gastar este mes', L(p.budget), 'total')}

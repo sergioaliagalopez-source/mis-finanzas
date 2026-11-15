@@ -940,3 +940,6 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .install-banner { display: flex; align-items: center; gap: 8px; }
 .install-banner > span { flex: 1; min-width: 0; }
 .install-banner .btn { flex: none; }
+/* "Programados de otros meses": informativo, no se resta */
+.calc-later > summary { opacity: .75; }
+.calc-later > summary b { color: var(--text-2); font-weight: 500; }
