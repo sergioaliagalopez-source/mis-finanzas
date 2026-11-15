@@ -3834,6 +3834,7 @@ function upcomingItems(days = 30) {
   for (const r of pendingRecurring()) {
     // Monto que cambia / factura del mes: aparece en la fecha en que vence ("vence en 3 días"), con el monto aproximado
     const m = currentMonth(), due = (isVar(r) || isPayNext(r)) && r.day ? billDue(r, m) : null;
+    if (due && due > end) continue; // (fuera de los días que se piden: ej. el aviso de "vence en 3 días")
     out.push({ date: due || `${m}-${String(daysInMonth(m)).padStart(2, '0')}`, name: isPayNext(r) ? `${r.name} (de ${monthLabel(m, 'long')})` : r.name, amount: recAmount(r), currency: r.currency, type: r.type,
       kind: due ? 'Fijo' : 'Fijo sin día', undated: !due, recId: r.id, recMonth: m, overdue: !!due && due < today });
   }
@@ -3842,6 +3843,7 @@ function upcomingItems(days = 30) {
     const prev = addMonths(currentMonth(), -1);
     if (!repeats(r) || !isPayNext(r) || (r.startMonth && r.startMonth > prev) || recurringTx(r, prev)) continue;
     const due = billDue(r, prev) || `${currentMonth()}-01`;
+    if (due > end) continue;
     out.push({ date: due, name: `${r.name} (de ${monthLabel(prev, 'long')})`, amount: recAmount(r), currency: r.currency, type: r.type, kind: 'Fijo', recId: r.id, recMonth: prev, overdue: due < today });
   }
   for (const s of schedPending()) if (s.date <= end) out.push({ date: s.date, name: s.name, amount: s.amount, currency: s.currency, type: 'gasto', kind: 'Programado', schedId: s.id, overdue: s.date < today });
@@ -3893,10 +3895,15 @@ function upcomingHTML() {
     }).join('')}</div></section>`;
 }
 
+// Aviso de pagos que vencen en 3 días o menos (o ya vencidos). Con la ✕ se oculta; vuelve si cambia algo
+// (otro pago que se acerca, o un día menos para el vencimiento).
+const dueSoonList = () => upcomingItems(3).filter((it) => it.type === 'gasto' && !it.undated);
+const dueSoonKey = (list) => `${todayISO()}|${list.map((it) => `${it.name}@${it.date}`).join(',')}`;
 function dueSoonBanner() {
-  const urgent = upcomingItems(3).filter((it) => it.type === 'gasto' && !it.undated);
-  if (!urgent.length) return '';
-  return `<div class="banner">${icon('alert', 16)} ${urgent.map((it) => `<b>${esc(it.name)}</b> ${daysUntil(it.date)} (${fmtIn(it.amount, it.currency)})`).join(' · ')}</div>`;
+  const urgent = dueSoonList();
+  if (!urgent.length || S.settings.dueHidden === dueSoonKey(urgent)) return '';
+  return `<div class="banner due-banner">${icon('alert', 16)}<span>${urgent.map((it) => `<b>${esc(it.name)}</b> ${daysUntil(it.date)} (${fmtIn(it.amount, it.currency)})`).join(' · ')}</span>
+    <button class="btn sm ghost icon-only" data-action="dueHide" aria-label="Ocultar aviso" title="Ocultar">${icon('x', 14)}</button></div>`;
 }
 
 /* ---------------- Cierre de mes ---------------- */
@@ -7105,6 +7112,7 @@ const ACTIONS = {
   txSearchClear: () => { txQuery = ''; render(); },
   installApp: async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice.catch(() => null); installEvt = null; render(); if (r?.outcome === 'accepted') toast('Listo: buscá MyFinance en la pantalla de inicio de tu teléfono.', 5000); },
   installDismiss: () => { S.settings.installDismissed = true; save(false); render(); },
+  dueHide: () => { S.settings.dueHidden = dueSoonKey(dueSoonList()); save(false); render(); },
   planStepAdd: () => {
     const inp = $('#planStepNew'), text = inp?.value.trim();
     if (!text) { inp?.focus(); return toast('Escribí el paso.'); }
