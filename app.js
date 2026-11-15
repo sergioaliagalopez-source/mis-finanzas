@@ -1158,12 +1158,21 @@ function billDue(r, m) {
   const dm = isPayNext(r) ? addMonths(m, 1) : m;
   return `${dm}-${String(Math.min(Number(r.day), daysInMonth(dm))).padStart(2, '0')}`;
 }
-// ¿A qué mes corresponde un pago hecho en `date`? La factura más vieja sin pagar (para "se paga el mes siguiente": la del mes anterior)
+// Ese mes no se paga (movimiento borrado o salteado a propósito)
+const skipped = (r, m) => (r.skip || []).includes(m);
+// Facturas que, si quedaron sin pagar, siguen pendientes el mes siguiente: las del mes que se pagan el siguiente
+// y las de monto que cambia con día de vencimiento (luz, agua…). Lo demás (gym, mesada…) no se arrastra.
+const carriesOver = (r) => repeats(r) && freqOf(r) === 'mensual' && (isPayNext(r) || (isVar(r) && !!r.day));
+// La factura del mes anterior a m, si quedó sin pagar (vence/venció en m)
+function prevBillUnpaid(r, m = currentMonth()) {
+  if (!carriesOver(r)) return null;
+  const prev = addMonths(m, -1);
+  return (!r.startMonth || r.startMonth <= prev) && !recurringTx(r, prev) && !skipped(r, prev) ? prev : null;
+}
+// ¿A qué mes corresponde un pago hecho en `date`? La factura más vieja sin pagar (ej. la luz de noviembre pagada el 1 de diciembre)
 function billFor(r, date = todayISO()) {
   const m = date.slice(0, 7);
-  if (!isPayNext(r)) return m;
-  const prev = addMonths(m, -1);
-  return (!r.startMonth || r.startMonth <= prev) && !recurringTx(r, prev) ? prev : m;
+  return prevBillUnpaid(r, m) || m;
 }
 // ¿Se registra solo? Mensuales y anuales con día; semanales siempre (en su día de la semana). Los de monto que cambia, nunca
 const autoReg = (r) => !isVar(r) && !isPayNext(r) && (freqOf(r) === 'semanal' || !!r.day);
@@ -1184,8 +1193,22 @@ const freqText = (r) => {
 // "~Bs 150" para los de monto que cambia (en la lista de Fijos se muestra "≈ −Bs 150")
 const recAmountLabel = (r) => `${isVar(r) ? '~' : ''}${fmtIn(recAmount(r), r.currency)}`;
 const freqUnit = (r) => ({ semanal: '/sem', anual: '/año' }[freqOf(r)] || '');
-// Si movés un movimiento de un fijo a otra fecha, la original no se vuelve a registrar sola
-// (semanal: esa fecha; mensual y anual: ese mes, si cambió de mes)
+// Al cambiarle la fecha a un pago de un fijo:
+// - semanal: la fecha original no se vuelve a registrar sola (skipMoved);
+// - mensual / anual: sigue siendo la factura del MISMO mes (ej. pagaste la luz de noviembre el 3 de diciembre),
+//   así no "se come" la factura del otro mes ni deja la de su mes como sin pagar. Devuelve ese mes (o null).
+function movedPay(r, t, newDate) {
+  if (!r || !t.recurringId) return null;
+  if (freqOf(r) === 'semanal') { skipMoved(r, t.date, newDate); return null; }
+  return billMonth(t);
+}
+// Después de guardar el cambio: el pago queda como factura de su mes (forMonth sólo si es distinto del mes de la fecha)
+function keepBill(t, bm) {
+  if (!bm) return;
+  if (bm !== t.date?.slice(0, 7)) t.forMonth = bm; else delete t.forMonth;
+}
+// Si movés un movimiento de un fijo semanal a otra fecha, la original no se vuelve a registrar sola
+// (mensual y anual: ese mes, si cambió de mes)
 function skipMoved(r, from, to) {
   if (!r || !from || !to) return;
   const key = freqOf(r) === 'semanal' ? (from !== to ? from : null) : (from.slice(0, 7) !== to.slice(0, 7) ? from.slice(0, 7) : null);
@@ -1203,7 +1226,7 @@ function registerRecurring(r, { date, time, amount, accountId, forMonth } = {}) 
   const amt = amount ?? recurringAmountFor(r, acc);
   if (amt == null) return null; // sin tipo de cambio no se registra (se reintenta al abrir con internet)
   const d = date || todayISO();
-  const fm = forMonth || (isPayNext(r) ? billFor(r, d) : null);
+  const fm = forMonth || (carriesOver(r) ? billFor(r, d) : null);
   const tx = {
     id: uid(), created: new Date().toISOString(), type: r.type, date: d, time: time || nowTime(),
     accountId: acc.id, amount: amt, category: r.category, note: r.name, recurringId: r.id,
@@ -1245,7 +1268,11 @@ function processRecurring() {
   }
 }
 
-const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => repeats(r) && !autoReg(r) && dueIn(r, month) && (!r.startMonth || r.startMonth <= month) && !recurringTx(r, month));
+// Fijos que hay que marcar a mano y faltan (para contadores, el chat y "pagué el gym"):
+// los de este mes y, de las facturas que se arrastran, la del mes pasado sin pagar.
+// (La factura de ESTE mes que se paga el mes que viene todavía no se puede pagar: no cuenta acá)
+const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => repeats(r) && !autoReg(r)
+  && (prevBillUnpaid(r, month) || (!isPayNext(r) && dueIn(r, month) && (!r.startMonth || r.startMonth <= month) && !recurringTx(r, month) && !skipped(r, month))));
 
 // Sugerencias para crear fijos con un toque (útil cuando recién empezás)
 const RECURRING_PRESETS = [
@@ -1288,16 +1315,17 @@ function recurringRowHTML(r, month) {
   else if (r.startMonth && r.startMonth > month) status = `<span class="status neutral">Empieza en ${monthLabel(r.startMonth, 'long')}</span>`;
   else if (month < currentMonth()) {
     // La factura del mes pasado que se paga este mes todavía se puede pagar
-    if (isPayNext(r) && month === addMonths(currentMonth(), -1)) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}|${month}">Ya pagué</button>`;
+    if (prevBillUnpaid(r) === month) status = `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}|${month}">Ya pagué</button>`;
     else status = (r.skip || []).includes(month) ? '<span class="status neutral">Salteado</span>' : '<span class="status warning">No registrado</span>';
   } else if (month > currentMonth()) {
     const due = billDue(r, month);
     status = `<span class="status neutral">${autoReg(r) ? `Se registra solo el día ${r.day}` : due ? `Vence el ${fmtDate(due).slice(0, 5)}` : 'El mes que viene'}</span>`;
-  } else if (autoReg(r)) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
+  } else if (skipped(r, month)) status = '<span class="status neutral">Salteado este mes</span>';
+  else if (autoReg(r)) status = `<span class="status neutral">Se registra solo el día ${r.day}</span>`;
   else if (isCur) {
     // Si falta pagar la factura del mes pasado (vence este mes), primero esa
     const prev = addMonths(month, -1);
-    const prevDue = isPayNext(r) && (!r.startMonth || r.startMonth <= prev) && !recurringTx(r, prev);
+    const prevDue = !!prevBillUnpaid(r, month);
     status = prevDue ? `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}|${prev}">Pagar la de ${monthLabel(prev, 'long')}</button>`
       : `<button class="btn sm primary" data-action="payRecurring" data-id="${r.id}|${month}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}</button>`;
   }
@@ -1396,6 +1424,11 @@ function recurringForm(r, preset = null) {
         next.startMonth = !next.payNext && day && day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth();
         next.startDate = freq === 'semanal' ? todayISO() : undefined; // semanal: desde hoy (si hoy le toca, se registra hoy)
       }
+      // Si a un fijo que ya tenía pagos le activás "se paga el mes siguiente": cada pago anterior pasa a ser la factura
+      // del mes ANTERIOR a su fecha (lo que pagaste el 5 de noviembre era la luz de octubre)
+      if (!isNew && next.payNext && !r.payNext) {
+        for (const t of S.transactions) if (t.recurringId === r.id && !t.forMonth && t.date) t.forMonth = addMonths(t.date.slice(0, 7), -1);
+      }
       if (isNew) S.recurring.push({ id: uid(), ...next }); else Object.assign(r, next);
       processRecurring();
       save(); render();
@@ -1419,12 +1452,13 @@ function payRecurringForm(r, month = null) {
   const acc = S.accounts.find((a) => a.id === r.accountId) || S.accounts.find((a) => a.type !== 'credito');
   // Factura del mes que se paga el siguiente: ¿de qué mes es? (las que faltan pagar: el mes pasado y/o este)
   const cur = currentMonth(), prev = addMonths(cur, -1);
-  const bills = isPayNext(r) ? [prev, cur].filter((m) => (!r.startMonth || r.startMonth <= m) && !recurringTx(r, m)) : [];
+  // (luz, agua…: si quedó sin pagar la del mes pasado, se puede elegir esa)
+  const bills = carriesOver(r) ? [prev, cur].filter((m) => (m === prev ? !!prevBillUnpaid(r, cur) : (!r.startMonth || r.startMonth <= m) && !recurringTx(r, m) && !skipped(r, m))) : [];
   const bill0 = month && bills.includes(month) ? month : bills[0] || cur;
   openForm({
     title: r.type === 'ingreso' ? `¿Cuánto entró de ${r.name}?` : `Pago de ${r.name}`,
     fields: [
-      ...(isPayNext(r) ? [{ name: 'forMonth', label: '¿De qué mes es la factura?', type: 'select', value: bill0, full: true,
+      ...(isPayNext(r) || bills.length > 1 ? [{ name: 'forMonth', label: '¿De qué mes es la factura?', type: 'select', value: bill0, full: true,
         options: (bills.length ? bills : [cur]).map((m) => [m, `${capMonth(m)}${billDue(r, m) ? ` (vence el ${fmtDate(billDue(r, m)).slice(0, 5)})` : ''}`]) }] : []),
       { name: 'accountId', label: 'Cuenta', type: 'select', value: acc?.id, full: true, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
       { name: 'amount', label: 'Monto (en la moneda de la cuenta)', type: 'stepper', step: stepFor(r.amount), value: recurringAmountFor(r, acc), required: true, full: true },
@@ -1528,7 +1562,7 @@ function schedToFixed(s, d) {
   const day = Number(d.date.slice(8, 10));
   S.recurring.push({ id, type: 'gasto', name: d.name, amount: d.amount, currency: d.currency, accountId: d.accountId, category: d.category, day, variable: true, startMonth: d.date.slice(0, 7) });
   if (s) {
-    for (const t of S.transactions) if (t.scheduledId === s.id) { delete t.scheduledId; t.recurringId = id; }
+    for (const t of S.transactions) if (t.scheduledId === s.id) { delete t.scheduledId; t.recurringId = id; if (t.date?.slice(0, 7) !== d.date.slice(0, 7)) t.forMonth = d.date.slice(0, 7); } // (pagado antes de tiempo: sigue siendo la factura de su mes)
     S.scheduled = S.scheduled.filter((x) => x !== s);
     tombstone(s.id);
   }
@@ -1635,6 +1669,7 @@ function schedHTML(month = periodMonth.sched || currentMonth()) {
   const months = [...new Set([cur, ...all.map((s) => s.date.slice(0, 7))])].sort();
   const min = months[0], max = months[months.length - 1];
   month = month < min ? min : month > max ? max : month;
+  if (periodMonth.sched) periodMonth.sched = month; // (las flechas se mueven desde el mes que se ve)
   // Pagado: lo que pagaste de verdad (puede ser distinto a lo programado); pendiente: lo programado
   const usdOf = (s) => { const tx = schedTx(s); return tx ? txUSD(tx) : toUSD(s.amount, s.currency); };
   const sumOf = (list) => list.reduce((t, s) => t + usdOf(s), 0);
@@ -1769,8 +1804,8 @@ function viewMovimientos() {
     <div class="card-head" style="margin-bottom:4px"><h2>Movimientos</h2>
       <label class="filter">Ver<select id="txAccount" aria-label="Filtrar por cuenta"><option value="">Todas las cuentas</option>${S.accounts.map((a) => `<option value="${a.id}" ${a.id === accFilter ? 'selected' : ''}>Sólo ${esc(a.name)}</option>`).join('')}</select></label></div>
     <div class="tx-search">${icon('search', 16)}<input type="search" id="txSearch" value="${esc(txQuery)}" placeholder="Buscar: taxi, comparsa, 25…" autocomplete="off" enterkeyhint="search" aria-label="Buscar movimientos">
-      <button type="button" class="q-icon sm" data-action="txSearchClear" aria-label="Borrar búsqueda" ${txQuery ? '' : 'hidden'}>${icon('x', 16)}</button></div>
-    <div id="txResults">${txQuery ? txSearchHTML() : txListHTML(list)}</div>
+      <button type="button" class="q-icon sm" data-action="txSearchClear" aria-label="Borrar búsqueda" ${txQuery.trim() ? '' : 'hidden'}>${icon('x', 16)}</button></div>
+    <div id="txResults">${txQuery.trim() ? txSearchHTML() : txListHTML(list)}</div>
   </section>
 
   <div class="shortcuts">
@@ -1889,7 +1924,7 @@ function fixHistoryHTML() {
   for (let k = max; k >= min && rows.length < 12; k = addMonths(k, -1)) {
     const st = fixMonthStats(k);
     if (!st.nOut && !st.inc && !st.miss.length) continue;
-    rows.push({ m: k, usd: st.out, meta: k > currentMonth() ? `vas a necesitar ${L(st.missUSD)}` : `pagaste ${st.nOut} · entró ${L(st.inc)}`, warn: st.miss.length && k <= currentMonth() ? `${st.miss.length} ${k < currentMonth() ? 'sin registrar' : 'por pagar'}` : '' });
+    rows.push({ m: k, usd: k > currentMonth() ? st.missUSD : st.out, meta: k > currentMonth() ? `vas a necesitar ${L(st.missUSD)}` : `pagaste ${st.nOut} · entró ${L(st.inc)}`, warn: st.miss.length && k <= currentMonth() ? `${st.miss.length} ${k < currentMonth() ? 'sin registrar' : 'por pagar'}` : '' });
   }
   return periodListHTML('fix', m, rows, 'pago');
 }
@@ -1951,61 +1986,79 @@ function billAlert(r, tx) {
 
 // Lista de pagos del mes m. state: paid · late (venció sin pagar) · pend (falta) · next (se separa ahora, vence el mes que viene)
 function payablesFor(m = currentMonth()) {
-  const today = todayISO(), prevM = addMonths(m, -1), out = [];
+  const today = todayISO(), prevM = addMonths(m, -1), out = [], isCur = m === currentMonth();
   const accCur = (t) => S.accounts.find((a) => a.id === t.accountId)?.currency || S.settings.localCurrency;
-  const bill = (r, bm, next) => {
+  // prev = true: factura del mes anterior (sólo si quedó sin pagar, o si se pagó ESTE mes)
+  const bill = (r, bm, next, prev = false) => {
     const tx = recurringTx(r, bm);
     const due = billDue(r, bm);
-    const name = isPayNext(r) ? `${r.name} (de ${monthLabel(bm, 'long')})` : r.name;
+    const name = isPayNext(r) || prev ? `${r.name} (de ${monthLabel(bm, 'long')})` : r.name;
     const key = `r|${r.id}|${bm}`;
-    if (tx) return out.push({ key, name, kind: 'Fijo', usd: txUSD(tx), amount: tx.amount, currency: accCur(tx), due, state: 'paid', paidDate: tx.date, cmp: isVar(r) ? billCompare(r, tx) : null });
-    if ((r.skip || []).includes(bm)) return;
+    if (tx) {
+      if (prev && tx.date < `${m}-01`) return; // (la pagaste el mes pasado: no es un pago de este mes)
+      return out.push({ key, name, kind: 'Fijo', usd: txUSD(tx), amount: tx.amount, currency: accCur(tx), due, state: 'paid', paidDate: tx.date, cmp: isVar(r) ? billCompare(r, tx) : null, billOf: bm });
+    }
+    if (skipped(r, bm)) return;
     const amt = recAmount(r);
     out.push({ key, name, kind: 'Fijo', usd: toUSD(amt, r.currency), amount: amt, currency: r.currency, due, approx: isVar(r),
-      state: next ? 'next' : due && due < today ? 'late' : 'pend', auto: autoReg(r), act: autoReg(r) ? null : ['payRecurring', `${r.id}|${bm}`] });
+      state: next ? 'next' : (due && due < today) || (prev && !isPayNext(r)) ? 'late' : 'pend', auto: autoReg(r), act: autoReg(r) ? null : ['payRecurring', `${r.id}|${bm}`] });
   };
   for (const r of S.recurring) {
     if (!repeats(r) || r.type !== 'gasto') continue;
     if (freqOf(r) === 'semanal') {
       if (r.startMonth && r.startMonth > m) continue;
-      const dates = weekDates(r, m).filter((d) => d >= (r.startDate || '') && !(r.skip || []).includes(d));
+      const dates = weekDates(r, m).filter((d) => d >= (r.startDate || '') && !skipped(r, d));
       if (!dates.length) continue;
-      const done = dates.filter((d) => weekTx(r, d)).length, amt = (Number(r.amount) || 0) * dates.length;
-      out.push({ key: `w|${r.id}|${m}`, name: `${r.name} (${dates.length} ${dates.length === 1 ? 'vez' : 'veces'})`, kind: 'Fijo', usd: toUSD(amt, r.currency), amount: amt, currency: r.currency,
-        due: dates[dates.length - 1], state: done === dates.length ? 'paid' : 'pend', auto: true, meta: `${done} de ${dates.length} registradas · se registra solo` });
+      // Lo ya registrado y lo que falta, por separado (así "Pagado" y "Falta" son exactos)
+      const doneTx = dates.map((d) => weekTx(r, d)).filter(Boolean), left = dates.filter((d) => !weekTx(r, d));
+      const per = Number(r.amount) || 0;
+      if (doneTx.length) out.push({ key: `w|${r.id}|${m}|ok`, name: `${r.name} (${doneTx.length} ${doneTx.length === 1 ? 'vez' : 'veces'})`, kind: 'Fijo', usd: doneTx.reduce((s, t) => s + txUSD(t), 0),
+        amount: doneTx.reduce((s, t) => s + (Number(t.amount) || 0), 0), currency: accCur(doneTx[0]), due: doneTx[doneTx.length - 1].date, state: 'paid', paidDate: doneTx[doneTx.length - 1].date, weekly: true });
+      if (left.length) out.push({ key: `w|${r.id}|${m}`, name: `${r.name} (${left.length} ${left.length === 1 ? 'vez' : 'veces'} más)`, kind: 'Fijo', usd: toUSD(per * left.length, r.currency), amount: per * left.length,
+        currency: r.currency, due: left[0], state: 'pend', auto: true, weekly: true, meta: `próxima el ${fmtDate(left[0]).slice(0, 5)} · se registra solo` });
       continue;
     }
-    // La factura del mes pasado que vence este mes (luz de noviembre, el 1 de diciembre)
-    if (isPayNext(r) && (!r.startMonth || r.startMonth <= prevM)) bill(r, prevM, false);
+    // La factura del mes pasado que vence (o venció) este mes: la luz de noviembre el 1 de diciembre, o una que quedó sin pagar
+    if (carriesOver(r) && (!r.startMonth || r.startMonth <= prevM)) bill(r, prevM, false, true);
     if (!dueIn(r, m) || (r.startMonth && r.startMonth > m)) continue;
     bill(r, m, isPayNext(r));
   }
   // Programados de este mes (y vencidos sin pagar de antes, si es el mes actual)
   for (const s of S.scheduled || []) {
     const tx = schedTx(s);
-    const inM = s.date.startsWith(m), lateBefore = m === currentMonth() && !tx && s.date < `${m}-01`;
+    const inM = s.date.startsWith(m), lateBefore = isCur && !tx && s.date < `${m}-01`;
     if (!inM && !lateBefore) continue;
     if (tx) out.push({ key: `s|${s.id}`, name: s.name, kind: 'Programado', usd: txUSD(tx), amount: tx.amount, currency: accCur(tx), due: s.date, state: 'paid', paidDate: tx.date });
     else out.push({ key: `s|${s.id}`, name: s.name, kind: 'Programado', usd: toUSD(s.amount, s.currency), amount: s.amount, currency: s.currency, due: s.date, state: s.date < today ? 'late' : 'pend', act: ['paySched', s.id] });
   }
-  // Cuotas de préstamos que debés
+  // Préstamos que debés: en cuotas (cada cuota) o de una vez con fecha para devolver
   for (const l of S.loans || []) {
+    if (l.dir !== 'debo') continue;
     const lp = loanPlan(l);
-    if (l.dir !== 'debo' || !lp) continue;
+    if (!lp) {
+      const rem = loanRemaining(l);
+      if (l.closed || !(rem > 0) || !l.dueDate || !(l.dueDate.startsWith(m) || (isCur && l.dueDate < `${m}-01`))) continue;
+      out.push({ key: `l|${l.id}`, name: `Devolverle a ${l.person}`, kind: 'Préstamo', usd: toUSD(rem, l.currency), amount: rem, currency: l.currency, due: l.dueDate,
+        state: l.dueDate < today ? 'late' : 'pend', act: ['loanPay', l.id] });
+      continue;
+    }
+    const partial = Math.max(0, lp.paid - lp.paidN * lp.cuota); // lo que ya pagaste de la próxima cuota
+    const lastPay = (l.payments || []).map((x) => x.date).sort().pop();
     for (let k = 0; k < lp.n; k++) {
       const d = lp.dateOf(k), paid = k < lp.paidN;
-      if (!(d.startsWith(m) || (m === currentMonth() && !paid && d < `${m}-01`))) continue;
-      const amt = Math.min(lp.cuota, paid ? lp.cuota : lp.left);
-      out.push({ key: `l|${l.id}|${k}`, name: `Cuota ${k + 1} de ${lp.n} a ${l.person}`, kind: 'Préstamo', usd: toUSD(amt, l.currency), amount: amt, currency: l.currency, due: d,
-        state: paid ? 'paid' : d < today ? 'late' : 'pend', act: paid ? null : ['loanPay', l.id] });
+      if (!(d.startsWith(m) || (isCur && !paid && d < `${m}-01`))) continue;
+      const amt = paid ? lp.cuota : Math.max(0, Math.min(lp.cuota - (k === lp.paidN ? partial : 0), lp.left));
+      out.push({ key: `l|${l.id}|${k}`, name: `Cuota ${k + 1} de ${lp.n} a ${l.person}`, kind: 'Préstamo', usd: toUSD(amt, l.currency), amount: round2(amt), currency: l.currency, due: d,
+        state: paid ? 'paid' : d < today ? 'late' : 'pend', paidDate: paid ? lastPay : null, act: paid ? null : ['loanPay', l.id] });
     }
   }
-  // Tarjetas de crédito con deuda (vencen en su día)
+  // Tarjetas de crédito con deuda: el próximo vencimiento (sin día de pago: a fin de mes)
   for (const a of S.accounts) {
-    if (a.type !== 'credito' || !(Number(a.balance) > 0) || !Number(a.dueDay)) continue;
-    const due = `${m}-${String(Math.min(Number(a.dueDay), daysInMonth(m))).padStart(2, '0')}`;
-    out.push({ key: `c|${a.id}`, name: `Tarjeta ${a.name}`, kind: 'Tarjeta', usd: toUSD(a.balance, a.currency), amount: Number(a.balance), currency: a.currency, due,
-      state: m === currentMonth() && due < today ? 'late' : 'pend', act: ['payCard', a.id] });
+    if (a.type !== 'credito' || !(Number(a.balance) > 0)) continue;
+    const from = isCur ? today : `${m}-01`;
+    const due = Number(a.dueDay) ? nextMonthlyDate(Number(a.dueDay), from) : null;
+    if (due && !due.startsWith(m)) continue; // (vence el mes que viene)
+    out.push({ key: `c|${a.id}`, name: `Tarjeta ${a.name}`, kind: 'Tarjeta', usd: toUSD(a.balance, a.currency), amount: Number(a.balance), currency: a.currency, due, state: 'pend', act: ['payCard', a.id] });
   }
   const order = { late: 0, pend: 1, next: 2, paid: 3 };
   return out.sort((a, b) => order[a.state] - order[b.state] || (a.state === 'paid' ? (b.paidDate || '').localeCompare(a.paidDate || '') : (a.due || '9999').localeCompare(b.due || '9999')));
@@ -2020,21 +2073,28 @@ function cashForecast(days = 45) {
   const daily = Math.max(0, P.avgVariable > 0 ? P.avgVariable / 30 : p.perDay > 0 ? p.perDay : 0);
   const events = [], seen = new Set();
   const monthEnd = (m) => `${m}-${String(daysInMonth(m)).padStart(2, '0')}`;
-  for (const m of [cur, addMonths(cur, 1)]) {
+  // Todos los meses que toca la ventana (desde el 17 de un mes, 45 días llegan al mes subsiguiente)
+  const months = [];
+  for (let m = cur; m <= end.slice(0, 7); m = addMonths(m, 1)) months.push(m);
+  for (const m of months) {
     for (const x of payablesFor(m)) {
-      if (x.state === 'paid' || seen.has(x.key) || x.auto && x.kind === 'Fijo' && x.meta) continue; // (los semanales van por su lado)
+      if (x.state === 'paid' || seen.has(x.key) || x.weekly) continue; // (los semanales van por su lado, día por día)
       seen.add(x.key);
       const date = x.state === 'late' ? today : x.due && x.due >= today ? x.due : x.due ? today : monthEnd(m);
       if (date <= end) events.push({ date, usd: -x.usd, name: x.name, est: !x.due });
     }
-    // Semanales: cada día que toca
+    // Semanales (gastos e ingresos seguros): cada día que toca y todavía no se registró
     for (const r of S.recurring) {
-      if (!repeats(r) || r.type !== 'gasto' || freqOf(r) !== 'semanal' || (r.startMonth && r.startMonth > m)) continue;
-      for (const d of weekDates(r, m)) if (d >= today && d <= end && d >= (r.startDate || '') && !weekTx(r, d)) events.push({ date: d, usd: -toUSD(r.amount, r.currency), name: r.name });
+      if (!repeats(r) || freqOf(r) !== 'semanal' || (r.startMonth && r.startMonth > m) || (r.type === 'ingreso' && !isSure(r))) continue;
+      for (const d of weekDates(r, m)) {
+        if (d < today || d > end || d < (r.startDate || '') || weekTx(r, d) || skipped(r, d)) continue;
+        const usd = toUSD(r.amount, r.currency);
+        events.push(r.type === 'ingreso' ? { date: d, usd, name: r.name, income: true } : { date: d, usd: -usd, name: r.name });
+      }
     }
     // Ingresos SEGUROS que faltan (los "a veces" no se cuentan: un CFO no cuenta plata que quizás no llega)
     for (const r of S.recurring) {
-      if (!repeats(r) || r.type !== 'ingreso' || !isSure(r) || !dueIn(r, m) || (r.startMonth && r.startMonth > m) || recurringTx(r, m)) continue;
+      if (!repeats(r) || r.type !== 'ingreso' || freqOf(r) === 'semanal' || !isSure(r) || !dueIn(r, m) || (r.startMonth && r.startMonth > m) || recurringTx(r, m) || skipped(r, m)) continue;
       const date = r.day ? `${m}-${String(Math.min(r.day, daysInMonth(m))).padStart(2, '0')}` : monthEnd(m);
       if (date >= today && date <= end) events.push({ date, usd: toUSD(recAmount(r), r.currency), name: r.name, est: !r.day, income: true });
     }
@@ -2091,12 +2151,14 @@ function cashWarnHTML() {
 function viewPagos() {
   const list = payablesFor();
   const local = S.settings.localCurrency, L = (usd) => fmtIn(fromUSD(usd, local), local);
-  const inMonth = list.filter((x) => x.state !== 'next');
+  // (el total incluye lo que se separa ahora para el mes que viene: así no cambia si pagás una factura antes de tiempo)
+  const inMonth = list;
   const sum = (arr) => arr.reduce((s, x) => s + x.usd, 0);
   const paid = inMonth.filter((x) => x.state === 'paid'), late = list.filter((x) => x.state === 'late'), pend = list.filter((x) => x.state === 'pend'), next = list.filter((x) => x.state === 'next');
   const row = (x) => {
-    const when = x.state === 'paid' ? `<span class="up">✓ Pagado el ${fmtDate(x.paidDate).slice(0, 5)}</span>` : x.meta ? esc(x.meta)
-      : x.due ? `${x.state === 'next' ? 'Vence' : 'Vence'} el ${fmtDate(x.due).slice(0, 5)} · <b class="${x.state === 'late' ? 'down' : ''}">${daysUntil(x.due)}</b>` : 'Este mes, sin día fijo';
+    const when = x.state === 'paid' ? `<span class="up">✓ Pagado${x.paidDate ? ` el ${fmtDate(x.paidDate).slice(0, 5)}` : ''}</span>` : x.meta ? esc(x.meta)
+      : x.due ? (x.state === 'late' ? `${fmtDate(x.due).slice(0, 5)} · <b class="down">${daysUntil(x.due)}</b>` : `Vence el ${fmtDate(x.due).slice(0, 5)} · <b>${daysUntil(x.due)}</b>`)
+        : x.state === 'late' ? '<b class=down>quedó sin pagar</b>' : 'Este mes, sin día fijo';
     const cmp = x.cmp && Math.abs(x.cmp.pct) >= 20 ? ` · <span class="${x.cmp.pct > 0 ? 'warn-text' : 'up'}">${x.cmp.pct > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(x.cmp.pct), 0)}% vs. tu promedio</span>` : '';
     const btn = x.act ? `<button class="btn sm primary" data-action="${x.act[0]}" data-id="${esc(x.act[1])}">${x.act[0] === 'payCard' ? 'Pagar' : x.act[0] === 'loanPay' ? 'Registrar' : 'Ya pagué'}</button>`
       : x.auto && x.state !== 'paid' ? '<span class="status neutral">Se registra solo</span>' : '';
@@ -3064,7 +3126,7 @@ function localParse(text) {
       const rr = pendingRecurring().find((x) => { const w = norm(x.name).split(/[^a-z0-9]+/).find((k) => k.length >= 3); return w && new RegExp(`\\b${w}\\b`).test(raw); });
       if (rr) {
         const a0 = S.accounts.find((a) => a.id === rr.accountId) || defaultAccount(rr.currency);
-        const v0 = a0 ? convert(rr.amount, rr.currency, a0.currency) : null;
+        const v0 = a0 ? convert(recAmount(rr), rr.currency, a0.currency) : null;
         out.push({ type: rr.type, amount: v0 ?? rr.amount, currency: v0 != null ? a0.currency : rr.currency, category: rr.category, accountId: a0?.id || '', date: date || ctxDate || todayISO(), time: time || ((date || ctxDate || todayISO()) === todayISO() ? nowTime() : '12:00'), note: rr.name });
         carry = '';
         continue;
@@ -3261,11 +3323,7 @@ function savePending() {
     const tx = { id: uid(), created: new Date().toISOString(), type: p.type, date: p.date || todayISO(), time: p.time || '', accountId: acc.id, amount, category: p.category, note: p.note || p.category, via: 'chat' };
     // "Pagué el gym" o "me llegó la mesada" marca ese fijo como hecho en vez de sumarlo como extra
     // Sólo fijos sin día, y si el monto se parece (±25%) o dijiste su nombre ("cancha 50" no es el gym de 300)
-    const rule = S.recurring.find((r) => {
-      if (!repeats(r) || autoReg(r) || !dueIn(r, tx.date.slice(0, 7)) || r.type !== p.type || r.category !== p.category || recurringTx(r, billFor(r, tx.date))) return false;
-      const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(p.amount, p.currency);
-      return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || nameIn(r.name, p.note);
-    });
+    const rule = matchRecurring(p.type, p.category, p.amount, p.currency, p.note, tx.date);
     if (rule) { tx.recurringId = rule.id; tx.note = rule.name; const fm = billFor(rule, tx.date); if (fm !== tx.date.slice(0, 7)) tx.forMonth = fm; }
     S.transactions.push(tx);
     applyTx(tx, 1);
@@ -3527,6 +3585,11 @@ function balanceFromRemote(acc, rAcc, R, dead) {
   return round2(bal);
 }
 
+// ¿Dos pagos del mismo fijo son el mismo? Semanales (o si el fijo no se conoce todavía): misma fecha. Los demás: la misma factura (mes)
+function sameBill(a, b, R) {
+  const r = S.recurring.find((x) => x.id === b.recurringId) || (R?.recurring || []).find((x) => x.id === b.recurringId);
+  return !r || freqOf(r) === 'semanal' ? a.date === b.date : billMonth(a) === billMonth(b);
+}
 function mergeRemote(R) {
   const dead = new Set([...(S.deleted || []), ...(R.deleted || [])]);
   const remoteDead = new Set(R.deleted || []);
@@ -3547,7 +3610,7 @@ function mergeRemote(R) {
   for (const t of R.transactions || []) {
     if (have.has(t.id) || dead.has(t.id)) continue;
     // El mismo fijo registrado solo en los dos dispositivos: queda uno
-    if (t.recurringId && S.transactions.some((x) => x.recurringId === t.recurringId && (freqOf(S.recurring.find((r) => r.id === t.recurringId) || {}) === 'semanal' ? x.date === t.date : billMonth(x) === billMonth(t)))) { dead.add(t.id); continue; }
+    if (t.recurringId && S.transactions.some((x) => x.recurringId === t.recurringId && (sameBill(x, t, R)))) { dead.add(t.id); continue; }
     if (t.scheduledId && S.transactions.some((x) => x.scheduledId === t.scheduledId)) { dead.add(t.id); continue; }
     S.transactions.push(t);
     applyTx(t, 1); // sólo afecta cuentas que ya existían acá; las cuentas nuevas traen su saldo
@@ -4052,20 +4115,23 @@ function upcomingItems(days = 30) {
     }
     if (d && d <= end) out.push({ date: d, name: r.name, amount: r.amount, currency: r.currency, type: r.type, kind: 'Fijo' });
   }
-  for (const r of pendingRecurring()) {
-    // Monto que cambia / factura del mes: aparece en la fecha en que vence ("vence en 3 días"), con el monto aproximado
-    const m = currentMonth(), due = (isVar(r) || isPayNext(r)) && r.day ? billDue(r, m) : null;
-    if (due && due > end) continue; // (fuera de los días que se piden: ej. el aviso de "vence en 3 días")
-    out.push({ date: due || `${m}-${String(daysInMonth(m)).padStart(2, '0')}`, name: isPayNext(r) ? `${r.name} (de ${monthLabel(m, 'long')})` : r.name, amount: recAmount(r), currency: r.currency, type: r.type,
-      kind: due ? 'Fijo' : 'Fijo sin día', undated: !due, recId: r.id, recMonth: m, overdue: !!due && due < today });
-  }
-  // Facturas del mes pasado que se pagan este mes y todavía no pagaste (ej. la luz de noviembre, el 1 de diciembre)
+  // Fijos de este mes que se marcan a mano y faltan (las facturas aparecen en la fecha en que vencen, con el monto aproximado)
+  const m0 = currentMonth(), mEnd = `${m0}-${String(daysInMonth(m0)).padStart(2, '0')}`;
   for (const r of S.recurring) {
-    const prev = addMonths(currentMonth(), -1);
-    if (!repeats(r) || !isPayNext(r) || (r.startMonth && r.startMonth > prev) || recurringTx(r, prev)) continue;
-    const due = billDue(r, prev) || `${currentMonth()}-01`;
-    if (due > end) continue;
-    out.push({ date: due, name: `${r.name} (de ${monthLabel(prev, 'long')})`, amount: recAmount(r), currency: r.currency, type: r.type, kind: 'Fijo', recId: r.id, recMonth: prev, overdue: due < today });
+    if (!repeats(r) || autoReg(r) || !dueIn(r, m0) || (r.startMonth && r.startMonth > m0) || recurringTx(r, m0) || skipped(r, m0)) continue;
+    const due = (isVar(r) || isPayNext(r)) && r.day ? billDue(r, m0) : null;
+    if (due && due > end) continue; // (fuera de los días que se piden: ej. el aviso de "vence en 3 días")
+    out.push({ date: due || mEnd, name: isPayNext(r) ? `${r.name} (de ${monthLabel(m0, 'long')})` : r.name, amount: recAmount(r), currency: r.currency, type: r.type,
+      kind: due ? 'Fijo' : 'Fijo sin día', undated: !due, recId: r.id, recMonth: m0, overdue: !!due && due < today });
+  }
+  // Facturas del mes pasado que todavía no pagaste (la luz de noviembre que vence el 1 de diciembre, o una que ya venció)
+  for (const r of S.recurring) {
+    const prev = prevBillUnpaid(r);
+    if (!prev) continue;
+    const due = billDue(r, prev); // (sin día: en algún momento de este mes)
+    if (due && due > end) continue;
+    out.push({ date: due || mEnd, name: `${r.name} (de ${monthLabel(prev, 'long')})`, amount: recAmount(r), currency: r.currency, type: r.type, kind: due ? 'Fijo' : 'Fijo sin día',
+      undated: !due, recId: r.id, recMonth: prev, overdue: !!due && due < today });
   }
   for (const s of schedPending()) if (s.date <= end) out.push({ date: s.date, name: s.name, amount: s.amount, currency: s.currency, type: 'gasto', kind: 'Programado', schedId: s.id, overdue: s.date < today });
   for (const a of S.accounts) {
@@ -4681,11 +4747,18 @@ function lastAccountFor(type) {
 
 // Un gasto/ingreso que coincide con un fijo pendiente (ej. "Gym 300") lo marca como pagado
 function matchRecurring(type, category, amount, currency, note, date) {
-  return S.recurring.find((r) => {
-    if (!repeats(r) || autoReg(r) || !dueIn(r, date.slice(0, 7)) || r.type !== type || r.category !== category || recurringTx(r, billFor(r, date))) return false;
-    const ruleUSD = toUSD(r.amount, r.currency), pUSD = toUSD(amount, currency);
-    return (ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25) || nameIn(r.name, note);
+  // Fijos que se marcan a mano, de esa categoría, cuya factura (la más vieja sin pagar) todavía no está registrada
+  const cands = S.recurring.filter((r) => {
+    if (!repeats(r) || autoReg(r) || r.type !== type || r.category !== category) return false;
+    const bm = billFor(r, date);
+    return dueIn(r, bm) && !(r.startMonth && r.startMonth > bm) && !recurringTx(r, bm) && !skipped(r, bm);
   });
+  // 1) Si nombraste uno ("agua 125"), ése. 2) Si nombraste otro fijo, ninguno. 3) Si no, el de monto parecido (±25% de su promedio)
+  const named = cands.find((r) => nameIn(r.name, note));
+  if (named) return named;
+  if (S.recurring.some((r) => nameIn(r.name, note))) return null;
+  const pUSD = toUSD(amount, currency);
+  return cands.find((r) => { const ruleUSD = toUSD(recAmount(r), r.currency); return ruleUSD > 0 && Math.abs(pUSD - ruleUSD) / ruleUSD <= 0.25; }) || null;
 }
 
 function whenLabel(date, time) {
@@ -4800,8 +4873,9 @@ function quickEntry(type = 'gasto', t = null, pre = null) {
     if (!fam) S.settings.lastAccount = { ...(S.settings.lastAccount || {}), [st.type]: acc.id };
     if (t) {
       const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
-      skipMoved(r, t.date, next.date);
+      const bm = movedPay(r, t, next.date);
       applyTx(t, -1); Object.assign(t, next); applyTx(t, 1);
+      keepBill(t, bm);
     } else {
       const tx = { id: uid(), created: new Date().toISOString(), ...next };
       const rule = matchRecurring(tx.type, category, amount, acc.currency, st.note, tx.date);
@@ -5625,7 +5699,7 @@ function spendPlan() {
   const sum = (list) => list.reduce((s, t) => s + txUSD(t), 0);
   // Fijos que todavía faltan este mes. Anuales: sólo en su mes. Semanales: una vez por cada día que le falta en el mes
   const pendingRules = (type) => S.recurring.filter((r) => repeats(r) && r.type === type && dueIn(r, month) && (!r.startMonth || r.startMonth <= month)
-    && (freqOf(r) === 'semanal' || (!recurringTx(r, month) && !(r.day && (r.skip || []).includes(month)))));
+    && (freqOf(r) === 'semanal' || (!recurringTx(r, month) && !skipped(r, month))));
   const leftOf = (r) => (freqOf(r) !== 'semanal' ? recAmount(r)
     : weekDates(r, month).filter((d) => d >= today && d >= (r.startDate || '') && !weekTx(r, d) && !(r.skip || []).includes(d)).length * (Number(r.amount) || 0));
   // Detalle de cada parte (para "¿Cómo se calcula?"): los totales salen de sumar estas mismas listas
@@ -5669,7 +5743,10 @@ function spendPlan() {
     for (let k = 0; k < lp.n; k++) if (lp.dateOf(k).startsWith(month)) { amt += lp.cuota; n++; }
     const paidM = (l.payments || []).filter((x) => x.date?.startsWith(month)).reduce((a, x) => a + (Number(x.amount) || 0), 0);
     const usd = toUSD(Math.min(amt, lp.left + paidM), l.currency);
-    if (usd > 0 || n) items.loans.push({ name: `Cuota a ${l.person}`, usd, n, state: paidM + 0.005 >= Math.min(amt, lp.left + paidM) ? 'ok' : 'pend' });
+    // Lo ya pagado este mes y lo que falta, por separado (así "Separado para pagos pendientes" no cuenta lo ya pagado)
+    const paidUSD = Math.min(usd, toUSD(paidM, l.currency));
+    if (paidUSD > 0.004) items.loans.push({ name: `Cuota a ${l.person}`, usd: paidUSD, n, state: 'ok' });
+    if (usd - paidUSD > 0.004 || (n && !(paidUSD > 0.004))) items.loans.push({ name: `Cuota a ${l.person}`, usd: Math.max(0, usd - paidUSD), n, state: 'pend' });
   }
   const total = (list) => list.filter((x) => x.state !== 'skip').reduce((s, x) => s + x.usd, 0);
   const income = total(items.income);
@@ -6867,8 +6944,9 @@ function txForm(type, t) {
       } else {
         // Si un fijo se mueve a otro mes, el mes original no se vuelve a registrar solo
         const r = t.recurringId && S.recurring.find((x) => x.id === t.recurringId);
-        skipMoved(r, t.date, next.date);
+        const bm = movedPay(r, t, next.date);
         applyTx(t, -1); Object.assign(t, next); applyTx(t, 1);
+      keepBill(t, bm);
       }
       S.settings.txMonth = next.date.slice(0, 7);
       snapshot(); save(); render();
@@ -7300,7 +7378,8 @@ const ACTIONS = {
     quickEntry(null, t);
   },
   // ‹ Mes › de Programados y Fijos (data-id "sched|-1" o "fix|2026-10")
-  periodShift: (id) => { const [k, d] = id.split('|'); periodMonth[k] = addMonths(periodMonth[k] || currentMonth(), Number(d)); render(); },
+  // (desde el mes que se está mostrando, que puede estar ajustado al rango con datos)
+  periodShift: (id) => { const [k, d] = id.split('|'); const shown = k === 'fix' ? fixMonthNow() : periodMonth[k] || currentMonth(); periodMonth[k] = addMonths(shown, Number(d)); render(); },
   periodSet: (id) => { const [k, m] = id.split('|'); periodMonth[k] = m; render(); },
   monthShift: (d) => {
     const m = addMonths(S.settings.txMonth || currentMonth(), Number(d));
@@ -7596,7 +7675,7 @@ function bindEvents() {
         const turnOn = t.checked && !repeats(r);
         r.active = t.checked;
         // Al volver a activarlo, no se cobran los meses que estuvo apagado
-        if (turnOn) { r.startMonth = r.day && r.day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth(); if (freqOf(r) === 'semanal') r.startDate = todayISO(); }
+        if (turnOn) { r.startMonth = !isPayNext(r) && r.day && r.day < new Date().getDate() ? addMonths(currentMonth(), 1) : currentMonth(); if (freqOf(r) === 'semanal') r.startDate = todayISO(); }
         processRecurring(); save(); render();
         toast(t.checked ? `${r.name}: se repite (${freqText(r).toLowerCase()})` : `${r.name}: guardado, ya no se repite`);
       }
@@ -7705,7 +7784,9 @@ function setupBackButton() {
     if (Lock.locked) { arm(); return; } // con la app bloqueada no se navega
     const open = [...document.querySelectorAll('dialog[open]')];
     if (open.length) {
-      const d = open[open.length - 1];
+      // La de más arriba: un formulario (#dlg) sobre el registro rápido o el chat, y todo eso sobre una sección (#sheetDlg)
+      const prio = (x) => (x.id === 'dlg' ? 0 : x.id === 'sheetDlg' ? 9 : 1);
+      const d = [...open].sort((a, b) => prio(a) - prio(b))[0];
       // El mismo botón de cerrar de cada ventana (así se limpia lo que cada una necesita)
       const btn = d.querySelector('[data-q="close"], [data-sheet-close], [data-close]');
       if (btn) btn.click(); else d.close();
