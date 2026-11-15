@@ -220,8 +220,6 @@ function defaultState() {
       rates: { USD: 1 }, ratesUpdated: null, finnhubKey: '', lastRefresh: null,
       lastBackup: null, privacy: false, view: 'resumen', txMonth: '', txAccount: '',
       aiKey: '', defaultAccountId: '', blendApy: null, blendUpdated: null,
-      // Las migraciones viejas (de la primera versión) no corren en una instalación nueva
-      seededRecurring: true, seededMeru: true, migratedBOB: true, migratedBCB: true,
     },
     // Instalación nueva: vacía (sin datos de nadie). Cada uno agrega sus cuentas, inversiones y fijos
     accounts: [acc('Efectivo', 'efectivo', '', 'BOB')],
@@ -254,29 +252,7 @@ function migrate(s) {
   for (const a of s.accounts) {
     if (a.apy == null) Object.assign(a, { apy: 0, apySource: 'manual', apyOffset: 0, apyAccrue: false, apyLastAccrual: '' });
   }
-  // Vivís en Bolivia: si quedó el peso argentino de la primera versión y no hay plata cargada en pesos, pasa a bolivianos
-  if (!s.settings.migratedBOB) {
-    s.settings.migratedBOB = true;
-    const arsAccs = s.accounts.filter((a) => a.currency === 'ARS');
-    const arsUsed = arsAccs.some((a) => Number(a.balance)) || s.transactions.some((t) => arsAccs.some((a) => a.id === t.accountId || a.id === t.toAccountId));
-    if (s.settings.localCurrency === 'ARS' && !arsUsed) {
-      s.settings.localCurrency = 'BOB';
-      for (const a of arsAccs) {
-        a.currency = 'BOB';
-        if (a.name === 'Efectivo en pesos') a.name = 'Efectivo en bolivianos';
-      }
-    }
-  }
-  // Los bancos en Bolivia usan el tipo de cambio oficial del BCB: pasa a ser el predeterminado (una sola vez)
-  if (!s.settings.migratedBCB) { s.settings.migratedBCB = true; if (s.settings.bobRateType === 'binance') s.settings.bobRateType = 'oficial'; }
-  // Meru paga ~0,8 puntos menos que Blend (el protocolo donde invierte): se calibra con lo que muestra la app de Meru
-  if (!s.settings.seededMeru) {
-    s.settings.seededMeru = true;
-    const meru = s.accounts.find((a) => /meru/i.test(a.name + ' ' + a.institution));
-    if (meru && !Number(meru.apy)) Object.assign(meru, { apy: 5.05, apySource: 'blend', apyOffset: 0.78, apyAccrue: true });
-  }
-  // (Antes acá se cargaban fijos de ejemplo; ya no: al restaurar un respaldo viejo se registraban solos)
-  s.settings.seededRecurring = true;
+  // (Las migraciones de la primera versión ya no están: sólo se completan los campos que falten, sin tocar lo cargado)
   return s;
 }
 
@@ -1124,7 +1100,35 @@ const countsInPlan = (r) => r.countInPlan ?? isSure(r);
 const planChoice = (count, sure) => (!!count === !!sure ? undefined : !!count);
 // Mes al que corresponde un pago: el de la factura (ej. la luz de noviembre pagada el 1 de diciembre) o, si no se indicó, el de la fecha
 const billMonth = (t) => t.forMonth || t.date?.slice(0, 7);
-const recurringTx = (r, month) => S.transactions.find((t) => t.recurringId === r.id && billMonth(t) === month);
+/* Caché de una pasada de dibujo: mientras se arma una pantalla (render / hoja), los cálculos pesados (lo que podés
+   gastar, pagos del mes, proyección, totales…) se hacen UNA vez y se reutilizan, y los pagos de fijos se buscan en un
+   índice en vez de recorrer todos los movimientos. Fuera de una pasada (formularios, guardados) no hay caché:
+   siempre se calcula con los datos del momento, así nunca se usa un valor viejo. */
+let PASS = null;
+function withPass(fn) {
+  if (PASS) return fn();
+  PASS = new Map();
+  try { return fn(); } finally { PASS = null; }
+}
+function memo(key, fn) {
+  if (!PASS) return fn();
+  if (PASS.has(key)) return PASS.get(key);
+  const v = fn();
+  PASS.set(key, v);
+  return v;
+}
+// Índices de pagos de fijos (sólo dentro de una pasada): "fijo|mes de la factura" y "fijo|fecha"
+const recIndex = () => memo('recIndex', () => {
+  const byBill = new Map(), byDate = new Map();
+  for (const t of S.transactions) {
+    if (!t.recurringId) continue;
+    const a = `${t.recurringId}|${billMonth(t)}`, b = `${t.recurringId}|${t.date}`;
+    if (!byBill.has(a)) byBill.set(a, t);
+    if (!byDate.has(b)) byDate.set(b, t);
+  }
+  return { byBill, byDate };
+});
+const recurringTx = (r, month) => (PASS ? recIndex().byBill.get(`${r.id}|${month}`) : S.transactions.find((t) => t.recurringId === r.id && billMonth(t) === month));
 
 /* Frecuencia de un fijo: cada mes (lo de siempre), cada semana (un día de la semana) o cada año (un mes).
    - Semanal: se registra solo cada semana ese día (ej. la cuota de los jueves).
@@ -1179,7 +1183,7 @@ const autoReg = (r) => !isVar(r) && !isPayNext(r) && (freqOf(r) === 'semanal' ||
 const weekdayOf = (iso) => new Date(`${iso}T12:00:00`).getDay();
 // Fechas de un fijo semanal dentro de un mes
 const weekDates = (r, month) => Array.from({ length: daysInMonth(month) }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`).filter((d) => weekdayOf(d) === Number(r.weekday));
-const weekTx = (r, date) => S.transactions.find((t) => t.recurringId === r.id && t.date === date);
+const weekTx = (r, date) => (PASS ? recIndex().byDate.get(`${r.id}|${date}`) : S.transactions.find((t) => t.recurringId === r.id && t.date === date));
 // Cuánto es por mes en promedio (para proyecciones, colchón y "lo que te entra")
 const monthlyEq = (r) => { const a = recAmount(r), f = freqOf(r); return f === 'anual' ? a / 12 : f === 'semanal' ? (a * 52) / 12 : a; };
 const freqText = (r) => {
@@ -1495,6 +1499,30 @@ function payRecurringForm(r, month = null) {
 // Queda pagado cuando hay un movimiento con su scheduledId (así funciona igual al sincronizar o al borrar el movimiento)
 const schedTx = (s) => S.transactions.find((t) => t.scheduledId === s.id);
 const isFixedTx = (t) => !!(t.recurringId || t.scheduledId);
+// Tipo de gasto según de dónde viene (no son categorías aparte): fijo = pagado desde Fijos,
+// ocasional = pagado desde Programados, variable = todo lo demás (el día a día)
+const txKind = (t) => (t.type !== 'gasto' || nonFlow(t) ? null : t.recurringId ? 'fijo' : t.scheduledId ? 'ocasional' : 'variable');
+const KINDS = [
+  ['fijo', 'Fijos', 'se repiten: alquiler, servicios, cuotas', 1],
+  ['variable', 'Variables', 'el día a día: comida, transporte, compras', 2],
+  ['ocasional', 'Ocasionales', 'programados, de una sola vez', 4],
+];
+// Cuánto se fue en cada tipo en esos meses (÷ k para el promedio por mes). La suma es el gasto total del período
+function kindSplit(months, k = 1) {
+  const tot = { fijo: 0, variable: 0, ocasional: 0 };
+  for (const t of S.transactions) { const kd = txKind(t); if (kd && months.includes(t.date?.slice(0, 7))) tot[kd] += txUSD(t); }
+  for (const key of Object.keys(tot)) tot[key] /= Math.max(1, k);
+  return tot;
+}
+function kindSplitHTML(a) {
+  const s = kindSplit(a.months, a.k), total = s.fijo + s.variable + s.ocasional;
+  if (total <= 0) return '';
+  const pct = (v) => fmtPct((v / total) * 100, false);
+  return `<section class="card"><div class="card-head"><h2>Fijos, variables y ocasionales</h2><span class="muted small">${a.n === 1 ? 'este mes' : 'promedio por mes'}</span></div>
+    <div class="stack">${KINDS.filter(([k]) => s[k] > 0).map(([k, label, , c]) => `<div style="flex:${s[k]};background:var(--c${c})" data-tip="${esc(`<b>${label}</b><br>${fmtMoney(s[k])} · ${pct(s[k])}`)}"></div>`).join('')}</div>
+    <div class="kind-rows">${KINDS.map(([k, label, hint, c]) => `<button class="kind-row" data-action="txKindGo" data-id="${k}"><i class="swatch" style="background:var(--c${c})"></i><span class="kind-name"><b>${label}</b><small class="muted">${hint}</small></span><span class="v"><span class="money">${fmtMoney(s[k])}</span> <span class="muted small">${pct(s[k])}</span></span></button>`).join('')}</div>
+    <div class="small muted" style="margin-top:10px">No son categorías aparte: un gasto cuenta como <b>fijo</b> cuando lo pagás desde Fijos, como <b>ocasional</b> cuando viene de Programados, y todo lo demás es <b>variable</b> (lo que podés ajustar día a día). Tocá un tipo para ver sus movimientos.</div></section>`;
+}
 const monthEndISO = (m) => `${m}-${String(daysInMonth(m)).padStart(2, '0')}`;
 const schedPending = () => (S.scheduled || []).filter((s) => !schedTx(s)).sort((a, b) => a.date.localeCompare(b.date));
 // Sin pagar que caen este mes o ya vencieron: se reservan en el presupuesto de este mes
@@ -1543,7 +1571,7 @@ function scheduledForm(s, preset = null) {
       if (v.minAmount && !(v.minAmount < v.amount)) return 'El "desde" tiene que ser menor que el monto.';
       const next = { name: v.name, date: v.date, amount: v.amount, minAmount: v.minAmount > 0 ? v.minAmount : null, currency: v.currency, accountId: v.accountId, category: v.category };
       if (v.toFixed) return schedToFixed(isNew ? null : s, next);
-      if (isNew) S.scheduled.push({ id: uid(), ...next }); else Object.assign(s, next);
+      if (isNew) S.scheduled.push({ id: uid(), created: todayISO(), ...next }); else Object.assign(s, next);
       save(); render();
       if (isNew) toast(`Programado: ${v.name} el ${fmtDay(v.date)}${v.date.slice(0, 7) > currentMonth() ? ` · se descuenta en ${monthLabel(v.date.slice(0, 7), 'long')}` : ''}`, 4500);
     },
@@ -1596,8 +1624,12 @@ function paySchedForm(s) {
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
       { const w = confirmOnce(`s|${s.id}|${v.amount}|${v.accountId}|${v.date}`, txWarnings({ type: 'gasto', amount: v.amount, accountId: v.accountId, date: v.date })); if (w) return w; }
-      const tx = { id: uid(), created: new Date().toISOString(), type: 'gasto', date: v.date || todayISO(), time: v.time || nowTime(),
-        accountId: v.accountId, amount: v.amount, category: s.category, note: s.name, scheduledId: s.id };
+      // Vencido de un mes anterior: el pago cuenta para ESE mes (ahí ya estuvo separado), igual que una factura atrasada.
+      // Sólo si el programado ya existía ese mes: uno cargado después cuenta en el mes en que lo pagás
+      const payDate = v.date || todayISO(), sm = s.date.slice(0, 7);
+      const fm = sm < payDate.slice(0, 7) && s.created && s.created.slice(0, 7) <= sm ? sm : null;
+      const tx = { id: uid(), created: new Date().toISOString(), type: 'gasto', date: payDate, time: v.time || nowTime(),
+        accountId: v.accountId, amount: v.amount, category: s.category, note: s.name, scheduledId: s.id, ...(fm ? { forMonth: fm } : {}) };
       S.transactions.push(tx);
       applyTx(tx, 1);
       snapshot(); save(); render();
@@ -1782,9 +1814,6 @@ function viewMovimientos() {
   const month = S.settings.txMonth || currentMonth();
   const accFilter = S.settings.txAccount || '';
   lastMonthly = { series: monthlySeries(month) };
-  const list = S.transactions
-    .filter((t) => t.date?.startsWith(month) && (!accFilter || t.accountId === accFilter || t.toAccountId === accFilter))
-    .sort(sortTx);
   const isCur = month === currentMonth();
   const pendN = isCur ? pendingRecurring(month).length : 0;
   const ml = monthLabel(month, 'long');
@@ -1806,10 +1835,11 @@ function viewMovimientos() {
 
   <section class="card">
     <div class="card-head" style="margin-bottom:4px"><h2>Movimientos</h2>
-      <label class="filter">Ver<select id="txAccount" aria-label="Filtrar por cuenta"><option value="">Todas las cuentas</option>${S.accounts.map((a) => `<option value="${a.id}" ${a.id === accFilter ? 'selected' : ''}>Sólo ${esc(a.name)}</option>`).join('')}</select></label></div>
+      <div class="filters"><label class="filter">Ver<select id="txAccount" aria-label="Filtrar por cuenta"><option value="">Todas las cuentas</option>${S.accounts.map((a) => `<option value="${a.id}" ${a.id === accFilter ? 'selected' : ''}>Sólo ${esc(a.name)}</option>`).join('')}</select></label>
+      <label class="filter"><select id="txKind" aria-label="Filtrar por tipo de gasto"><option value="">Todos los tipos</option>${KINDS.map(([k, label]) => `<option value="${k}" ${k === txKindSel ? 'selected' : ''}>Gastos ${label.toLowerCase()}</option>`).join('')}</select></label></div></div>
     <div class="tx-search">${icon('search', 16)}<input type="search" id="txSearch" value="${esc(txQuery)}" placeholder="Buscar: transporte, 25…" autocomplete="off" enterkeyhint="search" aria-label="Buscar movimientos">
       <button type="button" class="q-icon sm" data-action="txSearchClear" aria-label="Borrar búsqueda" ${txQuery.trim() ? '' : 'hidden'}>${icon('x', 16)}</button></div>
-    <div id="txResults">${txQuery.trim() ? txSearchHTML() : txListHTML(list)}</div>
+    <div id="txResults">${txResultsHTML()}</div>
   </section>
 
   <div class="shortcuts">
@@ -1824,6 +1854,19 @@ function viewMovimientos() {
 // Mira el detalle, la explicación, la categoría y la cuenta, sin importar tildes ni mayúsculas.
 // Un número (ej. "25" o "25,50") busca ese monto.
 let txQuery = '';
+// Filtro por tipo de gasto (fijo / variable / ocasional). No se guarda: al abrir la app vuelve a "todos"
+let txKindSel = '';
+// La lista de Movimientos: lo buscado (en todos los meses) o el mes elegido, con los filtros de cuenta y de tipo
+function txResultsHTML() {
+  if (txQuery.trim()) return txSearchHTML();
+  const month = S.settings.txMonth || currentMonth(), acc = S.settings.txAccount || '';
+  const list = S.transactions
+    .filter((t) => t.date?.startsWith(month) && (!acc || t.accountId === acc || t.toAccountId === acc) && (!txKindSel || txKind(t) === txKindSel))
+    .sort(sortTx);
+  if (!list.length && (acc || txKindSel)) return '<div class="empty">No hay movimientos con ese filtro en este mes.</div>';
+  const kind = KINDS.find((k) => k[0] === txKindSel);
+  return `${kind ? `<div class="small muted tx-found">Gastos ${kind[1].toLowerCase()} de ${monthLabel(month, 'long')}: <b class="money">${fmtMoney(list.reduce((s, t) => s + txUSD(t), 0))}</b> en ${list.length} movimiento${list.length > 1 ? 's' : ''}</div>` : ''}${txListHTML(list)}`;
+}
 function txSearch(q, accFilter = S.settings.txAccount || '') {
   const tokens = norm(q).trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return [];
@@ -1840,7 +1883,7 @@ function txSearch(q, accFilter = S.settings.txAccount || '') {
 }
 
 function txSearchHTML() {
-  const all = txSearch(txQuery);
+  const all = txSearch(txQuery).filter((t) => !txKindSel || txKind(t) === txKindSel);
   if (!all.length) return `<div class="empty">No encontré movimientos con “${esc(txQuery.trim())}”.</div>`;
   const real = all.filter((t) => !nonFlow(t));
   const out = real.filter((t) => t.type === 'gasto').reduce((s, t) => s + txUSD(t), 0);
@@ -2634,6 +2677,7 @@ function viewAnalisis() {
     ${tile('Ahorro promedio', `<span class="${cls(a.saving)}">${fmtMoney(a.saving, { sign: true })}</span>`, 'por mes')}
     ${tile('Tasa de ahorro', a.rate != null ? fmtPct(a.rate, false) : '—', statusPill(st) || 'Faltan ingresos')}
   </div>
+  ${kindSplitHTML(a)}
   <div class="grid-2">
     <section class="card"><div class="card-head"><h2>¿En qué gastás más?</h2><span class="muted small">por mes</span></div>
       ${a.byCat.length ? `<div class="hbars">${a.byCat.map(([c, v]) => {
@@ -5695,7 +5739,7 @@ function txRowHTML(t) {
     : `${esc(shortCat(t.category || ''))} · ${t.familyPaid ? 'Lo pagó tu familia' : esc(acc?.name || 'cuenta eliminada')}`;
   return `<button class="tx-row" data-action="editTx" data-id="${t.id}">
     <span class="tx-ico ${t.type}">${ico}</span>
-    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ` <span class="tag">${t.forMonth && t.forMonth !== t.date?.slice(0, 7) ? `factura de ${monthLabel(t.forMonth, 'long')}` : 'fijo'}</span>` : t.scheduledId ? ' <span class="tag">programado</span>' : ''}${t.familyPaid ? ' <span class="tag fam">familia</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
+    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ` <span class="tag">${t.forMonth && t.forMonth !== t.date?.slice(0, 7) ? `factura de ${monthLabel(t.forMonth, 'long')}` : 'fijo'}</span>` : t.scheduledId ? ` <span class="tag">programado${t.forMonth && t.forMonth !== t.date?.slice(0, 7) ? ` de ${monthLabel(t.forMonth, 'long')}` : ''}</span>` : ''}${t.familyPaid ? ' <span class="tag fam">familia</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
     <span class="tx-amt money ${t.type}">${sign}${fmtIn(t.amount, cur)}${t.type === 'transferencia' && t.toAmount && to ? `<small class="tx-to">→ ${fmtIn(t.toAmount, to.currency)}</small>` : ''}</span>
   </button>`;
 }
@@ -5784,21 +5828,41 @@ function spendPlan() {
     const due = (isVar(r) || isPayNext(r)) && r.day ? billDue(r, month) : null;
     items.fixed.push({ name: `${r.name}${isPayNext(r) || isVar(r) ? ` (${[isPayNext(r) ? `de ${monthLabel(month, 'long')}` : '', isVar(r) ? 'aprox.' : ''].filter(Boolean).join(', ')})` : ''}`, usd, state: due && due < today ? 'late' : 'pend', weeks: weeksLeft(r), date: due });
   }
+  // Facturas del mes pasado que ya vencieron y siguen sin pagar: quedan separadas hasta que las pagues
+  // (al pagarlas cuentan para su mes). Mismo criterio que los programados y las cuotas vencidas, y que la pantalla Pagos
+  for (const r of S.recurring) {
+    if (r.type !== 'gasto') continue;
+    const pm = prevBillUnpaid(r, month);
+    const due = pm ? billDue(r, pm) : null;
+    if (!due || due >= today) continue; // (si todavía no venció, sigue contando sólo en su mes)
+    const usd = toUSD(recAmount(r), r.currency);
+    if (usd > 0) items.fixed.push({ name: `${r.name} (de ${monthLabel(pm, 'long')}${isVar(r) ? ', aprox.' : ''})`, usd, state: 'late', date: due });
+  }
   // Gastos programados: los de este mes (pagados o no) y los vencidos sin pagar
   items.sched.push(...grouped(txs.filter((t) => t.type === 'gasto' && t.scheduledId), (t) => (S.scheduled || []).find((x) => x.id === t.scheduledId)?.name || t.note || t.category));
   for (const x of schedDueThisMonth()) items.sched.push({ name: x.name, usd: toUSD(x.amount, x.currency), state: x.date < today ? 'late' : 'pend', date: x.date });
-  // Cuotas de préstamos que DEBÉS y vencen este mes (pagadas o no): cuentan como un gasto fijo
+  // Cuotas de préstamos que DEBÉS: cuentan como un gasto fijo. Cada cuota cuenta para el mes en que vence:
+  // las de este mes (pagadas o no) y las de meses anteriores que sigan sin pagar (quedan separadas hasta que las pagues).
+  // Lo ya pagado y lo que falta van por separado (así "Separado para pagos pendientes" no cuenta lo ya pagado)
+  const mStart = `${month}-01`, mEnd = monthEndISO(month);
   for (const l of (S.loans || []).filter((x) => x.dir === 'debo')) {
     const lp = loanPlan(l);
     if (!lp) continue;
-    let amt = 0, n = 0;
-    for (let k = 0; k < lp.n; k++) if (lp.dateOf(k).startsWith(month)) { amt += lp.cuota; n++; }
-    const paidM = (l.payments || []).filter((x) => x.date?.startsWith(month)).reduce((a, x) => a + (Number(x.amount) || 0), 0);
-    const usd = toUSD(Math.min(amt, lp.left + paidM), l.currency);
-    // Lo ya pagado este mes y lo que falta, por separado (así "Separado para pagos pendientes" no cuenta lo ya pagado)
-    const paidUSD = Math.min(usd, toUSD(paidM, l.currency));
-    if (paidUSD > 0.004) items.loans.push({ name: `Cuota a ${l.person}`, usd: paidUSD, n, state: 'ok' });
-    if (usd - paidUSD > 0.004 || (n && !(paidUSD > 0.004))) items.loans.push({ name: `Cuota a ${l.person}`, usd: Math.max(0, usd - paidUSD), n, state: 'pend' });
+    const partial = Math.max(0, lp.paid - lp.paidN * lp.cuota); // lo que ya pagaste de la próxima cuota
+    let okAmt = 0, okN = 0, rem = lp.left;
+    const pend = [];
+    for (let k = 0; k < lp.n; k++) {
+      const d = lp.dateOf(k);
+      if (d > mEnd) break;
+      if (k < lp.paidN) { if (d >= mStart) { okAmt += lp.cuota; okN++; } continue; }
+      if (l.closed) continue; // (préstamo dado por saldado: no queda nada pendiente)
+      const amt = Math.max(0, Math.min(lp.cuota - (k === lp.paidN ? partial : 0), rem));
+      rem -= amt;
+      if (k === lp.paidN && partial > 0 && d >= mStart) okAmt += partial;
+      if (amt > 0.004) pend.push({ name: `Cuota a ${l.person}${d < mStart ? ` (de ${monthLabel(d.slice(0, 7), 'long')})` : ''}`, usd: toUSD(amt, l.currency), n: 1, state: d < today ? 'late' : 'pend', date: d });
+    }
+    if (okAmt > 0.004) items.loans.push({ name: `Cuota a ${l.person}`, usd: toUSD(okAmt, l.currency), n: Math.max(1, okN), state: 'ok' });
+    items.loans.push(...pend);
   }
   const total = (list) => list.filter((x) => x.state !== 'skip').reduce((s, x) => s + x.usd, 0);
   const income = total(items.income);
@@ -5977,7 +6041,7 @@ function spendCardHTML() {
       ${overMonth ? '<div class="over-note">Te pasaste del mes</div>' : overToday ? '<div class="over-note">Te pasaste hoy · mañana se reparte lo que queda</div>' : ''}
     </button>`}
     <div class="meter"><div class="${tone}" style="width:${pct}%"></div></div>
-    <div class="small muted money" style="margin-top:6px">Llevás ${L(p.spent)} de ${L(Math.max(0, p.budget))} · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}</div>
+    <div class="small muted money" style="margin-top:6px">Gastos variables: llevás ${L(p.spent)} de ${L(Math.max(0, p.budget))} · ${p.daysLeft === 1 ? 'último día' : `quedan ${p.daysLeft} días`}</div>
     ${p.reserved > 0.004 ? `<button class="link-btn reserved-line" data-action="spendInfo">${icon('lock', 13)} Separado para pagos pendientes: <b class="money">${L(p.reserved)}</b></button>` : ''}
     ${notCounted.length ? `<div class="small muted" style="margin-top:4px">Se suma cuando entre: ${notCounted.map((r) => esc(r.name)).join(', ')}</div>` : ''}
     <div class="spend-foot">
@@ -6024,20 +6088,21 @@ function spendInfo() {
         name: `inc_${r.id}`, type: 'checkbox', full: true, value: countsInPlan(r),
         label: `${r.name} · ${fmtIn(r.amount, r.currency)}${freqUnit(r)} · ${isSure(r) ? 'seguro' : 'a veces'}${recurringTx(r, currentMonth()) ? ' (ya entró: se cuenta)' : ''}`,
       })),
-      { type: 'html', html: `<div class="calc">
+      { type: 'html', html: `<div class="small muted" style="margin-bottom:8px">Primero se separan los fijos, los programados, las cuotas y el ahorro. Lo que queda es para tus <b>gastos variables</b>: el día a día (comida, transporte, compras…).</div>
+      <div class="calc">
         ${detRow('Te entra este mes', p.income, p.items.income, 'ingreso')}
         ${detRow('− Fijos', p.fixed, p.items.fixed)}
         ${p.sched > 0 ? detRow('− Programados', p.sched, p.items.sched) : ''}
         ${laterSchedHTML(L)}
         ${p.loanDue > 0 ? detRow('− Cuotas de préstamos', p.loanDue, p.items.loans) : ''}
         ${p.goals.length ? p.goals.map((x) => row(`− Ahorro para "${esc(x.name)}"`, L(x.need))).join('') : row(`− Ahorro (${p.rate}%)`, L(p.save))}
-        ${row('= Para gastar este mes', L(p.budget), 'total')}
+        ${row('= Para gastos variables este mes', L(p.budget), 'total')}
         ${overMonth ? `
-        ${row('− Ya gastaste', L(p.spent))}
+        ${row('− Ya gastaste en variables', L(p.spent))}
         ${row('= Hoy podés gastar', L(p.monthLeft), 'total over')}` : `
-        ${row('− Gastado antes de hoy', L(p.spentBefore))}
+        ${row('− Gastos variables antes de hoy', L(p.spentBefore))}
         ${row(`÷ ${p.daysLeft} ${p.daysLeft === 1 ? 'día que queda' : 'días que quedan'}`, `${L(p.perDay)} por día`, 'total')}
-        ${row('− Gastado hoy', L(p.spentToday))}
+        ${row('− Gastos variables de hoy', L(p.spentToday))}
         ${row('= Hoy podés gastar', L(p.todayLeft), p.todayLeft < 0 ? 'total over' : 'total')}`}
       </div>` },
       { name: 'saveRate', label: p.goals.length ? 'Si no tuvieras metas con fecha: % para ahorrar' : '% de lo que te entra para ahorrar', type: 'number', value: p.rate, full: true },
@@ -6182,7 +6247,8 @@ function sidebarExtrasHTML() {
     ${list.map(([id, label, ico]) => `<button class="nav-btn nav-secondary" data-view="${id}"><span class="nav-ico">${icon(ico, 18)}</span><span>${label}</span></button>`).join('')}`).join('');
 }
 
-function render() {
+function render() { return withPass(renderNow); }
+function renderNow() {
   if (VIEW_ALIAS[S.settings.view]) S.settings.view = VIEW_ALIAS[S.settings.view];
   const v = VIEWS[S.settings.view] ? S.settings.view : 'resumen';
   $$('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
@@ -6222,7 +6288,8 @@ function openSheet(view) {
   $('#sheet').scrollTop = 0;
   animateIn($('#sheet'));
 }
-function fillSheet() {
+function fillSheet() { return withPass(fillSheetNow); }
+function fillSheetNow() {
   const d = $('#sheetDlg');
   if (!sheetView || !d?.open) return;
   const sh = $('#sheet'), y = sh.scrollTop;
@@ -7469,6 +7536,8 @@ const ACTIONS = {
   qtyAdjust: (id) => qtyAdjustForm(byId(S.holdings, id)),
   catAdd: (type) => customCatForm(type),
   txSearchClear: () => { txQuery = ''; render(); },
+  // Desde Análisis: ver los movimientos de un tipo (fijos / variables / ocasionales) en el mes actual
+  txKindGo: (k) => { txKindSel = k; txQuery = ''; S.settings.txMonth = ''; go('movimientos'); },
   installApp: async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice.catch(() => null); installEvt = null; render(); if (r?.outcome === 'accepted') toast('Listo: buscá MyFinance en la pantalla de inicio de tu teléfono.', 5000); },
   installDismiss: () => { S.settings.installDismissed = true; save(false); render(); },
   dueHide: () => { S.settings.dueHidden = dueSoonKey(dueSoonList()); save(false); render(); },
@@ -7672,7 +7741,7 @@ function bindEvents() {
       searchTimer = setTimeout(() => {
         const box = t.closest('section')?.querySelector('#txResults'), clr = t.parentElement.querySelector('[data-action="txSearchClear"]');
         if (clr) clr.hidden = !txQuery;
-        if (box) box.innerHTML = txQuery.trim() ? txSearchHTML() : txListHTML(S.transactions.filter((x) => x.date?.startsWith(S.settings.txMonth || currentMonth()) && (!S.settings.txAccount || x.accountId === S.settings.txAccount || x.toAccountId === S.settings.txAccount)).sort(sortTx));
+        if (box) box.innerHTML = txResultsHTML();
       }, 180);
     }
     if (t.id === 'planFija' || t.id === 'planDiv') {
@@ -7718,6 +7787,7 @@ function bindEvents() {
     const t = e.target;
     if (t.id === 'txMonth') { S.settings.txMonth = t.value; save(false); render(); }
     if (t.id === 'txAccount') { S.settings.txAccount = t.value; save(false); render(); }
+    if (t.id === 'txKind') { txKindSel = t.value; render(); }
     if (t.id === 'anPeriod') { S.settings.anPeriod = Number(t.value); save(false); render(); }
     if (t.id === 'repFrom' || t.id === 'repTo') { S.settings[t.id] = t.value; save(false); }
     if (t.id === 'goalRange') save(false);
@@ -7852,6 +7922,22 @@ function setupBackButton() {
     if (S.settings.view !== 'resumen') { go('resumen'); arm(); return; }
     // En Inicio sin nada abierto: se deja salir (el próximo "atrás" cierra la app)
   });
+}
+
+/* ---------------- Cálculos que se reutilizan dentro de una pasada de dibujo (ver memo) ----------------
+   No cambian ningún resultado: sólo evitan repetir la misma cuenta varias veces en la misma pantalla. */
+{
+  const once = (name, fn, keyOf = () => '') => (...a) => memo(`${name}|${keyOf(...a)}`, () => fn(...a));
+  const _totals = totals, _plan = planNumbers, _spend = spendPlan, _pay = payablesFor, _cash = cashForecast, _up = upcomingItems, _fix = fixMonthStats, _ms = monthStats;
+  totals = once('totals', _totals);
+  planNumbers = once('planNumbers', _plan);
+  spendPlan = once('spendPlan', _spend);
+  payablesFor = once('payablesFor', _pay, (m = currentMonth()) => m);
+  cashForecast = once('cashForecast', _cash, (d = 45) => d);
+  upcomingItems = once('upcomingItems', _up, (d = 30) => d);
+  fixMonthStats = once('fixMonthStats', _fix, (m) => m);
+  // (con una lista propia de movimientos no se guarda: sólo el caso normal, todos los movimientos)
+  monthStats = (month, txs) => (txs && txs !== S.transactions ? _ms(month, txs) : memo(`monthStats|${month}`, () => _ms(month)));
 }
 
 /* ---------------- Inicio ---------------- */
