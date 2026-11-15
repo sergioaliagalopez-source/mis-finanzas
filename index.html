@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <!-- A qué sitios puede conectarse la app y de dónde puede cargar código (todo lo demás queda bloqueado) -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://gist.githubusercontent.com https://api.coingecko.com https://finnhub.io https://yields.llama.fi https://open.er-api.com https://dolarapi.com https://bo.dolarapi.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>MyFinance</title>
   <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">

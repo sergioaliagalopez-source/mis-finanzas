@@ -163,7 +163,7 @@ const catsOf = (type) => {
 const OTHER_CATS = new Set(['Otros gastos', 'Otros ingresos']);
 // Al editar, la categoría que ya tiene el movimiento siempre está en la lista (ej. "Compra de inversión"), así no se cambia sola
 const withCat = (list, cat) => (cat && !list.includes(cat) ? [cat, ...list] : list);
-// Para reconocer tus categorías al dictar o leer un comprobante (ej. "comparsa")
+// Para reconocer tus categorías al dictar o leer un comprobante (ej. "Hogar")
 // (sin palabras de relleno: "Salidas con amigos" no tiene que quedarse con todo lo que dice "con")
 const CAT_STOP = new Set(['con', 'del', 'las', 'los', 'para', 'por', 'que', 'una', 'uno', 'mis', 'sus', 'the', 'and']);
 const customCatWords = (type) => (S?.customCats || []).filter((c) => c.type === type)
@@ -172,15 +172,15 @@ const customCatWords = (type) => (S?.customCats || []).filter((c) => c.type === 
 const ARS_TYPES = [['oficial', 'Oficial'], ['bolsa', 'MEP'], ['blue', 'Blue'], ['contadoconliqui', 'CCL'], ['cripto', 'Cripto'], ['tarjeta', 'Tarjeta']];
 const BOB_TYPES = [['oficial', 'Oficial del BCB (el que usan los bancos)'], ['binance', 'Binance (USDT/BOB)'], ['manual', 'El de mi banco (lo cargo yo)']];
 
-// Blend: el protocolo DeFi (Stellar) donde Meru invierte tus USDC. Fuente: DefiLlama.
+// Blend: protocolo DeFi (Stellar) de préstamos en USDC; su tasa se usa para cuentas remuneradas. Fuente: DefiLlama.
 const BLEND_USDC_POOL = 'ecf788e3-d2ef-4fdd-9ece-8a2d96226ddf';
 
 // Abajo (en el celular) van Inicio, Movimientos y Plan; todo lo demás se abre desde "Más"
 const MORE_GROUPS = [
   ['Organizar tu mes', [
     ['pagos', 'Pagos', 'check', 'Qué pagar este mes y si te alcanza'],
-    ['fijos', 'Fijos', 'repeat', 'Sueldo, mesada, gym…'],
-    ['programados', 'Programados', 'calendar', 'Turnos, matrícula…'],
+    ['fijos', 'Fijos', 'repeat', 'Lo de todos los meses'],
+    ['programados', 'Programados', 'calendar', 'Gastos con fecha'],
     ['presupuesto', 'Presupuesto', 'pie', 'Topes por categoría'],
     ['metas', 'Metas', 'target', 'A qué querés llegar'],
   ]],
@@ -220,7 +220,7 @@ function defaultState() {
       rates: { USD: 1 }, ratesUpdated: null, finnhubKey: '', lastRefresh: null,
       lastBackup: null, privacy: false, view: 'resumen', txMonth: '', txAccount: '',
       aiKey: '', defaultAccountId: '', blendApy: null, blendUpdated: null,
-      // Las migraciones viejas (cargar mis fijos, Meru, etc.) no corren en una instalación nueva
+      // Las migraciones viejas (de la primera versión) no corren en una instalación nueva
       seededRecurring: true, seededMeru: true, migratedBOB: true, migratedBCB: true,
     },
     // Instalación nueva: vacía (sin datos de nadie). Cada uno agrega sus cuentas, inversiones y fijos
@@ -440,7 +440,7 @@ function totals() {
 }
 
 // Compras/ventas de inversiones y préstamos mueven plata pero no son gasto ni ingreso
-// Intereses, dividendos y rendimientos (ej. Binance Earn, Meru) son ingresos de inversión, no ingresos para gastar
+// Intereses, dividendos y rendimientos (ej. una cuenta remunerada) son ingresos de inversión, no ingresos para gastar
 const INV_INCOME_CATS = new Set(['Intereses', 'Dividendos']);
 const isInvIncome = (t) => t.type === 'ingreso' && !!(t.invIncome || INV_INCOME_CATS.has(t.category));
 // Lo que no es gasto ni ingreso "normal": inversiones, préstamos, lo que pagó tu familia y rendimientos de inversión
@@ -465,7 +465,7 @@ function convertAt(amount, from, to, date) {
   if (!a.r || !b.r) return { v: convert(amount, from, to) ?? 0, est: true };
   return { v: (Number(amount) || 0) / a.r * b.r, est: a.est || b.est };
 }
-// Gastos que pagó tu familia directamente por vos (ej. la U): no salen de tus cuentas
+// Gastos que pagó tu familia directamente por vos: no salen de tus cuentas
 const FAMILY_ID = 'family';
 const familyAcc = () => ({ id: FAMILY_ID, name: 'Lo pagó mi familia', type: 'familia', currency: S.settings.localCurrency, balance: 0 });
 const familyPaidIn = (month) => S.transactions.filter((t) => t.familyPaid && t.type === 'gasto' && t.date?.startsWith(month)).reduce((s, t) => s + txUSD(t), 0);
@@ -633,7 +633,7 @@ async function refreshAllInner({ silent = false } = {}) {
     }
   }
 
-  // Rendimiento de Blend (donde Meru invierte tus USDC)
+  // Rendimiento de Blend (tasa de USDC)
   if (S.accounts.some((a) => a.apySource === 'blend')) {
     try {
       const j = await getJSON(`https://yields.llama.fi/chart/${BLEND_USDC_POOL}`);
@@ -643,7 +643,7 @@ async function refreshAllInner({ silent = false } = {}) {
         S.settings.blendUpdated = now;
         for (const a of S.accounts) if (a.apySource === 'blend') a.apy = round2(effectiveApy(a));
       }
-    } catch (e) { notes.push('tasa de Meru/Blend no disponible'); }
+    } catch (e) { notes.push('tasa de Blend no disponible'); }
   }
   accrueInterest();
   logRate();
@@ -1013,7 +1013,7 @@ function viewInversiones() {
   const gp = t.invWithCost - t.cost;
   return `
   ${S.holdings.map((h) => positionWarnHTML(h)).join('')}
-  ${noKey ? `<div class="banner">Bitcoin, Ethereum y PAXG se actualizan solos. Para que <b>VOO, NVDA y GOOGL</b> también se actualicen, pegá una clave gratuita de Finnhub en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>. Mientras tanto podés cargar el precio a mano con “Editar”.</div>` : ''}
+  ${noKey ? `<div class="banner">Las criptomonedas se actualizan solas. Para que las <b>acciones y ETF</b> también se actualicen, pegá una clave gratuita de Finnhub en <a href="#" data-action="go" data-id="ajustes">Ajustes</a>. Mientras tanto podés cargar el precio a mano con “Editar”.</div>` : ''}
   <div class="tiles">
     ${tile('Valor del portafolio', fmtMoney(t.inv), `${S.holdings.length} activo${S.holdings.length === 1 ? '' : 's'}`)}
     ${tile('Costo cargado', t.cost ? fmtMoney(t.cost) : '—', 'Según tu precio promedio de compra')}
@@ -1048,7 +1048,7 @@ function viewInversiones() {
 
 // Cuentas sin saldo que nunca se usaron (ej. "Tarjeta 2" de ejemplo): se pueden quitar de un toque
 function unusedAccounts() {
-  // (las que configuraste con banco/entidad o rendimiento, como Meru, nunca se sugieren)
+  // (las que configuraste con banco/entidad o rendimiento nunca se sugieren)
   const list = S.accounts.filter((a) => !Number(a.balance) && !a.institution && !(Number(a.apy) > 0)
     && !S.transactions.some((t) => t.accountId === a.id || t.toAccountId === a.id)
     && !S.recurring.some((r) => r.accountId === a.id)
@@ -1110,12 +1110,12 @@ function viewCuentas() {
 
 /* ---------------- Ingresos y gastos fijos ----------------
    Con día fijo (ej. sueldo el 12): se registran solos ese día.
-   Sin día (ej. la mesada o el gym): quedan "pendientes" hasta que tocás "Ya entró" / "Ya pagué". */
+   Sin día (ej. un ingreso ocasional o una cuota): quedan "pendientes" hasta que tocás "Ya entró" / "Ya pagué". */
 
 const daysInMonth = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
 // Un fijo con "Se repite todos los meses" desmarcado queda guardado en la lista, pero no se registra ni se espera solo
 const repeats = (r) => r.active !== false;
-// Ingreso seguro (llega sí o sí, ej. el sueldo) o "a veces" (la mesada, trabajos sueltos). Si no lo elegiste: la familia cuenta como "a veces"
+// Ingreso seguro (llega sí o sí, ej. el sueldo) o "a veces" (trabajos sueltos, ayudas). Si no lo elegiste: la familia cuenta como "a veces"
 const isSure = (r) => r.sure ?? !/mesada|familia|papa|mama/i.test(norm(`${r.category} ${r.name}`));
 // ¿Se cuenta en "Hoy podés gastar" ANTES de que entre? Por defecto: los seguros sí; los "a veces" recién cuando entran
 // (cuando tocás "Ya entró" pasan a ser un ingreso real del mes y ahí sí se suman). Si lo elegiste a mano, manda tu elección.
@@ -1161,7 +1161,7 @@ function billDue(r, m) {
 // Ese mes no se paga (movimiento borrado o salteado a propósito)
 const skipped = (r, m) => (r.skip || []).includes(m);
 // Facturas que, si quedaron sin pagar, siguen pendientes el mes siguiente: las del mes que se pagan el siguiente
-// y las de monto que cambia con día de vencimiento (luz, agua…). Lo demás (gym, mesada…) no se arrastra.
+// y las de monto que cambia con día de vencimiento (luz, agua…). Lo demás (cuotas, ingresos ocasionales…) no se arrastra.
 const carriesOver = (r) => repeats(r) && freqOf(r) === 'mensual' && (isPayNext(r) || (isVar(r) && !!r.day));
 // La factura del mes anterior a m, si quedó sin pagar (vence/venció en m)
 function prevBillUnpaid(r, m = currentMonth()) {
@@ -1277,7 +1277,7 @@ const pendingRecurring = (month = currentMonth()) => S.recurring.filter((r) => r
 // Sugerencias para crear fijos con un toque (útil cuando recién empezás)
 const RECURRING_PRESETS = [
   { type: 'ingreso', name: 'Sueldo', category: 'Sueldo' },
-  { type: 'ingreso', name: 'Mesada', category: 'Mesada / familia' },
+  { type: 'ingreso', name: 'Ingreso extra', category: 'Otros ingresos' },
   { type: 'gasto', name: 'Alquiler', category: 'Vivienda / alquiler' },
   { type: 'gasto', name: 'Luz', category: 'Servicios', variable: true },
   { type: 'gasto', name: 'Agua', category: 'Servicios', variable: true },
@@ -1286,7 +1286,7 @@ const RECURRING_PRESETS = [
   { type: 'gasto', name: 'Celular', category: 'Servicios' },
   { type: 'gasto', name: 'Gimnasio', category: 'Gimnasio / deporte' },
   { type: 'gasto', name: 'Suscripción', category: 'Suscripciones' },
-  { type: 'gasto', name: 'Universidad', category: 'Educación' },
+  { type: 'gasto', name: 'Educación', category: 'Educación' },
 ];
 
 // "· promedio de 3 meses · último Bs 180" (fijos con monto que cambia)
@@ -1375,8 +1375,8 @@ function recurringForm(r, preset = null) {
   openForm({
     title: isNew ? 'Nuevo ingreso o gasto fijo' : `Editar: ${r.name}`,
     fields: [
-      { name: 'type', label: 'Tipo', type: 'select', value: r.type, options: [['ingreso', 'Ingreso fijo (sueldo, mesada…)'], ['gasto', 'Gasto fijo (gym, alquiler…)']], full: true },
-      { name: 'name', label: 'Nombre', value: r.name, required: true, placeholder: 'ej. Sueldo, Mesada de papá, Gimnasio', full: true },
+      { name: 'type', label: 'Tipo', type: 'select', value: r.type, options: [['ingreso', 'Ingreso fijo (sueldo, renta…)'], ['gasto', 'Gasto fijo (alquiler, servicios…)']], full: true },
+      { name: 'name', label: 'Nombre', value: r.name, required: true, placeholder: 'Ej.: Ingreso por trabajo, Servicio de internet', full: true },
       { name: 'freq', label: '¿Cada cuánto?', type: 'select', value: freqOf(r), options: FREQS, full: true },
       { name: 'amount', label: isVar(r) ? 'Monto aproximado' : 'Monto (cada vez)', type: 'number', value: r.amount, required: true },
       { name: 'currency', label: 'Moneda', type: 'select', value: r.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
@@ -1410,6 +1410,8 @@ function recurringForm(r, preset = null) {
       const day = freq !== 'semanal' && v.day ? Number(v.day) : null;
       if (day != null && !(Number.isInteger(day) && day >= 1 && day <= 31)) return 'El día tiene que ser un número entero del 1 al 31.';
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      // Dos fijos con el mismo nombre se confunden entre sí (la app los reconoce por el nombre al registrar)
+      if (S.recurring.some((x) => x !== r && x.type === v.type && norm(x.name) === norm(v.name))) { const w = confirmOnce(`rec|${v.name}`, [`Ya tenés un fijo llamado "${v.name}".`]); if (w) return w; }
       // (los mensuales se guardan igual que siempre: sin frecuencia)
       const next = { type: v.type, name: v.name, amount: v.amount, currency: v.currency, accountId: v.accountId,
         category: v.type === 'gasto' ? v.catGasto : v.catIngreso, day, countInPlan: v.type === 'ingreso' ? planChoice(v.countInPlan, v.sure) : undefined, active: !!v.active, sure: v.type === 'ingreso' ? !!v.sure : undefined,
@@ -1447,7 +1449,7 @@ function billHintText(r, amount, acc) {
     ? ` · <b class="${pct > 0 ? 'down' : 'up'}">${pct > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(pct), 0)}% ${pct > 0 ? 'más alta' : 'más baja'}</b>` : ''}`;
 }
 
-// "Ya entró" / "Ya pagué": se confirma con el monto real (la mesada puede variar)
+// "Ya entró" / "Ya pagué": se confirma con el monto real (puede variar)
 function payRecurringForm(r, month = null) {
   const acc = S.accounts.find((a) => a.id === r.accountId) || S.accounts.find((a) => a.type !== 'credito');
   // Factura del mes que se paga el siguiente: ¿de qué mes es? (las que faltan pagar: el mes pasado y/o este)
@@ -1477,6 +1479,7 @@ function payRecurringForm(r, month = null) {
     },
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      { const w = confirmOnce(`p|${r.id}|${v.amount}|${v.accountId}|${v.date}`, txWarnings({ type: r.type, amount: v.amount, accountId: v.accountId, date: v.date })); if (w) return w; }
       const ptx = registerRecurring(r, { date: v.date, time: v.time, amount: v.amount, accountId: v.accountId, forMonth: v.forMonth || null });
       if (!ptx) return 'No hay una cuenta para registrarlo. Agregá una en Cuentas.';
       billAlert(r, ptx); // (si la factura vino mucho más alta que el promedio, avisa)
@@ -1488,7 +1491,7 @@ function payRecurringForm(r, month = null) {
 
 
 /* ---------------- Gastos programados (de una sola vez, con fecha) ---------------- */
-// ej. la cuota de la fraternidad el jueves que te toca: se descuenta de "Hoy podés gastar" el mes en que cae.
+// ej. una matrícula o un trámite: se descuenta de "Hoy podés gastar" el mes en que cae.
 // Queda pagado cuando hay un movimiento con su scheduledId (así funciona igual al sincronizar o al borrar el movimiento)
 const schedTx = (s) => S.transactions.find((t) => t.scheduledId === s.id);
 const isFixedTx = (t) => !!(t.recurringId || t.scheduledId);
@@ -1517,11 +1520,11 @@ function scheduledForm(s, preset = null) {
   openForm({
     title: isNew ? 'Programar un gasto' : `Editar: ${s.name}`,
     fields: [
-      ...(isNew ? [{ type: 'html', html: '<div class="small muted">Un gasto de una sola vez con fecha (tu turno en la fraternidad, una matrícula, un cumpleaños…). El mes en que cae se descuenta de "Hoy podés gastar", así te lo vas guardando.</div>' }] : []),
-      { name: 'name', label: 'Qué es', value: s.name, required: true, placeholder: 'ej. Turno fraternidad', full: true },
+      ...(isNew ? [{ type: 'html', html: '<div class="small muted">Un gasto de una sola vez con fecha (una matrícula, un trámite, un regalo…). El mes en que cae se descuenta de "Hoy podés gastar", así te lo vas guardando.</div>' }] : []),
+      { name: 'name', label: 'Qué es', value: s.name, required: true, placeholder: 'Ej.: Pago de matrícula', full: true },
       { name: 'date', label: 'Fecha', type: 'date', value: s.date, required: true },
       { name: 'amount', label: 'Monto (si varía, el más alto)', type: 'stepper', step: stepFor(s.amount || 100), value: s.amount, required: true },
-      { name: 'minAmount', label: '¿Varía? Desde (opcional)', type: 'number', value: s.minAmount || '', placeholder: 'ej. 280', hint: 'Se reserva el más alto; al pagar elegís el real.' },
+      { name: 'minAmount', label: '¿Varía? Desde (opcional)', type: 'number', value: s.minAmount || '', placeholder: 'Ej.: 250', hint: 'Se reserva el más alto; al pagar elegís el real.' },
       { name: 'currency', label: 'Moneda', type: 'select', value: s.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
       { name: 'accountId', label: 'Lo pagás desde', type: 'select', value: s.accountId, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
       { name: 'category', label: 'Categoría', type: 'select', value: s.category, options: withCat(catsOf('gasto'), s.category).map((c) => [c, c]), full: true },
@@ -1592,12 +1595,13 @@ function paySchedForm(s) {
     },
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
+      { const w = confirmOnce(`s|${s.id}|${v.amount}|${v.accountId}|${v.date}`, txWarnings({ type: 'gasto', amount: v.amount, accountId: v.accountId, date: v.date })); if (w) return w; }
       const tx = { id: uid(), created: new Date().toISOString(), type: 'gasto', date: v.date || todayISO(), time: v.time || nowTime(),
         accountId: v.accountId, amount: v.amount, category: s.category, note: s.name, scheduledId: s.id };
       S.transactions.push(tx);
       applyTx(tx, 1);
       snapshot(); save(); render();
-      // Para la fraternidad: cuando sepas tu próximo turno, lo cargás con el mismo nombre y monto
+      // Si se repite más adelante: cuando sepas la próxima fecha, lo cargás con el mismo nombre y monto
       toast(`${s.name}: pagado ✓`, 7000, { label: 'Programar el próximo', fn: () => scheduledForm(null, { name: s.name, amount: s.amount, minAmount: s.minAmount, currency: s.currency, accountId: s.accountId, category: s.category }) });
     },
   });
@@ -1662,7 +1666,7 @@ function periodListHTML(key, month, rows, what) {
 function schedHTML(month = periodMonth.sched || currentMonth()) {
   const all = S.scheduled || [];
   if (!all.length) {
-    return '<div class="empty" style="padding:8px 0 4px">Cargá gastos de una sola vez que ya sabés que vienen (ej. tu turno en la fraternidad el jueves 19). La app los descuenta de "Hoy podés gastar" el mes en que caen.</div>';
+    return '<div class="empty" style="padding:8px 0 4px">Cargá gastos de una sola vez que ya sabés que vienen (ej.: una matrícula, un trámite o un regalo). La app los descuenta de "Hoy podés gastar" el mes en que caen.</div>';
   }
   const cur = currentMonth(), local = S.settings.localCurrency;
   const L = (usd) => fmtIn(fromUSD(usd, local), local);
@@ -1803,7 +1807,7 @@ function viewMovimientos() {
   <section class="card">
     <div class="card-head" style="margin-bottom:4px"><h2>Movimientos</h2>
       <label class="filter">Ver<select id="txAccount" aria-label="Filtrar por cuenta"><option value="">Todas las cuentas</option>${S.accounts.map((a) => `<option value="${a.id}" ${a.id === accFilter ? 'selected' : ''}>Sólo ${esc(a.name)}</option>`).join('')}</select></label></div>
-    <div class="tx-search">${icon('search', 16)}<input type="search" id="txSearch" value="${esc(txQuery)}" placeholder="Buscar: taxi, comparsa, 25…" autocomplete="off" enterkeyhint="search" aria-label="Buscar movimientos">
+    <div class="tx-search">${icon('search', 16)}<input type="search" id="txSearch" value="${esc(txQuery)}" placeholder="Buscar: transporte, 25…" autocomplete="off" enterkeyhint="search" aria-label="Buscar movimientos">
       <button type="button" class="q-icon sm" data-action="txSearchClear" aria-label="Borrar búsqueda" ${txQuery.trim() ? '' : 'hidden'}>${icon('x', 16)}</button></div>
     <div id="txResults">${txQuery.trim() ? txSearchHTML() : txListHTML(list)}</div>
   </section>
@@ -1958,7 +1962,7 @@ function fixedSuggestions() {
 }
 
 function viewProgramados() {
-  return `<section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: turnos, matrícula, cumpleaños…</span><button class="btn sm primary" data-action="addSched">+ Programar</button></div>
+  return `<section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: matrícula, trámites, regalos…</span><button class="btn sm primary" data-action="addSched">+ Programar</button></div>
     ${schedHTML()}</section>`;
 }
 
@@ -2196,13 +2200,13 @@ function loanCountLabel() {
 
 const CHAT_PROMPT = `Con toda la información que tenés de mi portafolio, devolveme SOLO un bloque JSON (sin texto extra) con UNA línea por cada compra que hice (si compré el mismo activo varias veces, una línea por cada compra), con este formato exacto:
 [
-  {"symbol": "VOO", "quantity": 0, "avgCost": 0, "platform": "broker", "purchaseDate": "AAAA-MM-DD", "fee": 0, "total": 0},
-  {"symbol": "PAXG", "quantity": 0, "avgCost": 0, "platform": "Binance", "purchaseDate": "AAAA-MM-DD", "fee": 0, "total": 0}
+  {"symbol": "SPY", "quantity": 0, "avgCost": 0, "platform": "broker", "purchaseDate": "AAAA-MM-DD", "fee": 0, "total": 0},
+  {"symbol": "BTC", "quantity": 0, "avgCost": 0, "platform": "exchange", "purchaseDate": "AAAA-MM-DD", "fee": 0, "total": 0}
 ]
-- symbol: ticker (VOO, PAXG, BTC, ETH, NVDA, GOOGL, etc.)
+- symbol: ticker (SPY, BTC, ETH, AAPL, etc.)
 - quantity: cantidad de unidades/acciones/monedas de ESA compra (se aceptan decimales, ej. 0.145)
 - avgCost: precio por unidad en USD de esa compra
-- platform: dónde lo tengo (Binance, broker, etc.)
+- platform: dónde lo tengo (broker, exchange, etc.)
 - purchaseDate: fecha de esa compra (AAAA-MM-DD). Si no la sabés, dejala vacía ""
 - fee: comisión en USD de esa compra (0 si no hubo)
 - total: monto pagado en USD (cantidad × precio + comisión; 0 si no lo sabés)`;
@@ -2273,7 +2277,7 @@ function viewAjustes() {
 
     <section class="card">
       <h2 style="margin-bottom:8px">Precios de acciones y ETF</h2>
-      <p class="small" style="color:var(--text-2);margin-top:0">BTC, ETH y PAXG se actualizan solos. Para VOO, NVDA y GOOGL hace falta una clave gratis de
+      <p class="small" style="color:var(--text-2);margin-top:0">Las criptomonedas se actualizan solas. Para acciones y ETF hace falta una clave gratis de
         <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub</a>.</p>
       <div class="form-row"><input type="password" id="setFinnhub" value="${esc(s.finnhubKey)}" placeholder="Clave de Finnhub" autocomplete="off"></div>
       <button class="btn" data-action="saveKey">Guardar clave</button>
@@ -2284,7 +2288,7 @@ function viewAjustes() {
       <p class="small" style="color:var(--text-2);margin-top:0">Copiá este pedido, pegalo en tu chat de Claude y pegá abajo lo que te devuelva.</p>
       <div class="prompt-box" id="chatPrompt">${esc(CHAT_PROMPT)}</div>
       <div class="toolbar" style="margin:10px 0 14px"><button class="btn" data-action="copyPrompt">Copiar pedido</button></div>
-      <textarea id="importText" placeholder='[{"symbol":"VOO","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
+      <textarea id="importText" placeholder='[{"symbol":"SPY","quantity":1.5,"avgCost":480,"platform":"broker"}]'></textarea>
       <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-action="importHoldings">Importar</button></div>
     </section>
 
@@ -2445,9 +2449,9 @@ function incomeIdeas(a) {
   ideas.push(['💼', 'Freelance o trabajos puntuales', 'Ofrecé lo que ya sabés hacer (diseño, clases, Excel, idiomas, reparaciones) en tus tiempos libres.']);
   ideas.push(['📦', 'Vendé lo que no usás', 'Ropa, tecnología o muebles parados son plata inmovilizada.']);
   ideas.push(['🤝', 'Negociá tu sueldo', 'Llevá datos de cuánto se paga tu puesto en el mercado y tus logros del último año.']);
-  const payers = S.holdings.filter((h) => ['VOO', 'GOOGL', 'NVDA'].includes(h.symbol) && Number(h.quantity) > 0);
+  const payers = S.holdings.filter((h) => ['etf', 'accion'].includes(h.assetType) && Number(h.quantity) > 0);
   if (payers.length && !a.incomeCats.includes('Dividendos')) {
-    ideas.push(['🧾', 'Registrá tus dividendos', `${payers.map((h) => esc(h.symbol)).join(', ')} pagan dividendos: cargalos como ingreso "Dividendos" para verlos acá.`]);
+    ideas.push(['🧾', 'Registrá tus dividendos', 'Algunas acciones y ETF pagan dividendos: si recibís, cargalos como ingreso "Dividendos" para verlos acá.']);
   }
   return ideas;
 }
@@ -2710,15 +2714,15 @@ function budgetForm(cat) {
   });
 }
 
-/* ---------------- Rendimiento (APY) de cuentas como Meru ---------------- */
+/* ---------------- Rendimiento (APY) de cuentas remuneradas ---------------- */
 
-// Con fuente "blend", la tasa sigue a Blend (DefiLlama) menos la diferencia que se queda Meru
+// Con fuente "blend", la tasa sigue a Blend (DefiLlama) menos la diferencia que se queda la billetera
 function effectiveApy(a) {
   if (a.apySource === 'blend' && S.settings.blendApy != null) return Math.max(0, S.settings.blendApy - (Number(a.apyOffset) || 0));
   return Number(a.apy) || 0;
 }
 
-// Interés compuesto diario sobre el saldo, como lo hace Meru
+// Interés compuesto diario sobre el saldo
 function accrueInterest() {
   const today = todayISO();
   let changed = false;
@@ -3122,7 +3126,7 @@ function localParse(text) {
       .filter((m) => parseNum(m[2]) > 0);
     const amt = nums.find((m) => m[1] || m[4]) || nums.sort((a, b) => parseNum(b[2]) - parseNum(a[2]))[0];
     if (!amt) {
-      // Sin monto pero nombrás un fijo pendiente ("pagué el gym", "me llegó la mesada"): se usa su monto y su cuenta
+      // Sin monto pero nombrás un fijo pendiente ("pagué el alquiler", "me llegó el sueldo"): se usa su monto y su cuenta
       const rr = pendingRecurring().find((x) => { const w = norm(x.name).split(/[^a-z0-9]+/).find((k) => k.length >= 3); return w && new RegExp(`\\b${w}\\b`).test(raw); });
       if (rr) {
         const a0 = S.accounts.find((a) => a.id === rr.accountId) || defaultAccount(rr.currency);
@@ -3174,7 +3178,7 @@ function localParse(text) {
     note = note.replace(/\s+/g, ' ').trim();
     note = note ? note[0].toUpperCase() + note.slice(1) : category;
     const d = date || ctxDate || todayISO();
-    // Préstamos: "le presté 50 a Juan", "Juan me prestó 100", "le debo 20 a Ana"
+    // Préstamos: "le presté 50 a X", "X me prestó 100", "le debo 20 a X"
     const notName = /^(la|las|el|los|mi|un|una|me|le|que|por|con)$/;
     const pick = (...rx) => { for (const r of rx) { const m = raw.match(r); if (m && !notName.test(m[1])) return m[1]; } return null; };
     // ("a mi hermano", "a la María": se salta el artículo)
@@ -3183,7 +3187,7 @@ function localParse(text) {
     if (lentTo || borrowedFrom) {
       const person = (lentTo || borrowedFrom).replace(/^\w/, (c) => c.toUpperCase());
       const dir = lentTo ? 'preste' : 'debo';
-      out.push({ type: dir === 'preste' ? 'gasto' : 'ingreso', amount, currency, category: dir === 'preste' ? 'Otros gastos' : 'Otros ingresos', accountId: /\ble\s+debo\b/.test(raw) && !findAccount(raw) ? '' : acc?.id || '', // "le debo 20 a Ana": no entró plata a ninguna cuenta
+      out.push({ type: dir === 'preste' ? 'gasto' : 'ingreso', amount, currency, category: dir === 'preste' ? 'Otros gastos' : 'Otros ingresos', accountId: /\ble\s+debo\b/.test(raw) && !findAccount(raw) ? '' : acc?.id || '', // "le debo 20 a X": no entró plata a ninguna cuenta
         date: d, time: time || (d === todayISO() ? nowTime() : '12:00'), note: dir === 'preste' ? `Préstamo a ${person}` : `Préstamo de ${person}`, loan: { dir, person } });
       continue;
     }
@@ -3216,7 +3220,7 @@ let chatPending = []; // movimientos interpretados esperando confirmación
 let recognizer = null;
 
 const CHAT_CLAUDE_PROMPT = () => `Te voy a contar mis gastos e ingresos. Devolveme SOLO un bloque JSON con este formato (sin texto extra):
-[{"tipo":"gasto","monto":25,"moneda":"BOB","categoria":"Comida y salidas","cuenta":"Efectivo en bolivianos","fecha":"${todayISO()}","hora":"13:30","detalle":"Almuerzo"}]
+[{"tipo":"gasto","monto":25,"moneda":"BOB","categoria":"Comida y salidas","cuenta":"Efectivo","fecha":"${todayISO()}","hora":"13:30","detalle":"Compra de alimentos"}]
 - tipo: "gasto" o "ingreso"
 - moneda: BOB (bolivianos) o USD
 - categoria (gastos): ${catsOf('gasto').join(', ')}
@@ -3292,7 +3296,7 @@ async function handleChatSend() {
     via = '';
   }
   if (!items.length) {
-    chatBubble('No encontré montos en eso. Probá algo como <i>"almuerzo 25 bs y taxi 15 con efectivo"</i>.');
+    chatBubble('No encontré montos en eso. Probá algo como <i>"compra de alimentos 25 y transporte 15 con efectivo"</i>.');
     return;
   }
   // Si ya había tarjetas sin guardar, se suman
@@ -3304,7 +3308,7 @@ async function handleChatSend() {
 
 function savePending() {
   readPendingFromDOM();
-  // (un préstamo puede no mover plata de ninguna cuenta: "le debo 20 a Ana")
+  // (un préstamo puede no mover plata de ninguna cuenta: "le debo 20 a X")
   const ok = chatPending.filter((p) => p.amount > 0 && (S.accounts.some((a) => a.id === p.accountId) || (p.loan && !p.accountId)));
   if (!ok.length) return toast('No hay movimientos válidos para guardar.');
   const touched = new Set(), failed = [];
@@ -3321,8 +3325,8 @@ function savePending() {
     const amount = convert(p.amount, p.currency, acc.currency);
     if (amount == null) { failed.push(p); continue; }
     const tx = { id: uid(), created: new Date().toISOString(), type: p.type, date: p.date || todayISO(), time: p.time || '', accountId: acc.id, amount, category: p.category, note: p.note || p.category, via: 'chat' };
-    // "Pagué el gym" o "me llegó la mesada" marca ese fijo como hecho en vez de sumarlo como extra
-    // Sólo fijos sin día, y si el monto se parece (±25%) o dijiste su nombre ("cancha 50" no es el gym de 300)
+    // "Pagué el alquiler" o "me llegó el sueldo" marca ese fijo como hecho en vez de sumarlo como extra
+    // Sólo fijos sin día, y si el monto se parece (±25%) o dijiste su nombre (un gasto chico de la misma categoría no es el fijo)
     const rule = matchRecurring(p.type, p.category, p.amount, p.currency, p.note, tx.date);
     if (rule) { tx.recurringId = rule.id; tx.note = rule.name; const fm = billFor(rule, tx.date); if (fm !== tx.date.slice(0, 7)) tx.forMonth = fm; }
     S.transactions.push(tx);
@@ -3444,13 +3448,13 @@ function openChat({ listen = false } = {}) {
     <header class="chat-head"><div><b>Registrar</b><div class="muted small">Contame qué gastaste o qué te entró</div></div>
       <button class="btn ghost icon-btn" data-chat="close" aria-label="Cerrar">${icon('x')}</button></header>
     <div class="chat-log" id="chatLog">
-      <div class="bubble bot">Decímelo como te salga, por ejemplo:<br><i>"Almuerzo 25 bs, taxi 15 y ayer a la noche cine 40 con la tarjeta 1"</i><br><i>"Me pagaron el sueldo, 500 bs"</i></div>
+      <div class="bubble bot">Decímelo como te salga, por ejemplo:<br><i>"Compra de alimentos 25, transporte 15 y ayer cine 40 con la tarjeta"</i><br><i>"Me pagaron el sueldo, 500"</i></div>
       ${pend.length ? `<div class="bubble bot">Pendientes de este mes:<div class="chips">${pend.map((r) => `<button class="chip" data-rec="${r.id}">${r.type === 'ingreso' ? 'Ya entró' : 'Ya pagué'}: ${esc(r.name)}</button>`).join('')}</div></div>` : ''}
     </div>
     <div id="micHint" class="mic-hint" hidden></div>
     <div class="chat-input">
       <button class="btn ghost icon-btn mic" id="chatMic" data-chat="mic" aria-label="Dictar">${icon('mic', 22)}</button>
-      <textarea id="chatText" rows="1" placeholder="ej. Almuerzo 25 bs con efectivo"></textarea>
+      <textarea id="chatText" rows="1" placeholder="Ej.: Pago de transporte 15"></textarea>
       <button class="btn primary icon-btn" data-chat="send" aria-label="Enviar">${icon('send', 20)}</button>
     </div>
     <div class="chat-foot">Se interpreta en tu teléfono, sin costo · <a href="#" data-chat="prompt">Usar mi chat de Claude</a></div>
@@ -4189,7 +4193,10 @@ const dueSoonKey = (list) => `${todayISO()}|${list.map((it) => `${it.name}@${it.
 function dueSoonBanner() {
   const urgent = dueSoonList();
   if (!urgent.length || S.settings.dueHidden === dueSoonKey(urgent)) return '';
-  return `<div class="banner due-banner">${icon('alert', 16)}<span>${urgent.map((it) => `<b>${esc(it.name)}</b> ${daysUntil(it.date)} (${fmtIn(it.amount, it.currency)})`).join(' · ')}</span>
+  // Como mucho 3 (los más urgentes primero); el resto se ve en Pagos
+  const MAX = 3, more = urgent.length - MAX;
+  return `<div class="banner due-banner">${icon('alert', 16)}<span>${urgent.slice(0, MAX).map((it) => `<b>${esc(it.name)}</b> ${daysUntil(it.date)} (${fmtIn(it.amount, it.currency)})`).join(' · ')}${more > 0
+    ? ` · <a href="#" data-action="go" data-id="pagos">y ${more} más</a>` : ''}</span>
     <button class="btn sm ghost icon-only" data-action="dueHide" aria-label="Ocultar aviso" title="Ocultar">${icon('x', 14)}</button></div>`;
 }
 
@@ -4315,7 +4322,7 @@ function loanForm(l) {
     title: isNew ? 'Nuevo préstamo' : `Préstamo: ${l.person}`,
     fields: [
       { name: 'dir', label: 'Tipo', type: 'select', value: l.dir, full: true, options: [['preste', 'Yo presté (me tienen que devolver)'], ['debo', 'Me prestaron (tengo que devolver)']] },
-      { name: 'person', label: 'Persona', value: l.person, required: true, placeholder: 'ej. Juan' },
+      { name: 'person', label: 'Persona', value: l.person, required: true, placeholder: 'Ej.: Nombre de la persona' },
       { name: 'amount', label: 'Monto', type: 'number', value: l.amount, required: true },
       { name: 'currency', label: 'Moneda', type: 'select', value: l.currency, options: CURRENCIES.map(([c, n]) => [c, `${curLabel(c)} — ${n}`]) },
       { name: 'date', label: 'Fecha', type: 'date', value: l.date },
@@ -4423,7 +4430,7 @@ function loansHTML() {
   return `<section class="card" id="prestamos"><div class="card-head"><h2>Préstamos</h2><button class="btn sm" data-action="loanAdd">+ Préstamo</button></div>
     ${open.length || closed.length ? `<div class="fx-row" style="margin-bottom:6px"><span>Te deben</span><b class="money up">${fmtMoney(lent)}</b><span class="spacer"></span><span>Debés</span><b class="money down">${fmtMoney(owed)}</b></div>` : ''}
     ${open.some((l) => loanPlan(l)?.interest > 0.004) ? '<div class="small muted" style="margin-bottom:6px">Con intereses incluidos. En tu patrimonio cuenta sólo el capital que falta.</div>' : ''}
-    <div class="list">${open.map(row).join('') || '<div class="empty">Anotá lo que prestás o te prestan para que no se olvide. Tip: en el chat podés decir "le presté 50 a Juan".</div>'}</div>
+    <div class="list">${open.map(row).join('') || '<div class="empty">Anotá lo que prestás o te prestan para que no se olvide. Tip: en el chat podés decir "le presté 50 a" y el nombre de la persona.</div>'}</div>
     ${closed.length ? `<details class="small" style="margin-top:8px"><summary class="muted">Saldados (${closed.length})</summary><div class="list">${closed.map(row).join('')}</div></details>` : ''}
   </section>`;
 }
@@ -4478,7 +4485,7 @@ function planItems() {
     if (a.type === 'credito') continue;
     const usd = toUSD(a.balance, a.currency);
     if (!(usd > 0)) continue;
-    // Billeteras y cuentas para gastar (ej. Meru) = fondo de emergencia; saldo en un exchange = pendiente de invertir
+    // Billeteras y cuentas para gastar = fondo de emergencia; saldo en un exchange = pendiente de invertir
     const def = a.type === 'exchange' ? 'pendiente' : 'emergencia';
     items.push({ id: a.id, name: a.name, kind: ACCOUNT_TYPES[a.type]?.label || '', usd, def, cls: cls[a.id] || def, sub: 'cuenta' });
   }
@@ -4609,9 +4616,9 @@ function viewMiPlan() {
 
   <section class="card">
     <div class="card-head" style="margin-bottom:8px"><h2>${icon('book', 18)} Mis notas</h2></div>
-    ${note('ahorro', 'Mi plan de ahorro', 'ej. Ahorro el 20% de lo que me entra el día que cobro, antes de gastar.')}
-    ${note('inversion', 'Mi plan de inversión', 'ej. 75% renta variable (VOO y un poco de BTC), 20% renta fija, 5% oro (PAXG).')}
-    ${note('riesgo', 'Cómo manejo el riesgo', 'ej. Si el mercado cae, no vendo: compro un poco más cada mes. Reviso mi cartera una vez por mes.')}
+    ${note('ahorro', 'Mi plan de ahorro', 'Ej.: Ahorro una parte de lo que me entra el día que cobro, antes de gastar.')}
+    ${note('inversion', 'Mi plan de inversión', 'Ej.: 75% renta variable (fondos amplios), 20% renta fija, 5% oro.')}
+    ${note('riesgo', 'Cómo manejo el riesgo', 'Ej.: Si el mercado cae, no vendo por impulso. Reviso mi cartera una vez por mes.')}
     <div class="small muted">Se guarda solo mientras escribís.</div>
   </section>
 
@@ -4619,7 +4626,7 @@ function viewMiPlan() {
     <div class="card-head" style="margin-bottom:6px"><h2>${icon('check', 18)} Los pasos que sigo</h2>${steps.length ? `<span class="muted small">${done} de ${steps.length}</span>` : ''}</div>
     <div class="list">${steps.map((s) => `<div class="list-row plan-step ${s.done ? 'done' : ''}"><label class="check-line grow"><input type="checkbox" data-plan-step="${s.id}" ${s.done ? 'checked' : ''}><span>${esc(s.text)}</span></label>
       <button class="btn sm ghost icon-only" data-action="planStepDel" data-id="${s.id}" title="Borrar" aria-label="Borrar">${icon('x', 16)}</button></div>`).join('')}</div>
-    <div class="plan-add"><input type="text" id="planStepNew" placeholder="ej. Comprar VOO todos los meses el día 5" autocomplete="off"><button class="btn primary" data-action="planStepAdd">Agregar</button></div>
+    <div class="plan-add"><input type="text" id="planStepNew" placeholder="Ej.: Invertir un monto fijo cada mes" autocomplete="off"><button class="btn primary" data-action="planStepAdd">Agregar</button></div>
   </section>
   <p class="muted small" style="margin:0">Es una guía para ordenar tu plan, no asesoramiento financiero profesional.</p>`;
 }
@@ -4661,7 +4668,7 @@ function customCatForm(type, onDone, cat = null) {
   openForm({
     title: cat ? `Editar categoría: ${cat.name}` : `Nueva categoría de ${type === 'ingreso' ? 'ingreso' : 'gasto'}`,
     fields: [
-      { name: 'name', label: 'Nombre', value: cat?.name || '', required: true, full: true, placeholder: type === 'ingreso' ? 'ej. Clases particulares' : 'ej. Comparsa, Universidad, Regalos' },
+      { name: 'name', label: 'Nombre', value: cat?.name || '', required: true, full: true, placeholder: type === 'ingreso' ? 'Ej.: Trabajos ocasionales' : 'Ej.: Regalos, Hogar, Cursos' },
       { name: 'icon', label: 'Ícono', type: 'select', value: cat?.icon || 'tag', full: true, options: CAT_ICON_CHOICES },
       { type: 'html', html: '<div class="cat-preview" id="catPreview"></div>' },
       ...(cat ? [{ name: 'remove', label: 'Eliminar esta categoría (tus movimientos quedan con su nombre)', type: 'checkbox', full: true }] : []),
@@ -4746,6 +4753,41 @@ function lastAccountFor(type) {
 }
 
 // Un gasto/ingreso que coincide con un fijo pendiente (ej. "Gym 300") lo marca como pagado
+/* Avisos antes de guardar un movimiento (no lo impiden: piden confirmar una vez).
+   - fecha futura (el saldo cambia hoy aunque la fecha sea de más adelante)
+   - monto muy por encima de lo que solés registrar en esa categoría (¿un cero de más?)
+   - la cuenta quedaría en negativo */
+function txWarnings({ type, amount, accountId, date, category, prev = null }) {
+  const out = [];
+  const acc = S.accounts.find((a) => a.id === accountId);
+  if (date && date > todayISO()) out.push(`La fecha (${fmtDate(date).slice(0, 5)}) es futura, pero el saldo cambia hoy.`);
+  if (acc && amount > 0 && (type === 'gasto' || type === 'ingreso') && category) {
+    // Mediana de los últimos movimientos de esa categoría (hacen falta al menos 5 para comparar)
+    const hist = S.transactions.filter((t) => t.type === type && t.category === category && !nonFlow(t) && t !== prev).slice(-30).map(txUSD).filter((x) => x > 0).sort((a, b) => a - b);
+    const usd = toUSD(amount, acc.currency);
+    if (hist.length >= 5) {
+      const med = hist[Math.floor(hist.length / 2)], top = hist[hist.length - 1];
+      if (usd > med * 8 && usd > top * 2) out.push(`Es mucho más de lo que solés registrar en ${category} (lo habitual: ${fmtIn(fromUSD(med, acc.currency), acc.currency)}). Revisá que no sobre un cero.`);
+    }
+  }
+  if (acc && amount > 0 && acc.type !== 'credito' && (type === 'gasto' || type === 'transferencia')) {
+    // Al editar, se devuelve primero lo que ese movimiento ya había sacado de la misma cuenta
+    const back = prev && prev.accountId === acc.id && (prev.type === 'gasto' || prev.type === 'transferencia') ? Number(prev.amount) || 0 : 0;
+    const left = (Number(acc.balance) || 0) + back - amount;
+    if (left < -0.005 && (Number(acc.balance) || 0) + back >= 0) out.push(`${acc.name} quedaría en negativo (${fmtIn(left, acc.currency)}). Revisá el saldo de la cuenta o el monto.`);
+  }
+  return out;
+}
+// Confirmar una vez: la primera vez devuelve el aviso; si tocás guardar de nuevo con los mismos datos, deja pasar
+let warnSeen = '';
+function confirmOnce(key, warnings) {
+  if (!warnings.length) { warnSeen = ''; return null; }
+  const k = `${key}|${warnings.join('|')}`;
+  if (warnSeen === k) { warnSeen = ''; return null; }
+  warnSeen = k;
+  return `${warnings.join(' ')} Si está bien, tocá guardar otra vez.`;
+}
+
 function matchRecurring(type, category, amount, currency, note, date) {
   // Fijos que se marcan a mano, de esa categoría, cuya factura (la más vieja sin pagar) todavía no está registrada
   const cands = S.recurring.filter((r) => {
@@ -4804,15 +4846,15 @@ function quickEntry(type = 'gasto', t = null, pre = null) {
       <div class="q-cats">${catsByUse(st.type).map((c) => `<button type="button" class="q-cat ${c === st.category ? 'on' : ''}" data-q-cat="${esc(c)}">
         <span class="q-cat-ico">${catIcon(c, 20)}</span><span class="q-cat-name">${esc(shortCat(c))}</span></button>`).join('')}
         <button type="button" class="q-cat q-cat-new" data-q="newcat"><span class="q-cat-ico">${icon('plus', 20)}</span><span class="q-cat-name">Nueva</span></button></div>
-      <input type="text" id="qNote" class="q-note ${isOther ? 'q-need' : ''}" placeholder="${isOther ? '¿Qué fue? (obligatorio) ej. cuota extra del carnaval' : 'Detalle (opcional): ej. almuerzo con amigos'}" value="${esc(st.note)}" autocomplete="off">
-      ${isOther ? `<textarea id="qMemo" class="q-memo" rows="2" placeholder="Explicalo con tus palabras si querés (opcional): ej. la comparsa subió a 300$ a tipo 12 y tuve que pagar la diferencia">${esc(st.memo)}</textarea>` : ''}
+      <input type="text" id="qNote" class="q-note ${isOther ? 'q-need' : ''}" placeholder="${isOther ? '¿Qué fue? (obligatorio) Ej.: Reparación del hogar' : 'Detalle (opcional). Ej.: Compra de alimentos'}" value="${esc(st.note)}" autocomplete="off">
+      ${isOther ? `<textarea id="qMemo" class="q-memo" rows="2" placeholder="Explicalo con tus palabras si querés (opcional). Ej.: Fue un gasto imprevisto que no entra en otra categoría">${esc(st.memo)}</textarea>` : ''}
       <div class="q-chips">
         <button type="button" class="q-chip" data-q="acc">${accIcon(acc)}<span>${acc?.id === FAMILY_ID ? 'Lo pagó <b>tu familia</b>' : `${out ? 'Sale de' : 'Entra a'} <b>${esc(acc?.name || '—')}</b>`}</span>${icon('chevron', 14)}</button>
         <button type="button" class="q-chip" data-q="when">${icon('calendar', 16)}<span>${whenLabel(st.date, st.time)}</span>${icon('chevron', 14)}</button>
       </div>
       <div class="q-accs" ${st.showAcc ? '' : 'hidden'}>${accs.map((a) => `<button type="button" class="q-acc ${a.id === st.accountId ? 'on' : ''}" data-q-acc="${a.id}">
         ${accIcon(a)}<span>${esc(a.name)}<small>${fmtIn(a.balance, a.currency)}${a.type === 'credito' ? ' de deuda' : ''}</small></span></button>`).join('')}
-        ${out ? `<button type="button" class="q-acc fam ${st.accountId === FAMILY_ID ? 'on' : ''}" data-q-acc="${FAMILY_ID}">${icon('users', 18)}<span>Lo pagó mi familia<small>No sale de tus cuentas (ej. la U, la comida del perro)</small></span></button>` : ''}</div>
+        ${out ? `<button type="button" class="q-acc fam ${st.accountId === FAMILY_ID ? 'on' : ''}" data-q-acc="${FAMILY_ID}">${icon('users', 18)}<span>Lo pagó mi familia<small>No sale de tus cuentas (ej.: un gasto que otra persona pagó por vos)</small></span></button>` : ''}</div>
       <div class="q-when" ${st.showWhen ? '' : 'hidden'}><input type="date" id="qDate" value="${st.date}"><input type="time" id="qTime" value="${st.time}"></div>
       <p class="form-error" hidden></p>
       <button type="submit" class="q-save">${t ? 'Guardar cambios' : out ? 'Guardar gasto' : 'Guardar ingreso'}</button>
@@ -4866,7 +4908,8 @@ function quickEntry(type = 'gasto', t = null, pre = null) {
     if (!acc) return err('Elegí la cuenta.');
     const category = st.category || (st.type === 'ingreso' ? 'Otros ingresos' : 'Otros gastos');
     // "Otros" sin detalle no sirve para el análisis: se pide qué fue
-    if (OTHER_CATS.has(category) && !st.note) { $('#qNote')?.focus(); return err(st.category ? 'Contá qué fue en "¿Qué fue?" (ej. cuota extra del carnaval).' : 'Elegí una categoría o contá qué fue en el detalle.'); }
+    if (OTHER_CATS.has(category) && !st.note) { $('#qNote')?.focus(); return err(st.category ? 'Contá qué fue en "¿Qué fue?" (ej.: reparación del hogar).' : 'Elegí una categoría o contá qué fue en el detalle.'); }
+    { const w = confirmOnce(`q|${st.type}|${amount}|${fam ? 'fam' : acc.id}|${st.date}|${category}`, txWarnings({ type: st.type, amount, accountId: fam ? '' : acc.id, date: st.date, category, prev: t })); if (w) return err(w); }
     const next = { type: st.type, amount: round2(amount), category, note: st.note || category, memo: OTHER_CATS.has(category) && st.memo ? st.memo : undefined, accountId: fam ? '' : acc.id, date: st.date || todayISO(), time: st.time || '',
       familyPaid: fam || undefined, currency: fam ? acc.currency : undefined };
     if (st.receipt) S.settings.receiptPayer = st.accountId; // la próxima vez, el mismo "quién pagó"
@@ -4893,7 +4936,7 @@ function quickEntry(type = 'gasto', t = null, pre = null) {
 }
 
 /* ---------------- Leer un comprobante desde una foto ----------------
-   Ej. el comprobante que te manda tu papá cuando paga la U. Se lee en el teléfono con Tesseract
+   Ej. el comprobante de una transferencia o un pago. Se lee en el teléfono con Tesseract
    (gratis, de código abierto): la imagen no se sube a ningún lado. La primera vez descarga el lector (~6 MB). */
 
 const OCR_LIB = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
@@ -4901,6 +4944,7 @@ const OCR_LANG = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/spa@1.0.0/4.0.
 let ocrLoad = null;
 const loadOcr = () => ocrLoad || (ocrLoad = new Promise((res, rej) => {
   const s = document.createElement('script');
+  s.integrity = SCRIPT_SRI[OCR_LIB]; s.crossOrigin = 'anonymous'; // (huella de la librería: ver SCRIPT_SRI)
   s.src = OCR_LIB;
   s.onload = () => res(window.Tesseract);
   s.onerror = () => { ocrLoad = null; s.remove(); rej(new Error('No se pudo descargar el lector. Revisá tu conexión.')); };
@@ -5062,13 +5106,21 @@ function parseReceipt(text) {
 /* ---------------- Informe para analizar (PDF o Excel) ----------------
    Elegís desde qué mes y hasta cuál (sólo aparecen los meses con registros) y el formato.
    Todo se arma en el teléfono con librerías gratis (jsPDF y SheetJS); los precios de cripto de cada día
-   se bajan gratis de CoinGecko. Las acciones (VOO, NVDA…) sólo tienen precio de los días en que abriste la app. */
+   se bajan gratis de CoinGecko. Las acciones y ETF sólo tienen precio de los días en que abriste la app. */
 
 const PDF_LIBS = ['https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'];
 const XLSX_LIB = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
 const scriptLoads = {};
+// Huella (SHA-384) de cada librería externa: si el archivo que llega no coincide exactamente, el navegador no lo ejecuta
+const SCRIPT_SRI = {
+  'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js': 'sha384-GJqSu7vueQ9qN0E9yLPb3Wtpd7OrgK8KmYzC8T1IysG1bcvxvIO4qtYR/D3A991F',
+  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js': 'sha384-JcnsjUPPylna1s1fvi1u12X5qjY5OL56iySh75FdtrwhO/SWXgMjoVqcKyIIWOLk',
+  'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js': 'sha384-fCAW/rDWORTbQXSiB7mOg0QtQ5c+r0f544y6XoKjuVva0nMBlCpNUjiFeG5iMdS3',
+  'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js': 'sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw',
+};
 const loadScript = (src) => scriptLoads[src] || (scriptLoads[src] = new Promise((res, rej) => {
   const s = document.createElement('script');
+  if (SCRIPT_SRI[src]) { s.integrity = SCRIPT_SRI[src]; s.crossOrigin = 'anonymous'; }
   s.src = src;
   s.onload = res;
   s.onerror = () => { delete scriptLoads[src]; s.remove(); rej(new Error('No se pudo descargar el generador del informe. Revisá tu conexión.')); };
@@ -5117,7 +5169,7 @@ function viewInforme() {
       <li>Separado: gastos propios, lo que pagó tu familia, transferencias, inversiones y préstamos (con lo que falta cobrar).</li>
       <li>Saldos de tus cuentas día por día, tus fijos y "Para revisar": días sin registros, saldos que bajaron sin movimientos y datos estimados.</li>
     </ul>
-    <p class="small muted" style="margin:8px 0 0">Los precios de cripto y oro (PAXG) de cada día se bajan gratis de CoinGecko. Las acciones y ETF tienen precio sólo de los días en que abriste la app; desde ahora se guardan todos los días.</p>
+    <p class="small muted" style="margin:8px 0 0">Los precios de cripto y oro de cada día se bajan gratis de CoinGecko. Las acciones y ETF tienen precio sólo de los días en que abriste la app; desde ahora se guardan todos los días.</p>
   </section>`;
 }
 
@@ -5750,7 +5802,7 @@ function spendPlan() {
   }
   const total = (list) => list.filter((x) => x.state !== 'skip').reduce((s, x) => s + x.usd, 0);
   const income = total(items.income);
-  // (los intereses de Meru no se suman: quedan adentro de Meru como ahorro, no son plata para gastar)
+  // (los intereses de una cuenta remunerada no se suman: quedan adentro como ahorro, no son plata para gastar)
   const fixed = total(items.fixed);
   const sched = total(items.sched);
   const loanDue = total(items.loans);
@@ -5910,7 +5962,7 @@ function spendCardHTML() {
     <div class="small muted" style="margin:4px 0 12px">Cargá tu sueldo y tus gastos de todos los meses y la app lo calcula.</div>
     <button class="btn primary" data-action="go" data-id="fijos">${icon('repeat', 16)} Agregar mis fijos</button>
   </section>`;
-  // Ingresos que todavía no entraron este mes y no se cuentan antes (ej. la mesada, que es "a veces")
+  // Ingresos que todavía no entraron este mes y no se cuentan antes (los "a veces")
   const notCounted = S.recurring.filter((r) => repeats(r) && r.type === 'ingreso' && dueIn(r, currentMonth()) && !countsInPlan(r) && !recurringTx(r, currentMonth()));
   recordDayBudget(p);
   const saved = dailySaved();
@@ -5967,7 +6019,7 @@ function spendInfo() {
   openForm({
     title: '¿Cómo se calcula?',
     fields: [
-      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos contás antes de que entren?</b><br><span class="muted small">Los seguros se cuentan desde el día 1. Los "a veces" (como la mesada) se suman recién cuando entran; prendelos sólo si estás seguro de que llegan.</span></div>` }] : []),
+      ...(incomes.length ? [{ type: 'html', html: `<div class="calc-sub"><b>¿Qué ingresos contás antes de que entren?</b><br><span class="muted small">Los seguros se cuentan desde el día 1. Los "a veces" (como un trabajo ocasional) se suman recién cuando entran; prendelos sólo si estás seguro de que llegan.</span></div>` }] : []),
       ...incomes.map((r) => ({
         name: `inc_${r.id}`, type: 'checkbox', full: true, value: countsInPlan(r),
         label: `${r.name} · ${fmtIn(r.amount, r.currency)}${freqUnit(r)} · ${isSure(r) ? 'seguro' : 'a veces'}${recurringTx(r, currentMonth()) ? ' (ya entró: se cuenta)' : ''}`,
@@ -6201,11 +6253,11 @@ function addHoldingForm(state = { n: 1, vals: {} }) {
   const n = state.n, V = state.vals;
   const fields = [
     { name: 'when', label: '¿Cuándo lo compraste?', type: 'select', value: V.when || 'hoy', full: true, options: [['hoy', 'Lo compré hoy'], ['antes', 'Ya lo tenía (compra anterior)']] },
-    { name: 'symbol', label: 'Ticker / símbolo', value: V.symbol || '', required: true, placeholder: 'VOO, BTC, NVDA…' },
+    { name: 'symbol', label: 'Ticker / símbolo', value: V.symbol || '', required: true, placeholder: 'Ej.: símbolo del activo (SPY, BTC…)' },
     { name: 'name', label: 'Nombre', value: V.name || '', placeholder: 'Opcional' },
     { name: 'assetType', label: 'Tipo', type: 'select', value: V.assetType || 'accion', options: Object.entries(ASSET_TYPES) },
-    { name: 'platform', label: 'Dónde lo tenés', value: V.platform || '', placeholder: 'Binance, broker…' },
-    { name: 'coingeckoId', label: 'ID de CoinGecko', value: V.coingeckoId || '', placeholder: 'bitcoin, pax-gold…', full: true, hint: 'Para precio automático de cripto/oro.', showIf: (v) => v.assetType === 'cripto' || v.assetType === 'oro' },
+    { name: 'platform', label: 'Dónde lo tenés', value: V.platform || '', placeholder: 'Ej.: nombre de la plataforma' },
+    { name: 'coingeckoId', label: 'ID de CoinGecko', value: V.coingeckoId || '', placeholder: 'Ej.: bitcoin, ethereum', full: true, hint: 'Para precio automático de cripto/oro.', showIf: (v) => v.assetType === 'cripto' || v.assetType === 'oro' },
   ];
   for (let k = 0; k < n; k++) {
     fields.push({ type: 'html', html: `<div class="imp-head"><b>${n > 1 ? `Compra ${k + 1}` : 'La compra'}</b></div>` });
@@ -6307,17 +6359,17 @@ function holdingForm(h) {
   openForm({
     title: isNew ? 'Agregar activo' : `Editar ${h.symbol}`,
     fields: [
-      { name: 'symbol', label: 'Ticker / símbolo', value: h.symbol, required: true, placeholder: 'VOO, BTC, NVDA…' },
+      { name: 'symbol', label: 'Ticker / símbolo', value: h.symbol, required: true, placeholder: 'Ej.: símbolo del activo (SPY, BTC…)' },
       { name: 'name', label: 'Nombre', value: h.name, placeholder: 'Opcional' },
       { name: 'assetType', label: 'Tipo', type: 'select', value: h.assetType, options: Object.entries(ASSET_TYPES) },
-      { name: 'platform', label: 'Dónde lo tenés', value: h.platform, placeholder: 'Binance, broker…' },
+      { name: 'platform', label: 'Dónde lo tenés', value: h.platform, placeholder: 'Ej.: nombre de la plataforma' },
       { name: 'quantity', label: 'Cantidad', type: 'number', value: h.quantity, hint: 'Acciones, unidades o monedas. Se aceptan fracciones (0,1450).' },
       { name: 'avgCost', label: 'Precio promedio de compra (USD)', type: 'number', value: h.avgCost, blankZero: true, placeholder: 'Opcional' },
       // Lo que ya tenías sin registrar la compra: ¿desde cuándo? (así el informe no lo muestra en días anteriores)
       { name: 'initDate', label: '¿Desde qué fecha tenés esta cantidad?', type: 'date', value: h.initial?.date || (isNew ? todayISO() : ''), full: true,
         hint: 'Es tu "saldo inicial": poné la fecha en que lo compraste. Las compras y ventas nuevas registralas con Compra/Venta.',
         showIf: (v) => (v.quantity || 0) - (isNew ? 0 : netTrades(h)) > 1e-9 },
-      { name: 'coingeckoId', label: 'ID de CoinGecko', value: h.coingeckoId, placeholder: 'bitcoin, pax-gold…', hint: 'Para precio automático de cripto/oro.', showIf: (v) => v.assetType === 'cripto' || v.assetType === 'oro' },
+      { name: 'coingeckoId', label: 'ID de CoinGecko', value: h.coingeckoId, placeholder: 'Ej.: bitcoin, ethereum', hint: 'Para precio automático de cripto/oro.', showIf: (v) => v.assetType === 'cripto' || v.assetType === 'oro' },
       { name: 'price', label: 'Precio actual (USD)', type: 'number', value: h.price, blankZero: true, hint: 'Se pisa al actualizar si hay precio automático.' },
     ],
     onInput: (form, vals, changed) => {
@@ -6796,8 +6848,8 @@ function accountForm(a) {
     title: isNew ? 'Agregar cuenta o tarjeta' : `Editar ${a.name}`,
     fields: [
       { name: 'type', label: 'Tipo', type: 'select', value: a.type, options: Object.entries(ACCOUNT_TYPES).map(([k, i]) => [k, i.label]) },
-      { name: 'name', label: 'Nombre', value: a.name, required: true, placeholder: 'ej. Visa Galicia, Meru, Efectivo' },
-      { name: 'institution', label: 'Banco / entidad', value: a.institution, placeholder: 'ej. Galicia, Santander, Meru, Binance' },
+      { name: 'name', label: 'Nombre', value: a.name, required: true, placeholder: 'Ej.: Cuenta de ahorro, Efectivo' },
+      { name: 'institution', label: 'Banco / entidad', value: a.institution, placeholder: 'Ej.: Nombre del banco o la billetera' },
       { name: 'currency', label: 'Moneda', type: 'select', value: a.currency, options: CURRENCIES.map(([c, n]) => [c, `${c} — ${n}`]) },
       { name: 'balance', label: 'Saldo actual', type: 'number', value: a.balance, showIf: (v) => v.type !== 'credito' },
       { name: 'debt', label: 'Deuda actual (lo que debés)', type: 'number', value: a.balance, showIf: (v) => v.type === 'credito' },
@@ -6805,19 +6857,20 @@ function accountForm(a) {
       { name: 'creditLimit', label: 'Límite de crédito', type: 'number', value: a.creditLimit, blankZero: true, showIf: (v) => v.type === 'credito' },
       { name: 'closingDay', label: 'Día de cierre', value: a.closingDay, placeholder: 'ej. 25', showIf: (v) => v.type === 'credito' },
       { name: 'dueDay', label: 'Día de vencimiento', value: a.dueDay, placeholder: 'ej. 5', showIf: (v) => v.type === 'credito' },
-      // Rendimiento: Meru (USDC en Blend) u otra cuenta remunerada
+      // Rendimiento de una cuenta remunerada (tasa fija o la de Blend)
       { name: 'apySource', label: 'Rendimiento (APY)', type: 'select', value: a.apySource === 'blend' ? 'blend' : Number(a.apy) ? 'manual' : 'none', full: true,
-        options: [['none', 'Esta cuenta no genera intereses'], ['manual', 'Tasa fija que cargo yo'], ['blend', 'Automático: tasa de Blend, como Meru (USDC)']],
+        options: [['none', 'Esta cuenta no genera intereses'], ['manual', 'Tasa fija que cargo yo'], ['blend', 'Automático: sigue la tasa de Blend (USDC)']],
         showIf: (v) => v.type !== 'credito' },
       { name: 'apy', label: 'APY anual (%)', type: 'number', value: a.apySource === 'blend' ? '' : a.apy, placeholder: 'ej. 5', showIf: (v) => v.type !== 'credito' && v.apySource === 'manual' },
-      { name: 'apyShown', label: 'APY que te muestra Meru hoy (%)', type: 'number', value: a.apySource === 'blend' ? round2(effectiveApy(a)) : '', placeholder: 'ej. 5,05',
-        hint: S.settings.blendApy != null ? `Blend paga hoy ${fmtNum(S.settings.blendApy, 2)}%. Con tu dato calculo cuánto se queda Meru y sigo la tasa sola.` : 'Tocá Actualizar para traer la tasa de Blend.',
+      { name: 'apyShown', label: 'Rendimiento que te muestra tu billetera hoy (%)', type: 'number', value: a.apySource === 'blend' ? round2(effectiveApy(a)) : '', placeholder: 'ej. 5,05',
+        hint: S.settings.blendApy != null ? `Blend paga hoy ${fmtNum(S.settings.blendApy, 2)}%. Con tu dato calculo la diferencia y sigo la tasa sola.` : 'Tocá Actualizar para traer la tasa de Blend.',
         showIf: (v) => v.type !== 'credito' && v.apySource === 'blend' },
       { name: 'apyAccrue', label: 'Sumar los intereses al saldo cada día', type: 'checkbox', value: a.apyAccrue, full: true, showIf: (v) => v.type !== 'credito' && v.apySource !== 'none' },
       { name: 'notes', label: 'Notas', value: a.notes, full: true, placeholder: 'Opcional' },
     ],
     onSubmit: (v) => {
       if (v.last4 && !/^\d{4}$/.test(v.last4)) return 'Los últimos dígitos tienen que ser exactamente 4 números.';
+      if (S.accounts.some((x) => x !== a && norm(x.name) === norm(v.name))) { const w = confirmOnce(`acc|${v.name}`, [`Ya tenés una cuenta llamada "${v.name}".`]); if (w) return w; }
       // Cambiar la moneda reinterpretaría todos sus movimientos (100 dólares pasarían a ser Bs 100)
       if (a.id && v.currency !== a.currency && S.transactions.some((t) => t.accountId === a.id || t.toAccountId === a.id))
         return `Esta cuenta ya tiene movimientos en ${curLabel(a.currency)}. Para otra moneda, creá una cuenta nueva y pasá la plata con "Pasar plata entre cuentas".`;
@@ -6915,7 +6968,7 @@ function txForm(type, t) {
         showIf: (v) => v.type === 'transferencia' && curOf(v.accountId) !== curOf(v.toAccountId) },
       { name: 'catGasto', label: 'Categoría', type: 'select', value: t.category, options: withCat(catsOf('gasto'), t.category).map((c) => [c, c]), showIf: (v) => v.type === 'gasto' },
       { name: 'catIngreso', label: 'Categoría', type: 'select', value: t.category, options: withCat(catsOf('ingreso'), t.category).map((c) => [c, c]), showIf: (v) => v.type === 'ingreso' },
-      { name: 'note', label: 'Detalle', value: t.note, full: true, placeholder: 'ej. Almuerzo, pasaje, sueldo octubre…' },
+      { name: 'note', label: 'Detalle', value: t.note, full: true, placeholder: 'Ej.: Compra de alimentos, Pago de transporte' },
       { name: 'memo', label: 'Nota (opcional): explicalo con tus palabras', type: 'textarea', value: t.memo || '', full: true,
         showIf: (v) => v.type !== 'transferencia' && OTHER_CATS.has(v.type === 'gasto' ? v.catGasto : v.catIngreso) },
       ...(isNew ? [] : [{ name: 'remove', label: 'Eliminar este movimiento', type: 'checkbox', full: true }]),
@@ -6930,7 +6983,8 @@ function txForm(type, t) {
       if (v.remove) { setTimeout(() => ACTIONS.delTx(t.id), 50); return; }
       if (v.type === 'transferencia' && v.accountId === v.toAccountId) return 'Elegí dos cuentas distintas.';
       const cat = v.type === 'gasto' ? v.catGasto : v.type === 'ingreso' ? v.catIngreso : '';
-      if (OTHER_CATS.has(cat) && (!v.note || v.note === cat)) return 'Contá qué fue en "Detalle" (ej. cuota extra del carnaval): así aparece en el análisis.';
+      if (OTHER_CATS.has(cat) && (!v.note || v.note === cat)) return 'Contá qué fue en "Detalle" (ej.: reparación del hogar): así aparece en el análisis.';
+      { const w = confirmOnce(`t|${v.type}|${v.amount}|${v.accountId}|${v.date}|${cat}`, txWarnings({ type: v.type, amount: v.amount, accountId: v.accountId, date: v.date, category: cat, prev: t?.id ? t : null })); if (w) return w; }
       const sameCur = curOf(v.accountId) === curOf(v.toAccountId);
       const next = {
         type: v.type, date: v.date || todayISO(), time: v.time || '', accountId: v.accountId, amount: v.amount,
@@ -6955,7 +7009,7 @@ function txForm(type, t) {
 }
 
 /* Pasar plata entre tus cuentas, con el tipo de cambio que te dieron de verdad
-   (ej. Meru → banco: Meru te paga menos Bs por dólar que el oficial). */
+   (ej. de dólares a moneda local: te pagan menos que el tipo de cambio oficial). */
 
 // Cómo se expresa el tipo de cambio entre dos monedas: siempre "Bs por 1 US$" cuando hay dólares de por medio
 function fxPair(from, to) {
@@ -6969,8 +7023,8 @@ function transferForm(fromId, t = null) {
   const accs = S.accounts;
   if (accs.length < 2) return toast('Necesitás al menos dos cuentas.');
   const last = S.settings.lastTransfer || {};
-  const from0 = t?.accountId || fromId || last.from || accs.find((a) => /meru/i.test(a.name + a.institution))?.id || accs[0].id;
-  // Destino: el último que usaste; si no, una cuenta de banco en otra moneda (ej. Meru en dólares → banco en Bs)
+  const from0 = t?.accountId || fromId || last.from || accs[0].id;
+  // Destino: el último que usaste; si no, una cuenta de banco en otra moneda (ej. dólares → moneda local)
   const fromCur = accs.find((a) => a.id === from0)?.currency;
   const others = accs.filter((a) => a.id !== from0 && a.type !== 'credito');
   const to0 = t?.toAccountId || (last.to !== from0 && accs.some((a) => a.id === last.to) && last.to)
@@ -6998,7 +7052,7 @@ function transferForm(fromId, t = null) {
       { type: 'html', html: '<div id="fxHint" class="fx-hint"></div>' },
       { name: 'date', label: 'Fecha', type: 'date', value: t?.date || todayISO() },
       { name: 'time', label: 'Hora', type: 'time', value: t?.time || nowTime() },
-      { name: 'note', label: 'Detalle', value: t?.note || '', full: true, placeholder: 'ej. Meru al banco por QR' },
+      { name: 'note', label: 'Detalle', value: t?.note || '', full: true, placeholder: 'Ej.: Paso de ahorros a la cuenta' },
       ...(t ? [{ name: 'remove', label: 'Eliminar esta transferencia', type: 'checkbox', full: true }] : []),
     ],
     submitLabel: t ? 'Guardar cambios' : 'Pasar plata',
@@ -7028,6 +7082,7 @@ function transferForm(fromId, t = null) {
       if (v.remove) { setTimeout(() => ACTIONS.delTx(t.id), 50); return; }
       if (v.from === v.to) return 'Elegí dos cuentas distintas.';
       if (!(v.amount > 0)) return 'Escribí el monto que sale.';
+      { const w = confirmOnce(`x|${v.amount}|${v.from}|${v.to}|${v.date}`, txWarnings({ type: 'transferencia', amount: v.amount, accountId: v.from, date: v.date, prev: t })); if (w) return w; }
       const c1 = curOf(v.from), c2 = curOf(v.to);
       const same = c1 === c2;
       let got = '', rate = null;
