@@ -1852,12 +1852,16 @@ function fixPeriodHTML() {
   const nextBills = st.miss.filter((x) => isPayNext(x.r));
   const nb = nextBills.reduce((s, x) => s + x.usd, 0);
   const firstDue = nextBills.map((x) => billDue(x.r, m)).filter(Boolean).sort()[0];
+  // En el mes actual: facturas del mes pasado que vencen ahora y todavía no pagaste (ya estaban separadas el mes pasado)
+  const prevBills = m === cur ? S.recurring.filter((r) => repeats(r) && isPayNext(r) && (!r.startMonth || r.startMonth <= addMonths(m, -1)) && !recurringTx(r, addMonths(m, -1)))
+    .reduce((s, r) => s + toUSD(recAmount(r), r.currency), 0) : 0;
   return `${periodNavHTML('fix', m, min, max)}
     <div class="month-sum">
       <div><span>Entró</span><b class="money up">${L(st.inc)}</b></div>
       <div><span>Pagaste</span><b class="money">${L(st.out)}</b></div>
       <div><span>${past ? 'Sin registrar' : future ? 'Vas a necesitar' : 'Falta pagar'}</span><b class="money ${past && st.missUSD > 0 ? 'down' : ''}">${L(st.missUSD)}</b></div>
     </div>
+    ${prevBills > 0 ? `<div class="small bills-next warn-text">${icon('alert', 14)} <span>Facturas de ${monthLabel(addMonths(m, -1), 'long')} por pagar este mes: <b class="money">${L(prevBills)}</b> (se separaron en ${monthLabel(addMonths(m, -1), 'long')}).</span></div>` : ''}
     ${nb > 0 && !past ? `<div class="small muted bills-next">${icon('calendar', 14)} <span>Facturas de ${monthLabel(m, 'long')} que se pagan ${firstDue ? `desde el ${fmtDate(firstDue).slice(0, 5)}` : `en ${monthLabel(addMonths(m, 1), 'long')}`}: <b class="money">${L(nb)}</b>${m === cur ? ' (ya separadas de lo que podés gastar)' : ''}.</span></div>` : ''}`;
 }
 function fixHistoryHTML() {
@@ -5347,7 +5351,7 @@ function txRowHTML(t) {
     : `${esc(shortCat(t.category || ''))} · ${t.familyPaid ? 'Lo pagó tu familia' : esc(acc?.name || 'cuenta eliminada')}`;
   return `<button class="tx-row" data-action="editTx" data-id="${t.id}">
     <span class="tx-ico ${t.type}">${ico}</span>
-    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ' <span class="tag">fijo</span>' : t.scheduledId ? ' <span class="tag">programado</span>' : ''}${t.familyPaid ? ' <span class="tag fam">familia</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
+    <span class="tx-main"><span class="tx-title">${esc(title)}${t.recurringId ? ` <span class="tag">${t.forMonth && t.forMonth !== t.date?.slice(0, 7) ? `factura de ${monthLabel(t.forMonth, 'long')}` : 'fijo'}</span>` : t.scheduledId ? ' <span class="tag">programado</span>' : ''}${t.familyPaid ? ' <span class="tag fam">familia</span>' : ''}</span><span class="tx-meta">${meta}${t.time ? ` · ${esc(t.time)}` : ''}</span></span>
     <span class="tx-amt money ${t.type}">${sign}${fmtIn(t.amount, cur)}${t.type === 'transferencia' && t.toAmount && to ? `<small class="tx-to">→ ${fmtIn(t.toAmount, to.currency)}</small>` : ''}</span>
   </button>`;
 }
@@ -5505,9 +5509,12 @@ function dailySaved() {
   const month = currentMonth(), today = todayISO();
   const dim = daysInMonth(month), todayDay = Number(today.slice(8, 10));
   const p = spendPlan();
-  // No se cuentan los días antes de que empezaras a usar la app
-  const firsts = [...S.transactions.map((t) => t.date), ...Object.keys(S.dayBudgets || {})].filter(Boolean).sort();
-  const start = firsts[0] || today;
+  // No se cuentan los días antes de que empezaras a usar la app: desde tu primer gasto del día a día,
+  // o desde el día DESPUÉS de abrirla por primera vez (el día que la instalás no cuenta como "no gasté")
+  const firstSpend = S.transactions.filter(isVariable).map((t) => t.date).filter(Boolean).sort()[0];
+  const firstOpen = Object.keys(S.dayBudgets || {}).sort()[0];
+  const afterOpen = firstOpen ? isoOf(Date.parse(`${firstOpen}T12:00:00`) + 864e5) : null;
+  const start = [firstSpend, afterOpen].filter(Boolean).sort()[0] || today;
   const startDay = start.slice(0, 7) < month ? 1 : start.slice(0, 7) === month ? Number(start.slice(8, 10)) : todayDay;
   const days = Math.max(0, todayDay - startDay);
   // Los mismos gastos que cuenta "Hoy podés gastar": sin fijos, programados, familia ni transferencias
