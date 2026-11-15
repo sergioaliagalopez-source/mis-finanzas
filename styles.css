@@ -943,3 +943,9 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 /* "Programados de otros meses": informativo, no se resta */
 .calc-later > summary { opacity: .75; }
 .calc-later > summary b { color: var(--text-2); font-weight: 500; }
+/* Fijos: facturas del mes que se pagan a principios del siguiente */
+.bills-next { display: flex; gap: 6px; align-items: flex-start; margin: 8px 2px 0; }
+.bills-next .ico { flex: none; margin-top: 2px; }
+/* Inicio: "Separado para pagos pendientes" (fijos, facturas y programados que faltan pagar) */
+.reserved-line { display: inline-flex; align-items: center; gap: 5px; margin: 4px 0 0; padding: 0; font-size: 12.5px; color: var(--text-2); text-decoration: none; }
+.reserved-line b { color: var(--text); }
