@@ -954,3 +954,17 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .due-banner > span { flex: 1; min-width: 0; }
 .due-banner > .ico { flex: none; margin-top: 2px; }
 .due-banner .btn { flex: none; margin: -4px -6px -4px 0; }
+
+/* ---------- Pagos del mes y ¿Te alcanza la plata? ---------- */
+.pay-row.paid .name { color: var(--text-2); }
+.pay-row.late .name { color: var(--bad); }
+.cash-top { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.cash-top > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.cash-top b { font-size: 17px; }
+.cash-chart { width: 100%; height: 56px; display: block; margin: 4px 0 10px; }
+.cash-chart polyline { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.cash-card.neg .cash-chart polyline { stroke: var(--bad); }
+.cash-chart .zero { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; opacity: .7; }
+.cash-events { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.cash-events .calc-row > span { min-width: 0; }
+.rec-sub .ico { display: inline-block; vertical-align: -2px; margin-right: 3px; }

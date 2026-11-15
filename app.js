@@ -178,6 +178,7 @@ const BLEND_USDC_POOL = 'ecf788e3-d2ef-4fdd-9ece-8a2d96226ddf';
 // Abajo (en el celular) van Inicio, Movimientos y Plan; todo lo demás se abre desde "Más"
 const MORE_GROUPS = [
   ['Organizar tu mes', [
+    ['pagos', 'Pagos', 'check', 'Qué pagar este mes y si te alcanza'],
     ['fijos', 'Fijos', 'repeat', 'Sueldo, mesada, gym…'],
     ['programados', 'Programados', 'calendar', 'Turnos, matrícula…'],
     ['presupuesto', 'Presupuesto', 'pie', 'Topes por categoría'],
@@ -918,6 +919,7 @@ function viewResumen() {
   ${missing.length ? `<div class="banner">Falta el tipo de cambio de ${missing.join(', ')}. Tocá <b>Actualizar</b> o cargalo en <a href="#" data-action="go" data-id="dolar">Dólar</a>.</div>` : ''}
   ${stale ? `<div class="banner">Tus datos viven sólo en este dispositivo. <a href="#" data-action="go" data-id="respaldo">Activá la sincronización automática</a> para no perderlos.</div>` : ''}
   ${installBannerHTML()}
+  ${cashWarnHTML()}
   ${dueSoonBanner()}
   <section class="card hero">
     <div class="label">Patrimonio hoy${t.lent ? ' <span class="muted small">(sin lo prestado)</span>' : ''}</div>
@@ -935,7 +937,7 @@ function viewResumen() {
   ${spendCardHTML()}
   ${runwayHTML()}
 
-  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="${pend.every((it) => it.schedId) ? 'programados' : pend.every((it) => it.recId) ? 'fijos' : 'plan'}" class="small">Ver todo</a></div>
+  ${pend.length ? `<section class="card"><div class="card-head" style="margin-bottom:4px"><h2>Pendientes</h2><a href="#" data-action="go" data-id="pagos" class="small">Ver todo</a></div>
     <div class="list">${pend.map((it) => `<div class="list-row act">
       <span class="acc-ico sm ${it.type === 'ingreso' ? 'in' : ''}">${icon(it.kind === 'Tarjeta' ? 'card' : it.kind === 'Préstamo' ? 'handshake' : 'calendar', 16)}</span>
       <div class="grow"><div class="name">${esc(it.name)}</div><div class="meta">${it.undated ? 'Este mes' : `${it.schedId ? `${fmtDay(it.date)} · ` : ''}${daysUntil(it.date)}`}</div></div>
@@ -1401,6 +1403,17 @@ function recurringForm(r, preset = null) {
   });
 }
 
+// "Tu promedio: Bs 1.500 · esto es 40% más" (mientras escribís el monto de una factura)
+function billHintText(r, amount, acc) {
+  const last = varPaid(r).slice(0, 3);
+  if (!last.length || !acc) return '';
+  const avg = last.reduce((s, t) => s + txUSD(t), 0) / last.length;
+  const usd = toUSD(Number(amount) || 0, acc.currency);
+  const pct = avg > 0 && usd > 0 ? (usd / avg - 1) * 100 : 0;
+  return `Tu promedio (${last.length} ${last.length === 1 ? 'mes' : 'meses'}): <b>${fmtIn(fromUSD(avg, acc.currency), acc.currency)}</b>${Math.abs(pct) >= 20
+    ? ` · <b class="${pct > 0 ? 'down' : 'up'}">${pct > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(pct), 0)}% ${pct > 0 ? 'más alta' : 'más baja'}</b>` : ''}`;
+}
+
 // "Ya entró" / "Ya pagué": se confirma con el monto real (la mesada puede variar)
 function payRecurringForm(r, month = null) {
   const acc = S.accounts.find((a) => a.id === r.accountId) || S.accounts.find((a) => a.type !== 'credito');
@@ -1415,19 +1428,24 @@ function payRecurringForm(r, month = null) {
         options: (bills.length ? bills : [cur]).map((m) => [m, `${capMonth(m)}${billDue(r, m) ? ` (vence el ${fmtDate(billDue(r, m)).slice(0, 5)})` : ''}`]) }] : []),
       { name: 'accountId', label: 'Cuenta', type: 'select', value: acc?.id, full: true, options: S.accounts.map((a) => [a.id, `${a.name} (${curLabel(a.currency)})`]) },
       { name: 'amount', label: 'Monto (en la moneda de la cuenta)', type: 'stepper', step: stepFor(r.amount), value: recurringAmountFor(r, acc), required: true, full: true },
+      // Monto que cambia: el promedio y si lo que escribís viene alto
+      ...(isVar(r) && varPaid(r).length ? [{ type: 'html', html: `<div id="billHint" class="fx-hint">${billHintText(r, recurringAmountFor(r, acc), acc)}</div>` }] : []),
       { name: 'date', label: 'Fecha', type: 'date', value: todayISO() },
       { name: 'time', label: 'Hora', type: 'time', value: nowTime() },
     ],
     submitLabel: r.type === 'ingreso' ? 'Registrar ingreso' : 'Registrar pago',
     // Si cambiás de cuenta (ej. de dólares a bolivianos), el monto se convierte
     onInput: (form, v, changed) => {
-      if (changed !== 'accountId') return;
       const a = S.accounts.find((x) => x.id === v.accountId);
-      if (a) form.elements.amount.value = numInput(recurringAmountFor(r, a));
+      if (changed === 'accountId' && a) form.elements.amount.value = numInput(recurringAmountFor(r, a));
+      const h = form.querySelector('#billHint');
+      if (h && a) h.innerHTML = billHintText(r, parseNum(form.elements.amount.value), a);
     },
     onSubmit: (v) => {
       if (!(v.amount > 0)) return 'El monto tiene que ser mayor a 0.';
-      if (!registerRecurring(r, { date: v.date, time: v.time, amount: v.amount, accountId: v.accountId, forMonth: v.forMonth || null })) return 'No hay una cuenta para registrarlo. Agregá una en Cuentas.';
+      const ptx = registerRecurring(r, { date: v.date, time: v.time, amount: v.amount, accountId: v.accountId, forMonth: v.forMonth || null });
+      if (!ptx) return 'No hay una cuenta para registrarlo. Agregá una en Cuentas.';
+      billAlert(r, ptx); // (si la factura vino mucho más alta que el promedio, avisa)
       snapshot(); save(); render();
       toast(`${r.name}${v.forMonth ? ` de ${monthLabel(v.forMonth, 'long')}` : ''}: registrado ✓`);
     },
@@ -1907,6 +1925,204 @@ function fixedSuggestions() {
 function viewProgramados() {
   return `<section class="card"><div class="card-head"><span class="muted small">De una sola vez, con fecha: turnos, matrícula, cumpleaños…</span><button class="btn sm primary" data-action="addSched">+ Programar</button></div>
     ${schedHTML()}</section>`;
+}
+
+/* ---------------- Pagos del mes (cuentas por pagar) ----------------
+   Todo lo que hay que pagar en el mes en una sola lista: fijos, facturas (luz, agua, gas), programados, cuotas
+   y tarjetas. Qué ya pagaste, qué falta, qué venció y lo que se separa para principios del mes que viene. */
+
+// Comparar una factura con el promedio de las anteriores (ej. "la luz vino 40% más alta")
+function billCompare(r, tx) {
+  if (!r || !tx) return null;
+  const prev = S.transactions.filter((t) => t.recurringId === r.id && t.id !== tx.id && t.date <= tx.date).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
+  if (prev.length < 1) return null;
+  const avg = prev.reduce((s, t) => s + txUSD(t), 0) / prev.length;
+  if (!(avg > 0)) return null;
+  return { avgUSD: avg, pct: (txUSD(tx) / avg - 1) * 100, n: prev.length };
+}
+// Al registrar una factura de monto que cambia: si vino mucho más alta que el promedio, avisa
+function billAlert(r, tx) {
+  if (!r || !isVar(r)) return;
+  const c = billCompare(r, tx);
+  if (!c || c.pct < 20) return;
+  const cur = S.settings.localCurrency;
+  setTimeout(() => toast(`⚠ ${r.name} vino ${fmtNum(c.pct, 0)}% más alta que tu promedio (${fmtIn(fromUSD(c.avgUSD, cur), cur)}). Revisá la lectura del medidor o si hubo más consumo.`, 8000), 400);
+}
+
+// Lista de pagos del mes m. state: paid · late (venció sin pagar) · pend (falta) · next (se separa ahora, vence el mes que viene)
+function payablesFor(m = currentMonth()) {
+  const today = todayISO(), prevM = addMonths(m, -1), out = [];
+  const accCur = (t) => S.accounts.find((a) => a.id === t.accountId)?.currency || S.settings.localCurrency;
+  const bill = (r, bm, next) => {
+    const tx = recurringTx(r, bm);
+    const due = billDue(r, bm);
+    const name = isPayNext(r) ? `${r.name} (de ${monthLabel(bm, 'long')})` : r.name;
+    const key = `r|${r.id}|${bm}`;
+    if (tx) return out.push({ key, name, kind: 'Fijo', usd: txUSD(tx), amount: tx.amount, currency: accCur(tx), due, state: 'paid', paidDate: tx.date, cmp: isVar(r) ? billCompare(r, tx) : null });
+    if ((r.skip || []).includes(bm)) return;
+    const amt = recAmount(r);
+    out.push({ key, name, kind: 'Fijo', usd: toUSD(amt, r.currency), amount: amt, currency: r.currency, due, approx: isVar(r),
+      state: next ? 'next' : due && due < today ? 'late' : 'pend', auto: autoReg(r), act: autoReg(r) ? null : ['payRecurring', `${r.id}|${bm}`] });
+  };
+  for (const r of S.recurring) {
+    if (!repeats(r) || r.type !== 'gasto') continue;
+    if (freqOf(r) === 'semanal') {
+      if (r.startMonth && r.startMonth > m) continue;
+      const dates = weekDates(r, m).filter((d) => d >= (r.startDate || '') && !(r.skip || []).includes(d));
+      if (!dates.length) continue;
+      const done = dates.filter((d) => weekTx(r, d)).length, amt = (Number(r.amount) || 0) * dates.length;
+      out.push({ key: `w|${r.id}|${m}`, name: `${r.name} (${dates.length} ${dates.length === 1 ? 'vez' : 'veces'})`, kind: 'Fijo', usd: toUSD(amt, r.currency), amount: amt, currency: r.currency,
+        due: dates[dates.length - 1], state: done === dates.length ? 'paid' : 'pend', auto: true, meta: `${done} de ${dates.length} registradas · se registra solo` });
+      continue;
+    }
+    // La factura del mes pasado que vence este mes (luz de noviembre, el 1 de diciembre)
+    if (isPayNext(r) && (!r.startMonth || r.startMonth <= prevM)) bill(r, prevM, false);
+    if (!dueIn(r, m) || (r.startMonth && r.startMonth > m)) continue;
+    bill(r, m, isPayNext(r));
+  }
+  // Programados de este mes (y vencidos sin pagar de antes, si es el mes actual)
+  for (const s of S.scheduled || []) {
+    const tx = schedTx(s);
+    const inM = s.date.startsWith(m), lateBefore = m === currentMonth() && !tx && s.date < `${m}-01`;
+    if (!inM && !lateBefore) continue;
+    if (tx) out.push({ key: `s|${s.id}`, name: s.name, kind: 'Programado', usd: txUSD(tx), amount: tx.amount, currency: accCur(tx), due: s.date, state: 'paid', paidDate: tx.date });
+    else out.push({ key: `s|${s.id}`, name: s.name, kind: 'Programado', usd: toUSD(s.amount, s.currency), amount: s.amount, currency: s.currency, due: s.date, state: s.date < today ? 'late' : 'pend', act: ['paySched', s.id] });
+  }
+  // Cuotas de préstamos que debés
+  for (const l of S.loans || []) {
+    const lp = loanPlan(l);
+    if (l.dir !== 'debo' || !lp) continue;
+    for (let k = 0; k < lp.n; k++) {
+      const d = lp.dateOf(k), paid = k < lp.paidN;
+      if (!(d.startsWith(m) || (m === currentMonth() && !paid && d < `${m}-01`))) continue;
+      const amt = Math.min(lp.cuota, paid ? lp.cuota : lp.left);
+      out.push({ key: `l|${l.id}|${k}`, name: `Cuota ${k + 1} de ${lp.n} a ${l.person}`, kind: 'Préstamo', usd: toUSD(amt, l.currency), amount: amt, currency: l.currency, due: d,
+        state: paid ? 'paid' : d < today ? 'late' : 'pend', act: paid ? null : ['loanPay', l.id] });
+    }
+  }
+  // Tarjetas de crédito con deuda (vencen en su día)
+  for (const a of S.accounts) {
+    if (a.type !== 'credito' || !(Number(a.balance) > 0) || !Number(a.dueDay)) continue;
+    const due = `${m}-${String(Math.min(Number(a.dueDay), daysInMonth(m))).padStart(2, '0')}`;
+    out.push({ key: `c|${a.id}`, name: `Tarjeta ${a.name}`, kind: 'Tarjeta', usd: toUSD(a.balance, a.currency), amount: Number(a.balance), currency: a.currency, due,
+      state: m === currentMonth() && due < today ? 'late' : 'pend', act: ['payCard', a.id] });
+  }
+  const order = { late: 0, pend: 1, next: 2, paid: 3 };
+  return out.sort((a, b) => order[a.state] - order[b.state] || (a.state === 'paid' ? (b.paidDate || '').localeCompare(a.paidDate || '') : (a.due || '9999').localeCompare(b.due || '9999')));
+}
+
+/* ¿Me alcanza la plata? Proyección de caja: tu plata disponible hoy (efectivo, bancos y billeteras), más los ingresos
+   SEGUROS que faltan, menos los pagos que vienen y tu gasto diario promedio, día por día. Busca el punto más bajo. */
+function cashForecast(days = 45) {
+  const today = todayISO(), cur = currentMonth(), end = isoOf(Date.now() + days * 864e5);
+  const start = totals().liquid;
+  const P = planNumbers(), p = spendPlan();
+  const daily = Math.max(0, P.avgVariable > 0 ? P.avgVariable / 30 : p.perDay > 0 ? p.perDay : 0);
+  const events = [], seen = new Set();
+  const monthEnd = (m) => `${m}-${String(daysInMonth(m)).padStart(2, '0')}`;
+  for (const m of [cur, addMonths(cur, 1)]) {
+    for (const x of payablesFor(m)) {
+      if (x.state === 'paid' || seen.has(x.key) || x.auto && x.kind === 'Fijo' && x.meta) continue; // (los semanales van por su lado)
+      seen.add(x.key);
+      const date = x.state === 'late' ? today : x.due && x.due >= today ? x.due : x.due ? today : monthEnd(m);
+      if (date <= end) events.push({ date, usd: -x.usd, name: x.name, est: !x.due });
+    }
+    // Semanales: cada día que toca
+    for (const r of S.recurring) {
+      if (!repeats(r) || r.type !== 'gasto' || freqOf(r) !== 'semanal' || (r.startMonth && r.startMonth > m)) continue;
+      for (const d of weekDates(r, m)) if (d >= today && d <= end && d >= (r.startDate || '') && !weekTx(r, d)) events.push({ date: d, usd: -toUSD(r.amount, r.currency), name: r.name });
+    }
+    // Ingresos SEGUROS que faltan (los "a veces" no se cuentan: un CFO no cuenta plata que quizás no llega)
+    for (const r of S.recurring) {
+      if (!repeats(r) || r.type !== 'ingreso' || !isSure(r) || !dueIn(r, m) || (r.startMonth && r.startMonth > m) || recurringTx(r, m)) continue;
+      const date = r.day ? `${m}-${String(Math.min(r.day, daysInMonth(m))).padStart(2, '0')}` : monthEnd(m);
+      if (date >= today && date <= end) events.push({ date, usd: toUSD(recAmount(r), r.currency), name: r.name, est: !r.day, income: true });
+    }
+  }
+  events.sort((a, b) => a.date.localeCompare(b.date) || b.usd - a.usd);
+  // Día por día: ingresos primero, después pagos y el gasto del día
+  let bal = start, min = start, minDate = today;
+  const series = [];
+  for (let i = 0; i <= days; i++) {
+    const d = isoOf(Date.now() + i * 864e5);
+    for (const e of events) if (e.date === d) { bal += e.usd; e.after = bal; }
+    bal -= daily; // (lo que gastás en promedio en el día a día)
+    series.push(bal);
+    if (bal < min) { min = bal; minDate = d; }
+  }
+  return { start, daily, events, min, minDate, end: bal, series };
+}
+
+function cashForecastHTML() {
+  const local = S.settings.localCurrency, L = (usd) => fmtIn(fromUSD(usd, local), local);
+  const hasBal = S.accounts.some((a) => a.type !== 'credito' && Number(a.balance) !== 0);
+  if (!hasBal) return `<section class="card"><div class="card-head" style="margin-bottom:6px"><h2>${icon('trending', 18)} ¿Te alcanza la plata?</h2></div>
+    <p class="small muted" style="margin:0 0 10px">Para saber si te alcanza para todos tus pagos, cargá cuánta plata tenés hoy en tu efectivo y tus cuentas.</p>
+    <button class="btn primary" data-action="go" data-id="cuentas">${icon('wallet', 16)} Cargar mis saldos</button></section>`;
+  const f = cashForecast(45);
+  const neg = f.min < 0;
+  // Gráfico simple de la plata día a día (línea) con la línea del 0
+  const W = 300, H = 56, lo = Math.min(0, ...f.series), hi = Math.max(...f.series, 1);
+  const y = (v) => H - 4 - ((v - lo) / (hi - lo || 1)) * (H - 8);
+  const pts = f.series.map((v, i) => `${((i / (f.series.length - 1)) * W).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const shown = f.events.filter((e) => Math.abs(e.usd) >= f.daily * 2 || e.income).slice(0, 7);
+  return `<section class="card cash-card ${neg ? 'neg' : ''}">
+    <div class="card-head" style="margin-bottom:6px"><h2>${icon('trending', 18)} ¿Te alcanza la plata?</h2><span class="muted small">próximos 45 días</span></div>
+    <div class="cash-top"><div><span class="muted small">Tenés hoy</span><b class="money">${L(f.start)}</b></div>
+      <div><span class="muted small">Punto más bajo</span><b class="money ${neg ? 'down' : ''}">${L(f.min)}</b><span class="muted small">${f.minDate === todayISO() ? 'hoy' : `el ${fmtDate(f.minDate).slice(0, 5)}`}</span></div></div>
+    <svg class="cash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      ${lo < 0 ? `<line x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}" class="zero"/>` : ''}<polyline points="${pts}"/></svg>
+    ${neg ? `<div class="safe-line bad">${icon('alert', 16)}<span>El ${fmtDate(f.minDate).slice(0, 5)} te faltarían <b class="money">${L(-f.min)}</b>. Mové plata a tus cuentas, posponé un gasto o revisá qué pagos podés correr.</span></div>`
+      : `<div class="safe-line ok">${icon('check', 16)}<span>Te alcanza para todos tus pagos de los próximos 45 días.</span></div>`}
+    ${shown.length ? `<div class="cash-events">${shown.map((e) => `<div class="calc-row"><span>${fmtDate(e.date).slice(0, 5)} · ${esc(e.name)}${e.est ? ' <small class="muted">(fecha aprox.)</small>' : ''}</span><b class="money ${e.usd > 0 ? 'up' : ''}">${e.usd > 0 ? '+' : '−'}${L(Math.abs(e.usd))}</b></div>`).join('')}</div>` : ''}
+    <div class="small muted" style="margin-top:8px">Cuenta tu gasto diario promedio (~${L(f.daily)} por día) y sólo los ingresos seguros, no los "a veces".</div>
+  </section>`;
+}
+
+// Aviso en Inicio: si en los próximos 30 días la plata no alcanza para los pagos (sólo con saldos cargados)
+function cashWarnHTML() {
+  if (!S.accounts.some((a) => a.type !== 'credito' && Number(a.balance) !== 0)) return '';
+  const f = cashForecast(30);
+  if (!(f.min < 0)) return '';
+  const local = S.settings.localCurrency;
+  return `<div class="banner">${icon('alert', 16)} <b>Ojo con la plata:</b> el ${fmtDate(f.minDate).slice(0, 5)} te faltarían <b class="money">${fmtIn(fromUSD(-f.min, local), local)}</b> para tus pagos. <a href="#" data-action="go" data-id="pagos">Ver qué pasa</a></div>`;
+}
+
+function viewPagos() {
+  const list = payablesFor();
+  const local = S.settings.localCurrency, L = (usd) => fmtIn(fromUSD(usd, local), local);
+  const inMonth = list.filter((x) => x.state !== 'next');
+  const sum = (arr) => arr.reduce((s, x) => s + x.usd, 0);
+  const paid = inMonth.filter((x) => x.state === 'paid'), late = list.filter((x) => x.state === 'late'), pend = list.filter((x) => x.state === 'pend'), next = list.filter((x) => x.state === 'next');
+  const row = (x) => {
+    const when = x.state === 'paid' ? `<span class="up">✓ Pagado el ${fmtDate(x.paidDate).slice(0, 5)}</span>` : x.meta ? esc(x.meta)
+      : x.due ? `${x.state === 'next' ? 'Vence' : 'Vence'} el ${fmtDate(x.due).slice(0, 5)} · <b class="${x.state === 'late' ? 'down' : ''}">${daysUntil(x.due)}</b>` : 'Este mes, sin día fijo';
+    const cmp = x.cmp && Math.abs(x.cmp.pct) >= 20 ? ` · <span class="${x.cmp.pct > 0 ? 'warn-text' : 'up'}">${x.cmp.pct > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(x.cmp.pct), 0)}% vs. tu promedio</span>` : '';
+    const btn = x.act ? `<button class="btn sm primary" data-action="${x.act[0]}" data-id="${esc(x.act[1])}">${x.act[0] === 'payCard' ? 'Pagar' : x.act[0] === 'loanPay' ? 'Registrar' : 'Ya pagué'}</button>`
+      : x.auto && x.state !== 'paid' ? '<span class="status neutral">Se registra solo</span>' : '';
+    return `<div class="list-row act pay-row ${x.state}">
+      <span class="acc-ico sm">${icon(x.kind === 'Tarjeta' ? 'card' : x.kind === 'Préstamo' ? 'handshake' : x.kind === 'Programado' ? 'calendar' : 'repeat', 16)}</span>
+      <div class="grow"><div class="name">${esc(x.name)}</div><div class="meta">${x.kind} · ${when}${cmp}</div></div>
+      <div class="val"><div class="money">${x.approx ? '≈ ' : ''}${fmtIn(x.amount, x.currency)}</div></div>${btn}</div>`;
+  };
+  const section = (title, arr, extra = '') => (arr.length ? `<div class="rec-sub">${title}${extra}</div><div class="list">${arr.map(row).join('')}</div>` : '');
+  return `
+  <section class="card">
+    <div class="card-head" style="margin-bottom:8px"><h2>${capMonth(currentMonth())}</h2><span class="muted small">${inMonth.length} pago${inMonth.length === 1 ? '' : 's'}</span></div>
+    <div class="month-sum">
+      <div><span>Total del mes</span><b class="money">${L(sum(inMonth))}</b></div>
+      <div><span>Pagado</span><b class="money up">${L(sum(paid))}</b></div>
+      <div><span>${late.length ? `Falta (${late.length} vencido${late.length === 1 ? '' : 's'})` : 'Falta pagar'}</span><b class="money ${late.length ? 'down' : ''}">${L(sum(late) + sum(pend))}</b></div>
+    </div>
+    ${inMonth.length ? `<div class="meter" style="margin-top:10px"><div class="good" style="width:${Math.min(100, (sum(paid) / (sum(inMonth) || 1)) * 100)}%"></div></div>` : ''}
+    ${section(`<span class="down">${icon('alert', 14)} Vencidos</span>`, late)}
+    ${section('Por pagar', pend)}
+    ${section('Se separa ahora, vence el mes que viene', next, ` · <span class="money">${L(sum(next))}</span>`)}
+    ${section('Ya pagados', paid)}
+    ${!list.length ? '<div class="empty">No tenés pagos cargados este mes. Agregá tus fijos (alquiler, luz, agua…) en Fijos o un gasto con fecha en Programados.</div>' : ''}
+  </section>
+  ${cashForecastHTML()}
+  <div class="shortcuts">${shortcutHTML('fijos', 'Lo de todos los meses')}${shortcutHTML('programados', 'Gastos con fecha')}</div>`;
 }
 
 function viewPrestamos() { return loansHTML(); }
@@ -3053,6 +3269,7 @@ function savePending() {
     if (rule) { tx.recurringId = rule.id; tx.note = rule.name; const fm = billFor(rule, tx.date); if (fm !== tx.date.slice(0, 7)) tx.forMonth = fm; }
     S.transactions.push(tx);
     applyTx(tx, 1);
+    if (rule) billAlert(rule, tx);
     touched.add(acc);
     saved++;
   }
@@ -4591,6 +4808,7 @@ function quickEntry(type = 'gasto', t = null, pre = null) {
       if (rule) { tx.recurringId = rule.id; if (!st.note) tx.note = rule.name; const fm = billFor(rule, tx.date); if (fm !== tx.date.slice(0, 7)) tx.forMonth = fm; } // (la luz de noviembre pagada en diciembre)
       S.transactions.push(tx);
       applyTx(tx, 1);
+      if (rule) billAlert(rule, tx);
     }
     dlg.close();
     snapshot(); save(); render();
@@ -5765,7 +5983,7 @@ const VIEW_FN = {
   resumen: () => viewResumen(), movimientos: () => viewMovimientos(), plan: () => viewPlan(),
   fijos: () => viewFijos(), programados: () => viewProgramados(), presupuesto: () => viewPresupuesto(), metas: () => viewMetas(),
   cuentas: () => viewCuentas(), prestamos: () => viewPrestamos(), inversiones: () => viewInversiones(), dolar: () => viewDolar(),
-  analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), miplan: () => viewMiPlan(), historial: () => viewHistorial(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
+  pagos: () => viewPagos(), analisis: () => viewAnalisis(), consejos: () => viewConsejos(), informe: () => viewInforme(), miplan: () => viewMiPlan(), historial: () => viewHistorial(), respaldo: () => viewRespaldo(), ajustes: () => viewAjustes(),
 };
 
 /* Menú "Más": una hoja con todas las secciones, agrupadas */
