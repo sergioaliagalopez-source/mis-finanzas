@@ -982,3 +982,8 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
   .filters .filter { flex: 1 1 0; }
   .filters .filter select { width: 100%; text-overflow: ellipsis; }
 }
+
+/* ---------------- Glosario (Ajustes) ---------------- */
+.glos { margin: 0; display: grid; gap: 12px; }
+.glos dt { font-weight: 600; font-size: 14.5px; }
+.glos dd { margin: 2px 0 0; color: var(--text-2); font-size: 14px; line-height: 1.4; }

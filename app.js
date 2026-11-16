@@ -179,16 +179,17 @@ const BLEND_USDC_POOL = 'ecf788e3-d2ef-4fdd-9ece-8a2d96226ddf';
 const MORE_GROUPS = [
   ['Organizar tu mes', [
     ['pagos', 'Pagos', 'check', 'Qué pagar este mes y si te alcanza'],
-    ['fijos', 'Fijos', 'repeat', 'Lo de todos los meses'],
-    ['programados', 'Programados', 'calendar', 'Gastos con fecha'],
-    ['presupuesto', 'Presupuesto', 'pie', 'Topes por categoría'],
+    ['fijos', 'Fijos', 'repeat', 'Lo que se repite cada mes'],
+    ['programados', 'Programados', 'calendar', 'Gastos de una sola vez, con fecha'],
+    ['presupuesto', 'Presupuesto', 'pie', 'Topes de gasto por categoría'],
     ['metas', 'Metas', 'target', 'A qué querés llegar'],
   ]],
+  // (el 5.º dato es el nombre corto para la grilla del celular, cuando el nombre completo no entra)
   ['Tu plata', [
     ['cuentas', 'Cuentas', 'wallet', 'Saldos y tarjetas'],
-    ['prestamos', 'Préstamos', 'handshake', 'Lo que prestás o debés'],
     ['inversiones', 'Inversiones', 'trending', 'Cripto, oro, acciones'],
-    ['miplan', 'Mi plan', 'shield', 'Perfil, plan y notas'],
+    ['miplan', 'Perfil de inversión', 'shield', 'Fondo de emergencia, cartera y notas', 'Perfil'],
+    ['prestamos', 'Préstamos', 'handshake', 'Lo que prestás o debés'],
     ['dolar', 'Dólar', 'dollar', 'Tipo de cambio'],
   ]],
   ['Entender tus números', [
@@ -197,8 +198,8 @@ const MORE_GROUPS = [
     ['informe', 'Informe', 'download', 'PDF o Excel'],
   ]],
   ['La app', [
-    ['respaldo', 'Respaldo', 'sync', 'Celular, PC y copias'],
-    ['ajustes', 'Ajustes', 'settings', 'Bloqueo y más'],
+    ['respaldo', 'Respaldo', 'sync', 'Sincronizar y copias'],
+    ['ajustes', 'Ajustes', 'settings', 'Bloqueo, glosario y más'],
   ]],
 ];
 const MORE_VIEWS = MORE_GROUPS.flatMap(([, list]) => list.map(([v]) => v));
@@ -285,7 +286,9 @@ const STAMP_SKIP = {
 let lastSeen = new Map();
 let lastBudgets = null; // cómo estaban los topes en el último guardado
 function itemKey(k, x) {
-  const skip = STAMP_SKIP[k] || [];
+  const skip = STAMP_SKIP[k];
+  // Sin campos a ignorar (movimientos, programados, metas…): camino rápido, sin función de reemplazo (son la mayoría)
+  if (!skip) { const { u, ...rest } = x; return JSON.stringify(rest); }
   return JSON.stringify(x, (f, v) => (f === 'u' || skip.includes(f) ? undefined : v));
 }
 function stampEdits(now) {
@@ -304,11 +307,21 @@ function stampEdits(now) {
 }
 
 // edit=false para cambios que no son datos tuyos (precios, vista, filtros): no cuentan como "última edición"
+// La escritura en el navegador se agrupa: varios guardados seguidos se escriben una sola vez, un instante después
+// (la pantalla responde primero). Si cerrás o cambiás de app, se escribe en el momento (flushSave).
+let saveTimer = null;
+function flushSave() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer); saveTimer = null;
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
+  catch (e) { toast('⚠ No se pudo guardar en el navegador. Hacé una copia en Más → Respaldo.'); }
+}
+// (al borrar los datos del dispositivo: que un guardado pendiente no los vuelva a escribir)
+const cancelSave = () => { clearTimeout(saveTimer); saveTimer = null; };
 function save(edit = true) {
   if (edit) S.editedAt = new Date().toISOString();
   stampEdits(edit ? S.editedAt : null);
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
-  catch (e) { toast('⚠ No se pudo guardar en el navegador. Hacé una copia en Más → Respaldo.'); }
+  if (!saveTimer) saveTimer = setTimeout(flushSave, 40);
   FileSync.schedule();
   if (edit) CloudSync.schedule();
 }
@@ -996,7 +1009,7 @@ function viewInversiones() {
     ${tile('Ganancia / pérdida', t.cost ? `<span class="${cls(gp)}">${fmtMoney(gp, { sign: true })}</span>` : '—', t.cost ? fmtPct((gp / t.cost) * 100) : 'Cargá el precio promedio para verla')}
     ${tile('Precios actualizados', `<span style="font-size:16px">${fmtDateTime(S.settings.lastRefresh)}</span>`, 'Tocá Actualizar para refrescar')}
   </div>
-  <a href="#" class="link-row" data-action="go" data-id="miplan">${icon('shield', 18)}<span>Mi plan</span><span class="spacer"></span><span class="muted small">${(() => { const pr = planProfile(), g = Number(planOf().emergencyGoal) || 0, e = planAlloc().by.emergencia; return [pr ? `Perfil ${PLAN_LEVELS[pr.level].name.toLowerCase()}` : 'Definí tu perfil', g && e < g ? 'completá tu fondo de emergencia' : ''].filter(Boolean).join(' · '); })()}</span>${icon('right', 18)}</a>
+  <a href="#" class="link-row" data-action="go" data-id="miplan">${icon('shield', 18)}<span>Perfil de inversión</span><span class="spacer"></span><span class="muted small">${(() => { const pr = planProfile(), g = Number(planOf().emergencyGoal) || 0, e = planAlloc().by.emergencia; return [pr ? `Perfil ${PLAN_LEVELS[pr.level].name.toLowerCase()}` : 'Definí tu perfil', g && e < g ? 'completá tu fondo de emergencia' : ''].filter(Boolean).join(' · '); })()}</span>${icon('right', 18)}</a>
   <section class="card">
     <div class="card-head"><h2>Mis posiciones</h2>
       <div class="toolbar"><button class="btn" data-action="go" data-id="ajustes" data-anchor="importar">Importar desde mi chat</button>
@@ -2308,6 +2321,21 @@ function viewDolar() {
   </div>`;
 }
 
+// Glosario (Ajustes): los términos de la app, con ejemplos genéricos
+const GLOSSARY = [
+  ['Gasto fijo', 'Se repite: el alquiler, internet, una cuota. Lo cargás una vez en <b>Fijos</b> y la app lo separa todos los meses.'],
+  ['Fijo de monto que cambia', 'Llega todos los meses pero con un importe distinto (luz, agua, gas). La app lo estima con el promedio de las últimas 3 facturas y vos ponés el monto real al pagar.'],
+  ['Factura del mes', 'El consumo de un mes que se paga a principios del siguiente. El pago cuenta para el mes del consumo, no para el mes en que lo pagás.'],
+  ['Gasto variable', 'El día a día: comida, transporte, compras. Es lo que mide <b>Hoy podés gastar</b>.'],
+  ['Gasto ocasional (programado)', 'Un gasto de una sola vez con fecha, como una matrícula o un trámite. Lo cargás en <b>Programados</b> y se descuenta el mes en que vence.'],
+  ['Hoy podés gastar', 'Lo que te queda para gastos variables este mes, repartido entre los días que faltan. Antes se separan los fijos, los programados, las cuotas y el ahorro.'],
+  ['Separado', 'Plata que ya está descontada de lo que podés gastar porque es para pagos que todavía no hiciste.'],
+  ['Vencido', 'Pasó la fecha y sigue sin pagar. Queda separado hasta que lo pagues, y el pago cuenta para el mes al que correspondía.'],
+  ['Acumulado sin gastar', 'Lo que gastaste de menos hasta ayer frente a un ritmo parejo del mes. Es sólo informativo: no cambia ningún cálculo.'],
+  ['Tope', 'El máximo que te ponés para una categoría en el mes. Se configura en <b>Presupuesto</b>.'],
+  ['Ingreso seguro / a veces', 'El seguro (un sueldo) se cuenta desde el día 1. El "a veces" (un trabajo ocasional) se suma recién cuando entra.'],
+  ['Fondo de emergencia', 'Plata disponible para imprevistos. Lo ideal es que cubra de 3 a 6 meses de gastos.'],
+];
 function viewAjustes() {
   const s = S.settings;
   return `
@@ -2336,6 +2364,12 @@ function viewAjustes() {
     </section>
 
     ${customCatsHTML()}
+
+    <section class="card" id="glosario">
+      <h2 style="margin-bottom:4px">${icon('book', 18)} Glosario</h2>
+      <p class="small muted" style="margin:0 0 12px">Los términos que usa la app, en simple.</p>
+      <dl class="glos">${GLOSSARY.map(([t, d]) => `<div><dt>${t}</dt><dd>${d}</dd></div>`).join('')}</dl>
+    </section>
 
     <section class="card">
       <h2 style="margin-bottom:8px">Zona peligrosa</h2>
@@ -3543,10 +3577,8 @@ function openChat({ listen = false } = {}) {
    Tus datos se cifran en el teléfono con TU contraseña (AES-256) y se guardan en un Gist secreto de tu
    cuenta de GitHub. Sin la contraseña nadie puede leerlos, ni GitHub. Es gratis. */
 
-const CLOUD_STORE = 'misFinanzas.cloud'; // { token, pass, gistId } — queda sólo en este dispositivo
+const CLOUD_STORE = 'misFinanzas.cloud'; // { gistId, base, v: 2, enc } — queda sólo en este dispositivo
 const CLOUD_FILE = 'mis-finanzas.cifrado.json';
-const cloudCfg = () => { try { return JSON.parse(localStorage.getItem(CLOUD_STORE) || 'null'); } catch (e) { return null; } };
-const setCloudCfg = (c) => { try { c ? localStorage.setItem(CLOUD_STORE, JSON.stringify(c)) : localStorage.removeItem(CLOUD_STORE); } catch (e) { /* nada */ } };
 
 function bufToB64(buf) {
   const a = new Uint8Array(buf);
@@ -3555,6 +3587,89 @@ function bufToB64(buf) {
   return btoa(s);
 }
 const b64ToBuf = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+/* El token de GitHub y la contraseña de cifrado NO quedan en texto plano en el dispositivo: se guardan cifrados
+   (AES-GCM) con una llave propia de este navegador, que no se puede exportar y vive en IndexedDB. Mientras la app
+   está abierta quedan en memoria (cloudMem), así cloudCfg() sigue siendo inmediato.
+   - Protege de quien lea el almacenamiento del navegador (una copia del perfil, una herramienta que lo vuelca).
+   - No protege de quien use la app desbloqueada en este dispositivo: para eso está el bloqueo con PIN o huella.
+   - Si el navegador no permite guardar la llave, se guarda como antes (texto plano) y la sincronización sigue andando. */
+const CLOUD_KEY = 'cloudKey';
+let cloudMem = null;     // { token, pass, gistId, base } o null
+let cloudSealed = null;  // { for, enc }: lo ya cifrado, para no cifrar de nuevo en cada sincronización
+let cloudNoSeal = false; // este navegador no puede guardar la llave: se usa el formato anterior
+let cloudLost = false;   // había una conexión guardada pero no se pudo abrir (hay que volver a activarla)
+const sealId = (c) => `${c.token}\n${c.pass}`;
+const cloudCfg = () => cloudMem;
+
+async function cloudDeviceKey(create) {
+  let k = await idb.get(CLOUD_KEY);
+  if (!k && create) {
+    k = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    await idb.set(CLOUD_KEY, k);
+  }
+  return k || null;
+}
+async function cloudSeal(c) {
+  const key = await cloudDeviceKey(true);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify({ token: c.token, pass: c.pass })));
+  return { iv: bufToB64(iv), ct: bufToB64(ct) };
+}
+// Escribe en el dispositivo lo que hay en memoria (cifrado si ya se pudo cifrar)
+function cloudStore() {
+  const c = cloudMem;
+  try {
+    if (!c) { localStorage.removeItem(CLOUD_STORE); return; }
+    const sealed = cloudSealed && cloudSealed.for === sealId(c) ? cloudSealed.enc : null;
+    if (!sealed && !cloudNoSeal) return; // (todavía se está cifrando: se escribe al terminar)
+    const { token, pass, ...rest } = c;
+    localStorage.setItem(CLOUD_STORE, JSON.stringify(sealed ? { ...rest, v: 2, enc: sealed } : c));
+  } catch (e) { /* nada */ }
+}
+// En memoria cambia en el momento. Devuelve una promesa que termina cuando quedó guardado
+function setCloudCfg(c) {
+  cloudMem = c || null;
+  if (!c) cloudSealed = null;
+  if (!c || cloudNoSeal || cloudSealed?.for === sealId(c)) { cloudStore(); return Promise.resolve(); }
+  // Token o contraseña nuevos: se cifran y recién ahí se escriben
+  const want = sealId(c);
+  return cloudSeal(c)
+    .then((enc) => { cloudSealed = { for: want, enc }; })
+    .catch((e) => { console.warn(e); cloudNoSeal = true; })
+    .then(() => { if (cloudMem && sealId(cloudMem) === want) cloudStore(); });
+}
+// Al abrir la app: lee lo guardado y lo deja en memoria. Lo que estaba en el formato anterior pasa a cifrado
+async function cloudUnlock() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(CLOUD_STORE) || 'null'); } catch (e) { raw = null; }
+  if (!raw) { cloudMem = null; cloudSealed = null; return; }
+  if (!raw.enc) { if (raw.token) await setCloudCfg(raw); else cloudMem = raw; return; }
+  let key;
+  try { key = await cloudDeviceKey(false); }
+  catch (e) { console.warn(e); cloudMem = null; return; } // (el navegador no dejó leer la llave esta vez: se prueba al abrir de nuevo)
+  try {
+    if (!key) throw new Error('sin llave');
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(raw.enc.iv) }, key, b64ToBuf(raw.enc.ct));
+    const { token, pass } = JSON.parse(new TextDecoder().decode(pt));
+    const { enc, v, ...rest } = raw;
+    cloudMem = { ...rest, token, pass };
+    cloudSealed = { for: sealId(cloudMem), enc };
+  } catch (e) {
+    // La llave de este navegador ya no está (se borraron sus datos): hay que volver a activar la sincronización.
+    // Los datos de la app en este dispositivo no se tocan
+    cloudMem = null; cloudSealed = null; cloudLost = true;
+    try { localStorage.removeItem(CLOUD_STORE); } catch (e2) { /* nada */ }
+  }
+}
+// Sin abrir el token: marca que al volver a abrir hay que traer los datos de GitHub (sirve aunque la app esté bloqueada)
+function cloudForgetBase() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CLOUD_STORE) || 'null');
+    if (raw) { raw.base = ''; localStorage.setItem(CLOUD_STORE, JSON.stringify(raw)); }
+  } catch (e) { /* nada */ }
+  if (cloudMem) cloudMem = { ...cloudMem, base: '' };
+}
 
 async function deriveKey(pass, salt) {
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
@@ -3829,7 +3944,7 @@ const CloudSync = {
             if (!choice) { this.setStatus('off'); return; }
           }
         }
-        setCloudCfg({ token, pass, gistId: id, base: '' });
+        await setCloudCfg({ token, pass, gistId: id, base: '' });
         if (choice === 'remote') {
           closeDialogs();
           const localDays = S.dayBudgets;
@@ -3848,7 +3963,7 @@ const CloudSync = {
         S.editedAt = S.editedAt || new Date().toISOString();
         const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'MyFinance — datos cifrados', public: false, files: { [CLOUD_FILE]: { content: (await encryptState(pass)).content } } }) }, token);
         id = g.id;
-        setCloudCfg({ token, pass, gistId: id, base: S.editedAt });
+        await setCloudCfg({ token, pass, gistId: id, base: S.editedAt });
       }
       this.lastSync = new Date().toISOString();
       this.setStatus('ok');
@@ -3879,7 +3994,8 @@ function cloudSyncHTML() {
   const st = CloudSync.status === 'syncing' ? `<span class="status neutral">Sincronizando…</span>`
     : CloudSync.status === 'error' ? `<span class="status critical">⚠ ${esc(CloudSync.error)}</span>`
     : `<span class="status good">${icon('check', 14)} Activa</span>`;
-  return `<p class="small" style="margin-top:0">${st}<br><span class="muted">Última sincronización: ${fmtDateTime(CloudSync.lastSync)}. Se cifra con tu contraseña antes de salir del dispositivo.</span></p>
+  return `<p class="small" style="margin-top:0">${st}<br><span class="muted">Última sincronización: ${fmtDateTime(CloudSync.lastSync)}. Se cifra con tu contraseña antes de salir del dispositivo.
+    ${cloudNoSeal ? '' : 'El token y la contraseña quedan guardados cifrados en este dispositivo.'}</span></p>
     <div class="toolbar"><button class="btn sm" data-action="cloudNow">${icon('sync', 14)} Sincronizar ahora</button>
     <button class="btn sm ghost danger" data-action="cloudOff">Desactivar en este dispositivo</button></div>`;
 }
@@ -3981,8 +4097,9 @@ const Lock = {
         ${CloudSync.enabled() ? 'Tus datos siguen guardados en GitHub y vuelven solos al abrir la app.' : 'Si no tenés respaldo ni sincronización, se pierden.'}</p>` }],
       submitLabel: 'Borrar datos de este dispositivo', danger: true,
       onSubmit: () => {
+        cancelSave();
         try { localStorage.removeItem(STORE_KEY); } catch (e) { /* nada */ }
-        if (cloudCfg()) setCloudCfg({ ...cloudCfg(), base: '' }); // al abrir, trae tus datos de GitHub
+        cloudForgetBase(); // al abrir, trae tus datos de GitHub
         setLockCfg(null);
         location.reload();
       },
@@ -5534,7 +5651,7 @@ async function reportPDF(R) {
   if (R.metas.length) { title('Metas'); table(['Meta', 'Objetivo', 'Moneda', 'Para'], R.metas.map((g) => [g.meta, n(g.objetivo), g.moneda, g.fecha])); }
   if (R.plan.perfil || R.plan.objetivo || R.plan.notas.length || R.plan.pasos.length) {
     const p = R.plan, pc = (o) => (o ? `${n(o.fija, 0)}% fija · ${n(o.variable, 0)}% variable · ${n(o.div ?? o.diversificador, 0)}% diversificadores` : '-');
-    title('Mi plan (perfil, categorías y notas)');
+    title('Perfil de inversión (plan, categorías y notas)');
     table(['Dato', 'Valor'], [
       ['Perfil de inversor', p.perfil || '-'], ['Perfil según las respuestas', p.perfilRespuestas || '-'],
       ['Plan objetivo', pc(p.objetivo)], ['Hoy (sobre lo invertido)', p.real ? `${pc(p.real)} (US$ ${n(p.investedUSD)})` : '-'],
@@ -5649,7 +5766,7 @@ async function reportXLSX(R) {
   add('Saldos diarios', R.meses.flatMap((x) => x.saldos.map((s) => ({ Fecha: s.fecha, Cuenta: s.cuenta, Moneda: s.moneda, Saldo: s.saldo, [`Saldo en ${sym}`]: s.saldoLocal, Estimado: s.estimado }))));
   add('Patrimonio diario', R.meses.flatMap((x) => x.patrimonio.map((p) => ({ Fecha: p.fecha, [`Patrimonio ${sym}`]: p.patrimonio, [`Liquidez ${sym}`]: p.liquidez, [`Inversiones ${sym}`]: p.inversiones, [`Deuda ${sym}`]: p.deuda }))));
   add('Cuentas', R.cuentas.map((a) => ({ Cuenta: a.cuenta, Tipo: a.tipo, Moneda: a.moneda, 'Saldo de hoy': a.saldo, [`En ${sym}`]: a.saldoLocal })));
-  add('Mi plan', [
+  add('Perfil de inversión', [
     { Dato: 'Perfil de inversor', Valor: R.plan.perfil }, { Dato: 'Perfil según las respuestas', Valor: R.plan.perfilRespuestas },
     ...R.plan.porque.map((w) => ({ Dato: 'Por qué', Valor: w })),
     { Dato: 'Plan: % renta fija', Valor: R.plan.objetivo?.fija ?? null }, { Dato: 'Plan: % renta variable', Valor: R.plan.objetivo?.variable ?? null }, { Dato: 'Plan: % diversificadores', Valor: R.plan.objetivo?.div ?? null },
@@ -6186,8 +6303,8 @@ function moreMenuHTML() {
   const badge = { fijos: pendingRecurring().length, programados: schedPending().length };
   return `<div class="more-head"><b>Más secciones</b><button class="q-icon" data-more-close aria-label="Cerrar">${icon('x', 18)}</button></div>
     ${MORE_GROUPS.map(([title, list]) => `<div class="more-group"><div class="more-title">${title}</div><div class="more-grid">
-      ${list.map(([id, label, ico]) => `<button class="more-item ${id === v ? 'on' : ''}" data-view="${id}">
-        <span class="mi-ico">${icon(ico, 22)}${badge[id] ? `<i class="mi-badge">${badge[id]}</i>` : ''}</span><span class="mi-label">${label}</span></button>`).join('')}
+      ${list.map(([id, label, ico, , short]) => `<button class="more-item ${id === v ? 'on' : ''}" data-view="${id}" ${short ? `aria-label="${label}"` : ''}>
+        <span class="mi-ico">${icon(ico, 22)}${badge[id] ? `<i class="mi-badge">${badge[id]}</i>` : ''}</span><span class="mi-label">${short || label}</span></button>`).join('')}
     </div></div>`).join('')}`;
 }
 const REDUCED = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -7822,10 +7939,16 @@ function bindEvents() {
     drawCharts();
     if (sheetView && $('#sheetDlg').open) drawCharts(sheetView);
   }, 150); });
-  window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { load(); render(); } });
+  window.addEventListener('storage', (e) => {
+    if (e.key === STORE_KEY) { load(); render(); }
+    // (otra pestaña activó o desactivó la sincronización)
+    if (e.key === CLOUD_STORE) cloudUnlock().then(() => render()).catch(() => {});
+  });
   // Si cerrás o cambiás de pestaña con un guardado pendiente, se escribe ya
+  window.addEventListener('pagehide', flushSave);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+      flushSave();
       if (FileSync.timer) FileSync.write();
       stopMic({ keepResult: true }); // al salir de la app, iOS corta el micrófono: lo dejamos listo para la vuelta
       if (CloudSync.timer) CloudSync.push();
@@ -7950,7 +8073,12 @@ function setupBackButton() {
   if (Lock.enabled()) Lock.show();
   bindEvents();
   setupBackButton();
+  // Token y contraseña de la sincronización: se abren antes de dibujar (con un tope, para no trabar el arranque)
+  const unlocking = cloudUnlock().catch((e) => console.warn(e));
+  await Promise.race([unlocking, new Promise((r) => setTimeout(r, 1500))]);
+  if (cloudLost) { CloudSync.status = 'error'; CloudSync.error = 'Hay que volver a activar la sincronización en este dispositivo (tus datos siguen acá).'; }
   render();
+  await unlocking;
   // Primero se compara con el archivo vinculado y con GitHub, así nunca se pisa una versión más nueva
   try { await FileSync.init(); } catch (e) { console.warn(e); }
   if (CloudSync.enabled()) await CloudSync.sync();
