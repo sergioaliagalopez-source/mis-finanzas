@@ -2291,12 +2291,61 @@ function viewRespaldo() {
 }
 
 // Dólar: cuánto de tu plata depende del tipo de cambio y qué tipo de cambio usa la app
+/* Tus compras y ventas de dólares (P2P o entre cuentas): a qué tipo de cambio los conseguiste en realidad.
+   Cuenta las compras/ventas de USDT o USDC con el total real en Bs, y las transferencias entre una cuenta en Bs
+   y una en dólares (USD, USDT, USDC). Sólo informativo: no cambia ningún saldo ni cálculo. */
+function dollarDeals() {
+  const out = [];
+  for (const h of S.holdings) {
+    if (!USD_PEGGED.has(h.symbol)) continue;
+    for (const t of h.trades || []) if ((t.side === 'compra' || t.side === 'venta') && t.local?.amount > 0 && t.qty > 0)
+      out.push({ side: t.side, date: t.date, cur: t.local.cur, local: t.local.amount, usd: t.qty });
+  }
+  const curOf = (id) => S.accounts.find((a) => a.id === id)?.currency;
+  for (const t of S.transactions) {
+    if (t.type !== 'transferencia' || !(Number(t.amount) > 0) || !(Number(t.toAmount) > 0)) continue;
+    const a = curOf(t.accountId), b = curOf(t.toAccountId);
+    if (!a || !b) continue;
+    if (!USD_PEGGED.has(a) && USD_PEGGED.has(b)) out.push({ side: 'compra', date: t.date, cur: a, local: Number(t.amount), usd: Number(t.toAmount) });
+    if (USD_PEGGED.has(a) && !USD_PEGGED.has(b)) out.push({ side: 'venta', date: t.date, cur: b, local: Number(t.toAmount), usd: Number(t.amount) });
+  }
+  return out.sort((x, y) => (x.date || '').localeCompare(y.date || ''));
+}
+function dollarDealsHTML() {
+  const all = dollarDeals();
+  if (!all.length) return '';
+  const curs = [...new Set(all.map((d) => d.cur))];
+  const s = S.settings;
+  return curs.map((cur) => {
+    const list = all.filter((d) => d.cur === cur), app = rate(cur);
+    const line = (side) => {
+      const l = list.filter((d) => d.side === side);
+      if (!l.length) return '';
+      const loc = l.reduce((a, d) => a + d.local, 0), usd = l.reduce((a, d) => a + d.usd, 0), last = l[l.length - 1];
+      return `<div class="calc-row"><span>${side === 'compra' ? 'Compraste' : 'Vendiste'} ${fmtNum(round2(usd), 2)} dólares en ${l.length} ${l.length === 1 ? 'vez' : 'veces'}
+        <small class="muted" style="display:block">la última, el ${fmtDate(last.date)}, a ${fmtIn(last.local / last.usd, cur)}</small></span>
+        <b class="money">${fmtIn(loc / usd, cur)} <small class="muted">promedio</small></b></div>`;
+    };
+    const buys = list.filter((d) => d.side === 'compra');
+    const avgBuy = buys.length ? buys.reduce((a, d) => a + d.local, 0) / buys.reduce((a, d) => a + d.usd, 0) : null;
+    const gap = avgBuy && app ? (avgBuy / app - 1) * 100 : null;
+    const tip = cur === 'BOB' && s.bobRateType === 'oficial' && gap != null && gap > 10
+      ? `<div class="small muted" style="margin-top:8px">Pagás tus dólares ${fmtPct(gap, false)} más caros que el tipo de cambio que usa la app. Si los conseguís casi siempre por P2P, podés elegir <b>Binance (USDT/BOB)</b> en "Dólar que se usa para convertir": así tu patrimonio se valora a lo que realmente te cuesta el dólar.</div>` : '';
+    return `<section class="card"><div class="card-head" style="margin-bottom:8px"><h2>${icon('dollar', 18)} A cuánto conseguís tus dólares</h2><span class="muted small">en ${curLabel(cur)}</span></div>
+      <div class="calc">${line('compra')}${line('venta')}
+      ${app ? `<div class="calc-row"><span>Tipo de cambio que usa la app hoy</span><b class="money">${fmtIn(app, cur)}</b></div>` : ''}</div>
+      ${tip}
+      <div class="small muted" style="margin-top:8px">Sale de tus compras y ventas de USDT o USDC con el total en ${curLabel(cur)}, y de lo que pasaste entre una cuenta en ${curLabel(cur)} y una en dólares.</div></section>`;
+  }).join('');
+}
+
 function viewDolar() {
   const s = S.settings;
   const used = [...new Set([s.localCurrency, ...S.accounts.map((a) => a.currency)])].filter((c) => !USD_PEGGED.has(c));
   const manualBOB = used.includes('BOB') && s.bobRateType === 'manual';
   return `
   ${fxCardHTML()}
+  ${dollarDealsHTML()}
   <div class="settings-grid">
     <section class="card">
       <h2 style="margin-bottom:14px">Moneda y tipo de cambio</h2>
@@ -6590,6 +6639,52 @@ function holdingForm(h) {
 
 // Compra o venta: primero elegís si escribís el MONTO en USD o la CANTIDAD de unidades (el otro se calcula con el precio).
 // Acepta fracciones (0,1450). La comisión se suma al costo (y se resta de lo que cobrás al vender).
+/* Compra o venta pagada en otra moneda (ej. USDT por P2P pagando con Bs): se usa lo que pagaste o recibiste DE VERDAD.
+   Queda en la operación como local: { amount, cur }. Sin eso, se convierte al tipo de cambio de la app (como siempre). */
+const isLocalAcc = (a) => !!a && !USD_PEGGED.has(a.currency);
+const tradeUnit = (h) => (USD_PEGGED.has(h.symbol) ? h.symbol : 'dólar');
+// Tipo de cambio de la operación: Bs por unidad (USDT, USDC) o Bs por dólar (los demás activos)
+function tradeRateOf(h, t) {
+  if (!(t.local?.amount > 0) || !(t.qty > 0)) return null;
+  const per = USD_PEGGED.has(h.symbol) ? t.qty : tradeUSD(t);
+  return per > 0 ? t.local.amount / per : null;
+}
+const tradeRateText = (h, t) => { const r = tradeRateOf(h, t); return r ? `${fmtIn(r, t.local.cur)} por ${tradeUnit(h)}` : ''; };
+// Texto de ayuda: tu tipo de cambio, o cuánto se movería al tipo de cambio de la app
+function tradeFxHint(h, v, qty) {
+  const acc = S.accounts.find((a) => a.id === v.accountId);
+  if (!isLocalAcc(acc) || !(qty > 0) || !(v.price > 0)) return '';
+  const tr = { side: v.side, qty, price: v.price, fee: v.fee || 0 };
+  const cur = acc.currency, app = convertAt(1, 'USD', cur, v.date || todayISO()).v;
+  const appTxt = app ? `${fmtIn(app, cur)} por dólar` : '';
+  if (v.localAmt > 0) {
+    const r = tradeRateOf(h, { ...tr, local: { amount: v.localAmt, cur } });
+    return r ? `<br>Tu tipo de cambio: <b>${fmtIn(r, cur)} por ${tradeUnit(h)}</b>${appTxt ? ` · la app usa ${appTxt}` : ''}.` : '';
+  }
+  const amt = convertAt(tradeUSD(tr), 'USD', cur, v.date || todayISO()).v;
+  return `<br>Al tipo de cambio de la app (${appTxt}) se ${v.side === 'venta' ? 'acreditan' : 'descuentan'} <b>${fmtIn(amt, cur)}</b> de ${esc(acc.name)}.
+    ¿Fue por P2P? Escribí cuánto ${v.side === 'venta' ? 'recibiste' : 'pagaste'} de verdad.`;
+}
+const localAmtLabel = (side, acc) => `¿Cuánto ${side === 'venta' ? 'recibiste' : 'pagaste'} en ${acc ? curLabel(acc.currency) : 'la moneda de la cuenta'}? (opcional)`;
+const LOCAL_HINT = 'Para compras o ventas por P2P: escribí el total real y se usa ese monto, con tu tipo de cambio. Vacío: se convierte al tipo de cambio de la app.';
+// Revisa el total en Bs: que sea mayor a 0 y que no parezca escrito en dólares o con un cero de más (avisa una vez)
+function localAmtCheck(h, v, qty, acc, key) {
+  if (!isLocalAcc(acc) || v.localAmt == null) return { local: null };
+  if (!(v.localAmt > 0)) return { err: `Escribí cuánto ${v.side === 'venta' ? 'recibiste' : 'pagaste'} en ${curLabel(acc.currency)} (o dejalo vacío).` };
+  const local = { amount: round2(v.localAmt), cur: acc.currency };
+  const usd = tradeUSD({ side: v.side, qty, price: v.price, fee: v.fee || 0 }), app = convertAt(1, 'USD', acc.currency, v.date || todayISO()).v;
+  const perUsd = usd > 0 ? local.amount / usd : null;
+  const w = perUsd && app && (perUsd > app * 3 || perUsd < app * 0.5)
+    ? confirmOnce(key, [`Eso es ${fmtIn(perUsd, acc.currency)} por dólar y la app usa ${fmtIn(app, acc.currency)}. Revisá que el total esté en ${curLabel(acc.currency)} y no en dólares, y que no sobre un cero.`])
+    : confirmOnce(key, []);
+  return w ? { err: w } : { local };
+}
+// Al cambiar la operación o la cuenta, el nombre del campo dice "pagaste" o "recibiste" y en qué moneda
+function syncLocalLabel(form, v) {
+  const lab = form.querySelector('[data-field="localAmt"] label');
+  if (lab) lab.textContent = localAmtLabel(v.side, S.accounts.find((a) => a.id === v.accountId));
+}
+
 function tradeForm(h) {
   const accOpts = [['', '— No mover dinero de ninguna cuenta —'], ...S.accounts.filter((a) => a.type !== 'credito').map((a) => [a.id, `${a.name} (${a.currency})`])];
   const mode0 = S.settings.tradeMode === 'qty' ? 'qty' : 'usd';
@@ -6605,14 +6700,17 @@ function tradeForm(h) {
       { name: 'fee', label: 'Comisión (USD, opcional)', type: 'number', blankZero: true, placeholder: '0' },
       { name: 'accountId', label: 'Cuenta de donde sale / a donde entra el dinero', type: 'select', options: accOpts, full: true,
         hint: 'Opcional. Si elegís una, se descuenta (compra) o acredita (venta) en esa cuenta.' },
+      { name: 'localAmt', label: localAmtLabel('compra', null), type: 'number', full: true, placeholder: 'ej. 1000', hint: LOCAL_HINT,
+        showIf: (v) => isLocalAcc(S.accounts.find((a) => a.id === v.accountId)) },
       { type: 'html', html: '<div id="tradeHint" class="fx-hint"></div>' },
     ],
     submitLabel: 'Registrar',
     onInput: (form, v) => {
+      syncLocalLabel(form, v);
       const qty = v.mode === 'qty' ? v.qty : v.total > 0 && v.price > 0 ? Math.round((v.total / v.price) * 1e8) / 1e8 : null;
       const fee = v.fee || 0, sign = v.side === 'compra' ? 1 : -1;
       $('#tradeHint').innerHTML = qty > 0 && v.price > 0
-        ? `${v.mode === 'usd' ? `Son <b>${fmtNum(qty)} ${esc(h.symbol)}</b>. ` : ''}${fmtNum(qty)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(qty * v.price), 2)}</b>${fee ? ` ${sign > 0 ? '+' : '−'} comisión US$ ${fmtNum(fee, 2)} = <b>US$ ${fmtNum(round2(qty * v.price + sign * fee), 2)}</b>` : ''}`
+        ? `${v.mode === 'usd' ? `Son <b>${fmtNum(qty)} ${esc(h.symbol)}</b>. ` : ''}${fmtNum(qty)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(qty * v.price), 2)}</b>${fee ? ` ${sign > 0 ? '+' : '−'} comisión US$ ${fmtNum(fee, 2)} = <b>US$ ${fmtNum(round2(qty * v.price + sign * fee), 2)}</b>` : ''}${tradeFxHint(h, v, qty)}`
         : (v.mode === 'usd' ? v.total > 0 : v.qty > 0) && !(v.price > 0) ? 'Escribí el precio para calcular.' : '';
     },
     onSubmit: (v) => {
@@ -6627,14 +6725,19 @@ function tradeForm(h) {
       if (v.date > todayISO()) return 'La fecha no puede ser futura.';
       const acc = v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
       if (acc && convert(1, 'USD', acc.currency) == null) return NO_RATE;
+      // Total real en Bs (P2P): se revisa antes de seguir
+      const lc = localAmtCheck(h, { ...v, fee }, qty, acc, `trade|${h.id}|${v.side}|${qty}|${v.price}|${v.localAmt}|${v.accountId}`);
+      if (lc.err) return lc.err;
+      const local = lc.local;
       // ¿Monto raro? (mucho más que tu saldo o que tus compras de siempre): se pregunta antes de guardar
       const total = qty * v.price;
       const past = S.holdings.flatMap((x) => x.trades || []).filter((x) => x.side === 'compra').map((x) => x.qty * x.price).filter((x) => x > 0).sort((a, b) => a - b);
       const typical = past.length >= 2 ? past[Math.floor(past.length / 2)] : null;
-      const saldo = acc ? toUSD(acc.balance, acc.currency) : null;
-      const big = v.side === 'compra' && ((saldo != null && total > Math.max(saldo, 0) * 1.5 + 1) || (typical && total > typical * 10));
+      // Lo que sale de la cuenta, en su moneda (lo que pagaste, o la conversión de la app)
+      const out = acc ? (local ? local.amount : convertAt(total + fee, 'USD', acc.currency, v.date).v) : null;
+      const big = v.side === 'compra' && ((out != null && out > Math.max(Number(acc.balance) || 0, 0) * 1.5 + 1) || (typical && total > typical * 10));
       if (big) {
-        const why = saldo != null ? `en ${esc(acc.name)} tenés US$ ${fmtNum(round2(saldo), 2)}` : `tus compras de siempre son de ≈ US$ ${fmtNum(round2(typical), 2)}`;
+        const why = acc ? `en ${esc(acc.name)} tenés ${fmtIn(acc.balance, acc.currency)}` : `tus compras de siempre son de ≈ US$ ${fmtNum(round2(typical), 2)}`;
         setTimeout(async () => {
           if (v.mode === 'qty') {
             // Escribiste unidades: quizás eran dólares
@@ -6642,28 +6745,30 @@ function tradeForm(h) {
             const ch = await chooseDlg('¿Está bien la cantidad?',
               `${fmtNum(qty)} ${esc(h.symbol)} × US$ ${fmtNum(v.price, 2)} = <b>US$ ${fmtNum(round2(total), 2)}</b>, y ${why}.<br><br>¿Quisiste decir <b>US$ ${fmtNum(qty, 2)}</b> en lugar de ${fmtNum(qty)} unidades?`,
               [['usd', `Sí: US$ ${fmtNum(qty, 2)} (${fmtNum(asUsd)} ${h.symbol})`], ['units', `No: son ${fmtNum(qty)} unidades`]]);
-            if (ch === 'usd') saveTrade(h, { ...v, qty: asUsd, fee, acc });
-            else if (ch === 'units') saveTrade(h, { ...v, qty, fee, acc });
+            if (ch === 'usd') saveTrade(h, { ...v, qty: asUsd, fee, acc, local });
+            else if (ch === 'units') saveTrade(h, { ...v, qty, fee, acc, local });
           } else {
-            const ch = await chooseDlg('¿Está bien el monto?', `Vas a registrar una compra de <b>US$ ${fmtNum(round2(total), 2)}</b>, y ${why}.`,
+            const paid = local ? ` (pagaste ${fmtIn(local.amount, local.cur)})` : '';
+            const ch = await chooseDlg('¿Está bien el monto?', `Vas a registrar una compra de <b>US$ ${fmtNum(round2(total), 2)}</b>${paid}, y ${why}.`,
               [['ok', `Sí, registrar US$ ${fmtNum(round2(total), 2)}`], ['no', 'No, lo corrijo']]);
-            if (ch === 'ok') saveTrade(h, { ...v, qty, fee, acc });
+            if (ch === 'ok') saveTrade(h, { ...v, qty, fee, acc, local });
             else if (ch === 'no') tradeForm(h);
           }
         }, 80);
         return;
       }
-      saveTrade(h, { ...v, qty, fee, acc });
+      saveTrade(h, { ...v, qty, fee, acc, local });
     },
   });
 }
 
-function saveTrade(h, { side, date, qty, price, fee, acc }) {
+function saveTrade(h, { side, date, qty, price, fee, acc, local }) {
   const tradeId = uid();
-  const err = changeTrades(h, (list) => [...list, { id: tradeId, date, side, qty, price, fee: fee || 0, u: new Date().toISOString() }]);
+  const lc = acc && local && local.cur === acc.currency ? { local } : {};
+  const err = changeTrades(h, (list) => [...list, { id: tradeId, date, side, qty, price, fee: fee || 0, ...lc, u: new Date().toISOString() }]);
   if (err) return toast(err, 5000);
   if (acc) {
-    const tx = { id: uid(), created: new Date().toISOString(), investment: true, holdingId: h.id, tradeId, ...tradeTxFields(h, { side, date, qty, price, fee }, acc) };
+    const tx = { id: uid(), created: new Date().toISOString(), investment: true, holdingId: h.id, tradeId, ...tradeTxFields(h, { side, date, qty, price, fee, ...lc }, acc) };
     S.transactions.push(tx);
     applyTx(tx, 1);
   }
@@ -6674,13 +6779,19 @@ function saveTrade(h, { side, date, qty, price, fee, acc }) {
 
 // Lo que mueve en tu cuenta una compra (sale plata, con la comisión) o una venta (entra, menos la comisión)
 const tradeUSD = ({ side, qty, price, fee }) => (side === 'compra' ? qty * price + (fee || 0) : qty * price - (fee || 0));
-function tradeTxFields(h, { side, date, qty, price, fee }, acc) {
+function tradeTxFields(h, tr, acc) {
+  const { side, date, qty, price, fee } = tr;
   const usd = tradeUSD({ side, qty, price, fee });
-  // Con el tipo de cambio del día de la operación (si no hay de ese día, el de hoy)
+  // Lo que pagaste o recibiste de verdad (P2P), si está en la moneda de esa cuenta; si no, el tipo de cambio del día
+  // de la operación (si no hay de ese día, el de hoy)
+  const own = tr.local?.amount > 0 && tr.local.cur === acc.currency;
+  const rt = own ? tradeRateText(h, tr) : '';
   return {
-    date, type: side === 'compra' ? 'gasto' : 'ingreso', accountId: acc.id, amount: round2(convertAt(usd, 'USD', acc.currency, date || todayISO()).v),
+    date, type: side === 'compra' ? 'gasto' : 'ingreso', accountId: acc.id,
+    amount: own ? round2(tr.local.amount) : round2(convertAt(usd, 'USD', acc.currency, date || todayISO()).v),
+    ...(own && usd > 0 ? { fxRate: Math.round((tr.local.amount / usd) * 1e6) / 1e6 } : {}),
     category: side === 'compra' ? 'Compra de inversión' : 'Venta de inversión',
-    note: `${side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(qty)} ${h.symbol}${fee ? ` (comisión US$ ${fmtNum(fee, 2)})` : ''}`,
+    note: `${side === 'compra' ? 'Compra' : 'Venta'} ${fmtNum(qty)} ${h.symbol}${rt ? ` a ${rt}` : ''}${fee ? ` (comisión US$ ${fmtNum(fee, 2)})` : ''}`,
   };
 }
 
@@ -6722,7 +6833,7 @@ function viewHistorial() {
       return `<div class="list-row act op-row">
         <span class="acc-ico sm ${t.side === 'venta' ? 'in' : ''}">${icon(t.side === 'ajuste' ? 'edit' : 'trending', 16)}</span>
         <div class="grow"><div class="name">${tradeLabel(t)}${t.src === 'importado' ? ' <span class="tag">importado (sin fecha)</span>' : t.src === 'chat' ? ' <span class="tag">del chat</span>' : ''}</div>
-          <div class="meta money">${fmtDate(t.date)} · ${t.side === 'ajuste' ? `${t.qty > 0 ? '+' : ''}${fmtNum(t.qty)} ${esc(h.symbol)}` : `${fmtNum(t.qty)} × US$ ${fmtNum(t.price, 2)}`}${t.fee ? ` + comisión US$ ${fmtNum(t.fee, 2)}` : ''}${acc ? ` · ${esc(acc.name)}` : ''}</div></div>
+          <div class="meta money">${fmtDate(t.date)} · ${t.side === 'ajuste' ? `${t.qty > 0 ? '+' : ''}${fmtNum(t.qty)} ${esc(h.symbol)}` : `${fmtNum(t.qty)} × US$ ${fmtNum(t.price, 2)}`}${t.fee ? ` + comisión US$ ${fmtNum(t.fee, 2)}` : ''}${acc ? ` · ${esc(acc.name)}` : ''}${t.local?.amount > 0 ? ` · ${t.side === 'venta' ? 'recibiste' : 'pagaste'} ${fmtIn(t.local.amount, t.local.cur)} (${tradeRateText(h, t)})` : ''}</div></div>
         <div class="val">${total != null ? `<div class="money"><b>US$ ${fmtNum(round2(total), 2)}</b></div>` : ''}</div>
         <button class="btn sm ghost icon-only" data-action="tradeEdit" data-id="${h.id}|${t.id}" title="Editar" aria-label="Editar">${icon('edit', 16)}</button>
         <button class="btn sm ghost icon-only danger" data-action="tradeDel" data-id="${h.id}|${t.id}" title="Borrar" aria-label="Borrar">${icon('x', 16)}</button></div>`;
@@ -6754,11 +6865,15 @@ function tradeEditForm(h, t) {
       { name: 'price', label: 'Precio por unidad (USD)', type: 'number', value: t.price, required: true },
       { name: 'fee', label: 'Comisión (USD)', type: 'number', value: t.fee || 0, blankZero: true, placeholder: '0' },
       { name: 'accountId', label: 'Cuenta donde se movió la plata', type: 'select', value: tx?.accountId || '', options: accOpts, full: true },
+      { name: 'localAmt', label: localAmtLabel(t.side, S.accounts.find((a) => a.id === tx?.accountId)), type: 'number', full: true, placeholder: 'ej. 1000', hint: LOCAL_HINT,
+        value: t.local?.amount && t.local.cur === S.accounts.find((a) => a.id === tx?.accountId)?.currency ? t.local.amount : '',
+        showIf: (v) => isLocalAcc(S.accounts.find((a) => a.id === v.accountId)) },
       { type: 'html', html: '<div id="tradeHint" class="fx-hint"></div>' },
     ],
     onInput: (form, v) => {
       const hint = $('#tradeHint');
-      if (hint && v.qty > 0 && v.price > 0) hint.innerHTML = `${fmtNum(v.qty)} × US$ ${fmtNum(v.price, 2)}${v.fee ? ` ${v.side === 'compra' ? '+' : '−'} US$ ${fmtNum(v.fee, 2)}` : ''} = <b>US$ ${fmtNum(round2(v.qty * v.price + (v.side === 'compra' ? 1 : -1) * (v.fee || 0)), 2)}</b>`;
+      if (!isAdj) syncLocalLabel(form, v);
+      if (hint && v.qty > 0 && v.price > 0) hint.innerHTML = `${fmtNum(v.qty)} × US$ ${fmtNum(v.price, 2)}${v.fee ? ` ${v.side === 'compra' ? '+' : '−'} US$ ${fmtNum(v.fee, 2)}` : ''} = <b>US$ ${fmtNum(round2(v.qty * v.price + (v.side === 'compra' ? 1 : -1) * (v.fee || 0)), 2)}</b>${tradeFxHint(h, v, v.qty)}`;
     },
     onSubmit: (v) => {
       v.date = v.date || t.date || todayISO(); // (si borraste la fecha, queda la que tenía)
@@ -6767,15 +6882,19 @@ function tradeEditForm(h, t) {
       if (!isAdj && !(v.price > 0)) return 'El precio tiene que ser mayor a 0.';
       const acc = !isAdj && v.accountId ? S.accounts.find((a) => a.id === v.accountId) : null;
       if (acc && convert(1, 'USD', acc.currency) == null) return NO_RATE;
+      const lc = isAdj ? { local: null } : localAmtCheck(h, v, v.qty, acc, `tradeEdit|${t.id}|${v.side}|${v.qty}|${v.price}|${v.localAmt}|${v.accountId}`);
+      if (lc.err) return lc.err;
       const next = isAdj ? { ...t, date: v.date, qty: v.qty, note: v.note, u: new Date().toISOString() }
         : { ...t, side: v.side, date: v.date, qty: v.qty, price: v.price, fee: Math.max(0, v.fee || 0), src: undefined, u: new Date().toISOString() };
+      // Total real (P2P): se guarda si lo escribiste; vacío = al tipo de cambio de la app
+      if (!isAdj) { if (lc.local) next.local = lc.local; else delete next.local; }
       const err = changeTrades(h, (list) => list.map((x) => (x.id === t.id ? next : x)));
       if (err) return err;
       // La plata que movió en tu cuenta se rehace con los datos nuevos
       if (!isAdj) {
         // Misma cuenta: se conserva el tipo de cambio que tuvo (y cualquier corrección tuya), ajustando sólo por la diferencia en dólares
         const oldUSD = tradeUSD(t), newUSD = tradeUSD(next);
-        const sameAcc = tx && acc && tx.accountId === acc.id && oldUSD > 0 && (tx.type === 'gasto') === (next.side === 'compra');
+        const sameAcc = !next.local && !t.local && tx && acc && tx.accountId === acc.id && oldUSD > 0 && (tx.type === 'gasto') === (next.side === 'compra');
         const keepAmt = sameAcc ? round2((Number(tx.amount) || 0) * (newUSD / oldUSD)) : null;
         if (tx) { applyTx(tx, -1); S.transactions = S.transactions.filter((x) => x !== tx); tombstone(tx.id); }
         if (acc) {
