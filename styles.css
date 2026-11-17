@@ -987,3 +987,13 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .glos { margin: 0; display: grid; gap: 12px; }
 .glos dt { font-weight: 600; font-size: 14.5px; }
 .glos dd { margin: 2px 0 0; color: var(--text-2); font-size: 14px; line-height: 1.4; }
+
+/* iPhone con notch o Dynamic Island: las ventanas no se meten debajo de la barra de arriba (hora, batería) ni del borde de abajo.
+   La ventana queda centrada y deja libre, arriba y abajo, al menos la zona segura + un margen */
+:root { --dlg-gap: max(20px, calc(env(safe-area-inset-top) + 10px), calc(env(safe-area-inset-bottom) + 10px)); }
+#dlgForm { max-height: calc(100vh - 2 * var(--dlg-gap)); max-height: calc(100dvh - 2 * var(--dlg-gap)); }
+.sheet-dlg .sheet { max-height: calc(100dvh - 2 * var(--dlg-gap)); }
+@media (max-width: 760px) {
+  .quick { max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top) - 12px)); }
+  .sheet-dlg .sheet { max-height: min(90dvh, calc(100dvh - env(safe-area-inset-top) - 12px)); }
+}
