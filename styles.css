@@ -997,3 +997,18 @@ h2 .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
   .quick { max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top) - 12px)); }
   .sheet-dlg .sheet { max-height: min(90dvh, calc(100dvh - env(safe-area-inset-top) - 12px)); }
 }
+
+/* ---------------- Regla 50/30/20 (Análisis) ---------------- */
+.r5 { display: grid; gap: 12px; }
+.r5-row > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; }
+.r5-row > summary::-webkit-details-marker { display: none; }
+.r5-name { min-width: 0; }
+.r5-name b::after { content: "\203A"; display: inline-block; margin-left: 6px; color: var(--muted); transition: transform .2s; }
+.r5-row[open] .r5-name b::after { transform: rotate(90deg); }
+.r5-val { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.r5-val .money { color: var(--text-2); font-size: 13px; margin-right: 4px; }
+.r5-track { grid-column: 1 / -1; position: relative; height: 10px; border-radius: 5px; background: var(--surface-2); }
+.r5-bar { display: block; height: 100%; border-radius: 5px; min-width: 2px; }
+.r5-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); opacity: .55; }
+.r5-st { grid-column: 1 / -1; font-size: 12.5px; }
+.r5-st .status { font-size: 12px; }

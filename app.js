@@ -2383,6 +2383,7 @@ const GLOSSARY = [
   ['Acumulado sin gastar', 'Lo que gastaste de menos hasta ayer frente a un ritmo parejo del mes. Es sólo informativo: no cambia ningún cálculo.'],
   ['Tope', 'El máximo que te ponés para una categoría en el mes. Se configura en <b>Presupuesto</b>.'],
   ['Ingreso seguro / a veces', 'El seguro (un sueldo) se cuenta desde el día 1. El "a veces" (un trabajo ocasional) se suma recién cuando entra.'],
+  ['Regla 50/30/20', 'Una guía para repartir lo que te entra: hasta 50% para necesidades, hasta 30% para gustos y al menos 20% para ahorrar. La ves en <b>Análisis</b>.'],
   ['Fondo de emergencia', 'Plata disponible para imprevistos. Lo ideal es que cubra de 3 a 6 meses de gastos.'],
 ];
 function viewAjustes() {
@@ -2431,6 +2432,28 @@ function viewAjustes() {
 
 // Necesidades (regla 50/30/20). Todo lo demás cuenta como "gustos".
 const NEEDS = new Set(['Supermercado', 'Transporte', 'Vivienda / alquiler', 'Servicios', 'Salud', 'Educación', 'Impuestos', 'Pago de tarjeta (intereses)']);
+// Lo podés cambiar por categoría (S.catKind.map: 'need' | 'want'); si no tocaste una, vale la lista de arriba.
+// Se sincroniza entre dispositivos: gana la última edición (S.catKind.u)
+const isNeed = (c) => { const k = S.catKind?.map?.[c]; return k === 'need' ? true : k === 'want' ? false : NEEDS.has(c); };
+function needCatsForm() {
+  const cats = catsOf('gasto');
+  openForm({
+    title: 'Necesidades y gustos',
+    fields: [
+      { type: 'html', html: '<p class="small muted" style="margin:0">Marcá lo que es <b>necesidad</b>: lo que no podés dejar de pagar (vivienda, servicios, comida básica, salud, transporte). Lo que no marques cuenta como <b>gusto</b>. Se usa en la regla 50/30/20 y en los consejos.</p>' },
+      ...cats.map((c, i) => ({ name: `need${i}`, type: 'checkbox', label: c, value: isNeed(c), full: true })),
+    ],
+    submitLabel: 'Guardar',
+    onSubmit: (v) => {
+      // Sólo se guarda lo que cambiaste respecto de la lista de siempre
+      const map = {};
+      cats.forEach((c, i) => { const on = !!v[`need${i}`]; if (on !== NEEDS.has(c)) map[c] = on ? 'need' : 'want'; });
+      S.catKind = { map, u: new Date().toISOString() };
+      save(); render();
+      toast('Necesidades y gustos guardados ✓');
+    },
+  });
+}
 const INTEREST = 'Pago de tarjeta (intereses)';
 const FIXED = new Set(['Vivienda / alquiler', 'Servicios', 'Suscripciones', 'Impuestos', 'Educación', INTEREST]);
 
@@ -2506,7 +2529,7 @@ function planFor(a, pct) {
   if (!(a.income > 0)) return null;
   const target = (a.income * pct) / 100;
   const cats = a.byCat.map(([c, v]) => ({ c, v, cap: CUT_GUIDE[c]?.[0] ?? 0, tip: CUT_GUIDE[c]?.[1] || '' })).filter((x) => x.cap > 0 && x.v > 0);
-  const tiers = [cats.filter((x) => x.c === INTEREST), cats.filter((x) => !NEEDS.has(x.c)), cats.filter((x) => NEEDS.has(x.c) && x.c !== INTEREST)];
+  const tiers = [cats.filter((x) => x.c === INTEREST), cats.filter((x) => x.c !== INTEREST && !isNeed(x.c)), cats.filter((x) => isNeed(x.c) && x.c !== INTEREST)];
   let remaining = target;
   const rows = [];
   for (const tier of tiers) {
@@ -2540,7 +2563,7 @@ function insightsFor(a) {
     const [c, v] = a.byCat[0];
     out.push(['🥇', `Tu mayor gasto es ${esc(c)}`, `Es el ${pc((v / a.expense) * 100)} de todo lo que gastás (${fm(v)} por mes).`]);
   }
-  const wants = a.byCat.filter(([c]) => !NEEDS.has(c)).reduce((s, [, v]) => s + v, 0);
+  const wants = a.byCat.filter(([c]) => !isNeed(c)).reduce((s, [, v]) => s + v, 0);
   if (a.income > 0 && (wants / a.income) * 100 > 30) {
     out.push(['⚠', `Los gustos se llevan el ${pc((wants / a.income) * 100)} de tus ingresos`, 'La regla 50/30/20 sugiere no pasar del 30%. Es el primer lugar donde recortar.']);
   }
@@ -2744,6 +2767,46 @@ function othersBoxHTML(months) {
 }
 
 // Análisis: cuánto entra, cuánto sale y en qué
+/* Regla 50/30/20: de lo que te entra, hasta 50% para necesidades, hasta 30% para gustos y al menos 20% para ahorrar.
+   Usa el mismo período que Análisis. Ahorro = lo que entra − lo que gastás (lo que pasás a inversiones cuenta como ahorro) */
+function rule503020HTML(a) {
+  if (!(a.income > 0) && !(a.expense > 0)) return '';
+  const head = `<div class="card-head" style="margin-bottom:10px"><h2>Regla 50/30/20</h2><span class="muted small">${a.n === 1 ? 'este mes' : 'promedio por mes'}</span></div>`;
+  const change = `<button class="link-btn" data-action="needCats">Elegir qué es necesidad y qué es gusto</button>`;
+  if (!(a.income > 0)) return `<section class="card">${head}<div class="small muted">Cargá tus ingresos del período para ver cómo se reparten.</div></section>`;
+  const needs = a.byCat.filter(([c]) => isNeed(c)), wants = a.byCat.filter(([c]) => !isNeed(c));
+  const total = (l) => l.reduce((s, [, v]) => s + v, 0);
+  const pct = (v) => (v / a.income) * 100;
+  const P = (v) => fmtPct(v, false);
+  const catItems = (l) => (l.length ? l.map(([c, v]) => `<div class="calc-item"><span>${esc(c)} <small class="muted">${P(pct(v))} de lo que te entra</small></span><span class="money">${fmtMoney(v)}</span></div>`).join('')
+    : '<div class="calc-item"><small class="muted">Nada en el período.</small></div>');
+  const row = (label, color, v, target, isMin, items) => {
+    const p = pct(v), ok = isMin ? p >= target : p <= target;
+    const diff = Math.round(Math.abs(p - target) * 10) / 10, whole = diff >= 1 ? Math.round(diff) : null;
+    const d = whole != null ? fmtNum(whole, 0) : fmtNum(diff, 1), pts = whole === 1 ? 'punto' : 'puntos';
+    const st = ok ? '<span class="status good">✓ Bien</span>'
+      : `<span class="status warning">⚠ ${isMin ? `Faltan ${d} ${pts}` : `${d} ${pts} de más`}</span>`;
+    return `<details class="r5-row"><summary>
+      <span class="r5-name"><b>${label}</b> <small class="muted">${isMin ? 'al menos' : 'hasta'} ${target}%</small></span>
+      <span class="r5-val"><span class="money">${fmtMoney(v)}</span> <b>${P(p)}</b></span>
+      <span class="r5-track"><span class="r5-bar" style="width:${Math.max(0, Math.min(100, p))}%;background:var(${color})"></span><span class="r5-mark" style="left:${target}%"></span></span>
+      <span class="r5-st">${st}</span></summary>
+      <div class="calc-items">${items}</div></details>`;
+  };
+  const N = total(needs), W = total(wants);
+  const saveItems = `<div class="calc-item"><span>Te entra</span><span class="money">${fmtMoney(a.income)}</span></div>
+    <div class="calc-item"><span>− Necesidades y gustos</span><span class="money">${fmtMoney(a.expense)}</span></div>
+    <div class="calc-item"><span><b>= Te queda para ahorrar</b> <small class="muted">lo que pasás a inversiones también cuenta como ahorro</small></span><span class="money">${fmtMoney(a.saving)}</span></div>`;
+  return `<section class="card">${head}
+    <div class="r5">
+      ${row('Necesidades', '--c1', N, 50, false, catItems(needs))}
+      ${row('Gustos', '--c2', W, 30, false, catItems(wants))}
+      ${row('Ahorro', '--c3', a.saving, 20, true, saveItems)}
+    </div>
+    <div class="small muted" style="margin-top:10px">Es una guía: de lo que te entra, hasta la mitad para lo necesario, hasta un 30% para gustos y al menos un 20% para ahorrar. La raya marca el ideal; tocá cada parte para ver de qué está hecha.</div>
+    <div style="margin-top:6px">${change}</div></section>`;
+}
+
 function viewAnalisis() {
   const month = currentMonth();
   lastMonthly = { series: monthlySeries(month) };
@@ -2761,6 +2824,7 @@ function viewAnalisis() {
     ${tile('Tasa de ahorro', a.rate != null ? fmtPct(a.rate, false) : '—', statusPill(st) || 'Faltan ingresos')}
   </div>
   ${kindSplitHTML(a)}
+  ${rule503020HTML(a)}
   <div class="grid-2">
     <section class="card"><div class="card-head"><h2>¿En qué gastás más?</h2><span class="muted small">por mes</span></div>
       ${a.byCat.length ? `<div class="hbars">${a.byCat.map(([c, v]) => {
@@ -3883,6 +3947,8 @@ function mergeRemote(R) {
   S.dayBudgets = mergeDayBudgets(S.dayBudgets, R.dayBudgets);
   // Mi plan: gana la versión editada más tarde
   if ((R.plan?.u || '') > (S.plan?.u || '')) S.plan = JSON.parse(JSON.stringify(R.plan));
+  // Necesidades y gustos (regla 50/30/20): gana la versión editada más tarde
+  if ((R.catKind?.u || '') > (S.catKind?.u || '')) S.catKind = JSON.parse(JSON.stringify(R.catKind));
   // Precios guardados día por día y correcciones de saldo: se juntan los de los dos dispositivos
   for (const [d, px] of Object.entries(R.priceLog || {})) S.priceLog[d] = { ...px, ...(S.priceLog?.[d] || {}) };
   S.priceHist = { ...(R.priceHist || {}), ...(S.priceHist || {}) };
@@ -4900,6 +4966,9 @@ function customCatForm(type, onDone, cat = null) {
           for (const r of S.recurring) if (r.category === cat.name) r.category = name;
           for (const s of S.scheduled) if (s.category === cat.name) s.category = name;
           if (S.budgets[cat.name]) { S.budgets[name] = S.budgets[cat.name]; delete S.budgets[cat.name]; }
+          // (si la habías marcado como necesidad o gusto, sigue igual con el nombre nuevo)
+          const km = S.catKind?.map;
+          if (km && km[cat.name]) { km[name] = km[cat.name]; delete km[cat.name]; S.catKind.u = new Date().toISOString(); }
         }
         Object.assign(cat, { name, icon: v.icon });
       } else {
@@ -4923,6 +4992,7 @@ function customCatsHTML() {
     <div class="list">${list.map(row).join('') || '<div class="small muted">Todavía no creaste ninguna. También podés crearlas con "+ Nueva" al registrar un gasto.</div>'}</div>
     <div class="toolbar" style="margin-top:10px"><button class="btn sm" data-action="catAdd" data-id="gasto">+ Categoría de gasto</button>
       <button class="btn sm" data-action="catAdd" data-id="ingreso">+ Categoría de ingreso</button></div>
+    <button class="link-btn" style="margin-top:10px" data-action="needCats">Necesidad o gusto (regla 50/30/20)</button>
   </section>`;
 }
 
@@ -7773,6 +7843,7 @@ const ACTIONS = {
   catAdd: (type) => customCatForm(type),
   txSearchClear: () => { txQuery = ''; render(); },
   // Desde Análisis: ver los movimientos de un tipo (fijos / variables / ocasionales) en el mes actual
+  needCats: () => needCatsForm(),
   txKindGo: (k) => { txKindSel = k; txQuery = ''; S.settings.txMonth = ''; go('movimientos'); },
   installApp: async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice.catch(() => null); installEvt = null; render(); if (r?.outcome === 'accepted') toast('Listo: buscá MyFinance en la pantalla de inicio de tu teléfono.', 5000); },
   installDismiss: () => { S.settings.installDismissed = true; save(false); render(); },
